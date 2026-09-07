@@ -7,8 +7,9 @@ cmd/csv-collector
 app/host
 plugins/config
 plugins/collector + plugins/scheduler
+plugins/query + plugins/ui
 plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
-app/collector + app/recovery + app/scheduler + app/metadata
+app/collector + app/recovery + app/scheduler + app/metadata + app/query
 app/source + app/parser + app/storage + app/state + app/model
 dynamic-runtime (replace: ../gocordis)
 ```
@@ -40,6 +41,8 @@ Each config component type maps to one Component:
 | `mysql-storage` / `postgresql-storage` / `oracle-storage` / `memory-storage` | Storage | idempotent batch writes |
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
 | `path-metadata` (one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
+| `query-provider` | Query/Observation/Command | Application Observation Adapter + read model |
+| `ui` | UIHost | UI Plugin: pages/panels + Observation subscription (React later) |
 | `scheduler` | Trigger | daily tick to Runtime Event |
 | `csv-collector` | none | worker + event handler |
 
@@ -63,7 +66,12 @@ Scheduler extension job
   -> State.Begin -> FileSource.List (recursive below <root>/<date>)
   -> MetadataExtractor.Extract (before CSV read)
   -> Parser -> Storage (Batch carries Metadata) -> State file marks
-```
+
+Outcome events (FileCompleted/FileFailed/CollectionCompleted/CollectionFailed)
+are emitted by the Collector plugin after each run; the `query-provider`
+component (Application Observation Adapter) feeds the read model and the UI
+Plugin refreshes its view by re-running the Application Queries. See
+`docs/UI_PLUGIN.md`.
 
 The handler registration and worker goroutine are activation effects. Unloading
 cancels the worker context and waits for it before the activation ends.

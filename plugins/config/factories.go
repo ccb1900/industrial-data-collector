@@ -9,10 +9,12 @@ import (
 	collectorplugin "gocordis-csv-collector/plugins/collector"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
+	queryplugin "gocordis-csv-collector/plugins/query"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
 	sourceplugin "gocordis-csv-collector/plugins/source"
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
+	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
 type adapterFactory struct {
@@ -73,6 +75,16 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
 	}
 	if err := register("path-metadata", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return metadataplugin.NewMetadata(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("query-provider", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return queryplugin.NewQuery(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("ui", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uiplugin.NewUI(cc)
 	}); err != nil {
 		return err
 	}

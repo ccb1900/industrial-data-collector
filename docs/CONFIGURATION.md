@@ -117,6 +117,17 @@ identity, so rule changes do not cause re-collection. See
 - `schedule`: `daily` only in v0.1.
 - `time`: local `HH:MM` trigger time.
 
+## Query provider (UI)
+
+- `type`: `query-provider`. No config keys in v0.1. Provides the Application
+  Query/Observation/Command capabilities used by the UI Plugin.
+
+## UI (Go core)
+
+- `type`: `ui`. No config keys in v0.1. Registers the UI Host composition
+  (pages/panels) and subscribes Observation. React/Wails bindings come in a
+  later batch.
+
 ## Collector
 
 - `source`, `parser`, `storage`, `state`: component IDs.

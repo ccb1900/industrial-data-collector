@@ -56,6 +56,8 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/e2e_scheduler_test.go` | `TestCSVE2E11SchedulerEventCollector` | scheduler -> event -> collector |
 | `tests/e2e_metadata_test.go` | MetadataE2E filename/path/reload/failed-reload/optional suite | M-12/M-16/M-17/M-18 end-to-end propagation and reconciliation |
 | `tests/config_smoke_test.go` | `TestSampleConfigsParseAndValidate` | shipped TOML examples parse and validate |
+| `app/query/query_test.go` | read model/observation unit tests | views from events, failures, subscribe/publish/feed |
+| `tests/e2e_ui_test.go` | `TestUIE2EQueryObservationCommandLoop`, `TestUIE2EPluginIsolation` | UI Command -> Event -> Collector -> Query -> Observation -> UI view; UI unload isolation |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

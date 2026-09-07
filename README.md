@@ -14,6 +14,7 @@ modified by this project.
 app/model/         Application models and capability contracts
 app/metadata/      Pure path/filename metadata extraction engine
 app/parser/        Streaming CSV parser
+app/query/         UI Query/Observation/Command capability contracts + read model
 app/source/        Local and UNC file source (recursive below <root>/<date>)
 app/scheduler/     Daily anchor policy
 app/state/         In-memory and file-persistent CollectionState
@@ -26,6 +27,8 @@ app/config/        TOML-compatible configuration validation
 app/host/          Runtime/Config-Controller host
 plugins/           GOCORDIS Components, capability keys, and factories
 plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
+plugins/query/     Application Query provider + Observation adapter (UI-facing)
+plugins/ui/        UI Plugin GOCORDIS Component (UI Host page/panel contract)
 cmd/csv-collector/ Executable
 configs/           TOML examples
 tests/             Runtime E2E scenarios
@@ -36,7 +39,9 @@ Each business capability has one plugin package under `plugins/`:
 `plugins/scheduler`, `plugins/metadata`, `plugins/collector`, and
 `plugins/config` (factory registration). Application-only logic lives under
 `app/` and never starts a second lifecycle. See
-[`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature.
+[`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature and
+[`docs/UI_PLUGIN.md`](docs/UI_PLUGIN.md) for the UI Plugin Contract Go core
+(React/Wails arrive in a later batch).
 
 ## Run
 

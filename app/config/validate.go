@@ -31,6 +31,8 @@ var knownTypes = map[string]TypeInfo{
 	"scheduler":          {Kind: "scheduler", Capability: "trigger"},
 	"csv-collector":      {Kind: "collector", Capability: "collector"},
 	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor"},
+	"query-provider":     {Kind: "query", Capability: "query"},
+	"ui":                 {Kind: "ui", Capability: "ui"},
 }
 
 // Validate rejects invalid application configuration before Runtime mutation.

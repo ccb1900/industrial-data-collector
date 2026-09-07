@@ -273,3 +273,14 @@ func TestValidateParserSkipLines(t *testing.T) {
 		t.Fatal("non-numeric skip_lines must be rejected")
 	}
 }
+
+func TestValidateAcceptsQueryAndUIComponents(t *testing.T) {
+	cfg := validConfig()
+	cfg.Components = append(cfg.Components,
+		component("query-provider", "query-provider", map[string]any{}),
+		component("ui", "ui", map[string]any{}),
+	)
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("query-provider/ui components must be accepted: %v", err)
+	}
+}
