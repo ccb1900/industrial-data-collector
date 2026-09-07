@@ -75,3 +75,62 @@ func TestParseMalformed(t *testing.T) {
 		t.Fatal("malformed CSV must fail")
 	}
 }
+
+func TestParseSkipsPreambleMetadataLines(t *testing.T) {
+	body := "Device: line-A\nStation: ST-01\nExported at: 2026-09-07 08:00\n\nid,name\n1,a\n2,b\n"
+	p := New()
+	p.Header = true
+	p.SkipLines = 4 // three metadata lines + one blank line
+	s, err := p.Parse(context.Background(), strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(s.Header(), ","); got != "id,name" {
+		t.Fatalf("header = %q, want id,name", got)
+	}
+	var rows []model.Record
+	for {
+		rec, err := s.Next()
+		if err == model.ErrEOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, rec)
+	}
+	if len(rows) != 2 || rows[0].RowNumber != 1 {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
+func TestParseSkipsPreambleWithoutHeader(t *testing.T) {
+	body := "# comment\n1,alpha\n2,beta\n"
+	p := New()
+	p.Header = false
+	p.SkipLines = 1
+	s, err := p.Parse(context.Background(), strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RowNumber != 1 || strings.Join(first.Fields, ",") != "1,alpha" {
+		t.Fatalf("first = %#v", first)
+	}
+}
+
+func TestParseSkipLinesConsumingWholeFileIsEmpty(t *testing.T) {
+	p := New()
+	p.Header = true
+	p.SkipLines = 99
+	s, err := p.Parse(context.Background(), strings.NewReader("Device: X\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Next(); err != model.ErrEOF {
+		t.Fatalf("Next = %v, want EOF", err)
+	}
+}

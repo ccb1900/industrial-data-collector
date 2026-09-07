@@ -30,8 +30,9 @@ type MemoryOptions struct {
 type MemoryStore struct {
 	mu sync.Mutex
 
-	rows   map[string]map[int64]StoredRow
-	byFile map[string][]StoredRow
+	rows    map[string]map[int64]StoredRow
+	byFile  map[string][]StoredRow
+	batches []StoredBatch
 
 	total       int64
 	skipped     int64
@@ -41,6 +42,18 @@ type MemoryStore struct {
 	failErr   error
 	onWrite   func(context.Context, model.Batch, int64) error
 	now       func() time.Time
+}
+
+// StoredBatch is an audit view of one accepted batch, including the file-level
+// business metadata that propagated through the Collector.
+type StoredBatch struct {
+	Key       model.CollectionKey
+	File      model.FileIdentity
+	Metadata  model.Metadata
+	Sequence  int
+	Header    []string
+	Records   int
+	CreatedAt time.Time
 }
 
 func NewMemory(opts MemoryOptions) *MemoryStore {
@@ -87,6 +100,15 @@ func (s *MemoryStore) Write(ctx context.Context, batch model.Batch) error {
 		s.byFile[batch.File.Identity()] = append(s.byFile[batch.File.Identity()], row)
 		s.total++
 	}
+	s.batches = append(s.batches, StoredBatch{
+		Key:       batch.Key,
+		File:      batch.File,
+		Metadata:  batch.Metadata.Clone(),
+		Sequence:  batch.Sequence,
+		Header:    append([]string(nil), batch.Header...),
+		Records:   len(batch.Records),
+		CreatedAt: now,
+	})
 	s.batchWrites++
 	return nil
 }
@@ -127,6 +149,15 @@ func (s *MemoryStore) BatchWrites() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.batchWrites
+}
+
+// Batches returns a copy of every accepted batch in write order.
+func (s *MemoryStore) Batches() []StoredBatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]StoredBatch, len(s.batches))
+	copy(out, s.batches)
+	return out
 }
 
 func (s *MemoryStore) Close() error { return nil }

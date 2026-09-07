@@ -35,10 +35,11 @@ func (c Config) withDefaults() Config {
 }
 
 type Executor struct {
-	Source  model.FileSource
-	Parser  model.CSVParser
-	Storage model.Storage
-	State   model.CollectionState
+	Source            model.FileSource
+	Parser            model.CSVParser
+	Storage           model.Storage
+	State             model.CollectionState
+	MetadataExtractor model.MetadataExtractor
 
 	Recovery recovery.Planner
 	Config   Config
@@ -187,6 +188,18 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		return fr
 	}
 	cfg.Logger.Info("file started", "key", key.String(), "file", file.Name)
+	md := model.NewMetadata()
+	if e.MetadataExtractor != nil {
+		var err error
+		md, err = e.MetadataExtractor.Extract(ctx, *file)
+		if err != nil {
+			fr.Status = model.StatusFailed
+			fr.Error = err.Error()
+			cfg.Logger.Error("file metadata extraction failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+			return fr
+		}
+	}
+	fr.Metadata = md.Clone()
 	rc, err := e.Source.Read(ctx, *file)
 	if err != nil {
 		fr.Status = model.StatusFailed
@@ -210,7 +223,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			return nil
 		}
 		sequence++
-		batch := model.Batch{Key: key, File: *file, Records: records, Sequence: sequence, Header: header, CreatedAt: time.Now()}
+		batch := model.Batch{Key: key, File: *file, Metadata: md.Clone(), Records: records, Sequence: sequence, Header: header, CreatedAt: time.Now()}
 		if err := e.Storage.Write(ctx, batch); err != nil {
 			return err
 		}

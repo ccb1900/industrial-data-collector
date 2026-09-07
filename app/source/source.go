@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,7 @@ import (
 // same kind of ordinary path value; no Collector-level path sniffing exists.
 type Source struct {
 	SourceID     model.SourceID
-	Root         string
+	root         string
 	Pattern      string
 	StableWindow time.Duration
 	Now          func() time.Time
@@ -30,15 +31,18 @@ type Local = Source
 type UNC = Source
 
 func New(id string, root, pattern string, stableWindow time.Duration) *Source {
-	return &Source{SourceID: model.SourceID(id), Root: root, Pattern: pattern, StableWindow: stableWindow}
+	return &Source{SourceID: model.SourceID(id), root: root, Pattern: pattern, StableWindow: stableWindow}
 }
 
 func (s *Source) ID() model.SourceID {
 	if s.SourceID == "" {
-		return model.SourceID(s.Root)
+		return model.SourceID(s.root)
 	}
 	return s.SourceID
 }
+
+// Root returns the configured source root (ordinary path value; UNC included).
+func (s *Source) Root() string { return s.root }
 
 func (s *Source) now() time.Time {
 	if s.Now != nil {
@@ -54,53 +58,58 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if s.Pattern == "" {
 		s.Pattern = "*.csv"
 	}
-	dir := filepath.Join(s.Root, req.Date.String())
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, errs.ClassifySourceError(dir, err)
-	}
+	dir := filepath.Join(s.root, req.Date.String())
+	// Discovery is recursive below the date directory so nested business
+	// layouts (line-A/station-03/... under <root>/<date>) are found. The
+	// pattern remains a file-name glob applied to each file's base name.
 	now := s.now()
 	var out []model.FileIdentity
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		matched, _ := filepath.Match(s.Pattern, e.Name())
-		if !matched {
-			continue
-		}
-		info, err := e.Info()
+	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil, errs.ClassifySourceError(filepath.Join(dir, e.Name()), err)
+			return errs.ClassifySourceError(path, err)
+		}
+		if path == dir || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil // descend into real directories; skip symlinks
+		}
+		matched, _ := filepath.Match(s.Pattern, d.Name())
+		if !matched {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return errs.ClassifySourceError(path, err)
 		}
 		if info.IsDir() {
-			continue
+			return nil
 		}
 		if s.StableWindow > 0 {
 			// A file whose mtime is younger than the stable window may still be
 			// open for writing; it is intentionally not discovered yet.
 			if now.Sub(info.ModTime()) < s.StableWindow {
-				continue
+				return nil
 			}
 		}
-		path := filepath.Join(dir, e.Name())
-		// Second stat catches in-progress writes between ReadDir and Info.
+		// Second stat catches in-progress writes between the walk and Info.
 		info2, err := os.Stat(path)
 		if err != nil {
-			return nil, errs.ClassifySourceError(path, err)
+			return errs.ClassifySourceError(path, err)
 		}
 		if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
-			continue
+			return nil
 		}
 		out = append(out, model.FileIdentity{
 			SourceID: s.ID(),
 			Path:     path,
-			Name:     e.Name(),
+			Name:     d.Name(),
 			Size:     info2.Size(),
 			ModTime:  info2.ModTime(),
 		})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
 

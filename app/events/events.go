@@ -35,16 +35,18 @@ type FileStartedPayload struct {
 }
 
 type FileCompletedPayload struct {
-	Key     model.CollectionKey
-	File    model.FileIdentity
-	Records int64
+	Key      model.CollectionKey
+	File     model.FileIdentity
+	Metadata model.Metadata
+	Records  int64
 }
 
 type FileFailedPayload struct {
-	Key     model.CollectionKey
-	File    model.FileIdentity
-	Records int64
-	Error   string
+	Key      model.CollectionKey
+	File     model.FileIdentity
+	Metadata model.Metadata
+	Records  int64
+	Error    string
 }
 
 type CollectionCompletedPayload struct {

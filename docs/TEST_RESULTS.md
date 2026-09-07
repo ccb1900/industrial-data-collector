@@ -22,16 +22,19 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | --- | --- | --- |
 | `app/model/model_test.go` | `TestCollectionDateIgnoresTimeZoneForCalendarComparison` | calendar date identity |
 | `app/model/model_test.go` | `TestCollectionKeyAndFileIdentityStable` | collection key/file identity |
+| `app/model/model_test.go` | `TestM11MetadataNeverParticipatesInFileIdentity` | metadata is excluded from file identity |
+| `app/metadata/metadata_test.go` | M-01..M-10 matcher/config acceptance tests | filename/single/multi-directory/Windows/UNC/root-relative/required/optional/duplicate/mismatch |
 | `app/date/policy_test.go` | `TestYesterdayPolicy`, `TestSpecificPolicy`, `TestUnknownPolicyRejected` | date policies |
 | `app/errs/errors_test.go` | `TestClassifySourceError` | source error classes |
 | `app/parser/parser_test.go` | `TestParseHeadersQuotesCommasAndLineEndings`, `TestParseWithoutHeader`, `TestParseMalformed` | streaming CSV parsing |
-| `app/source/source_test.go` | `TestListReadStableFile`, `TestMissingDateDirectoryClassified`, `TestStableWindowSkipsNewFile` | file discovery/stability/classification |
+| `app/source/source_test.go` | `TestListReadStableFile`, `TestMissingDateDirectoryClassified`, `TestStableWindowSkipsNewFile`, `TestListRecursiveNestedDirectories`, `TestListRecursiveRespectsStableWindowAndPattern` | file discovery/stability/classification/recursion |
 | `app/state/state_test.go` | `TestMemoryStateClaimCompleteAndFileIdempotency`, `TestMemoryStateFailedCanRetryAndListIncomplete`, `TestFileStatePersistsAcrossRestart` | claim/retry/persistence |
 | `app/storage/memory_test.go` | `TestMemoryStoreIdempotent`, `TestMemoryStoreBatchFailureIsRetryable` | idempotent batch writes |
 | `app/storage/sql_test.go` | `TestSQLStoreOpenWriteCloseForDialects` | MySQL/PostgreSQL/Oracle open/write/close SQL paths against a fake driver |
 | `app/recovery/planner_test.go` | `TestPlannerFindsKnownAndCalendarGaps` | known rows plus calendar gap planning |
 | `app/config/validate_test.go` | `TestValidateAcceptCompleteConfig`, `TestValidateRejectsMissingReference`, `TestValidateRejectsWrongReferenceKind`, `TestValidateRejectsBadScheduleAndBatch`, `TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues` | config validation before Runtime mutation |
 | `app/collector/executor_test.go` | `TestCollectorStoresFilesAndIsIdempotent`, `TestCollectorPartialFileFailureSkipsCompletedFiles`, `TestMissingDirectoryStaysPending`, `TestCollectorStorageFailureIsolation` | executor semantics |
+| `app/collector/executor_test.go` | `TestCollectorMetadataPropagatesToBatchesAndResult`, `TestCollectorMetadataErrorIsFileLevelFailure` | metadata to Batch/FileResult propagation and error isolation |
 
 ## E2E and runtime coverage
 
@@ -48,6 +51,8 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/e2e_test.go` | `TestCSVE2E09SourceReplacement` | source replacement without Collector changes |
 | `tests/e2e_test.go` | `TestCSVE2E10ConfigReconciliationNoOpAndReplace` | Config Controller no-op and replace convergence |
 | `tests/e2e_scheduler_test.go` | `TestCSVE2E11SchedulerEventCollector` | scheduler -> event -> collector |
+| `tests/e2e_metadata_test.go` | MetadataE2E filename/path/reload/failed-reload/optional suite | M-12/M-16/M-17/M-18 end-to-end propagation and reconciliation |
+| `tests/config_smoke_test.go` | `TestSampleConfigsParseAndValidate` | shipped TOML examples parse and validate |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

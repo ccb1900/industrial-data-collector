@@ -49,3 +49,86 @@ storage = "memory-storage"
 state = "collection-state"
 date_policy = "yesterday"
 batch_size = 1000
+
+[[components]]
+id = "production-metadata"
+type = "path-metadata"
+
+[components.config]
+source = "production-source"
+
+# Metadata rules belong to the source (never the collector). Each rule emits
+# exactly one business key (its "name"); other {field} captures in the pattern
+# only describe the surrounding layout and are never stored.
+#
+# Grammar per "/"-separated segment: literal text, {field} capture, and *
+# wildcard. Key grammar: [A-Za-z_][A-Za-z0-9_]*. "required" defaults to true:
+# a missing required rule fails that file, a missing optional rule (false)
+# simply leaves the key absent.
+#
+# from = "path"     -> matched against the source-root-relative path
+# from = "filename" -> matched against FileIdentity.Name only
+#
+# The collector discovers *.csv recursively under <root>/<date> (any depth), so
+# ./data/production/2026-09-06/orders.csv has the relative path
+# 2026-09-06/orders.csv and a nested file has e.g.
+# 2026-09-06/line-A/station-03/product-X.csv.
+
+# --- Flat layout (active) ------------------------------------------------
+# Every file is directly under the date directory.
+
+# Example 1 (filename): capture the file stem as key "file".
+[[components.config.metadata]]
+name = "file"
+from = "filename"
+pattern = "{file}.csv"
+required = true
+
+# Example 2 (path): capture the collection date directory as key "date".
+# NOTE: with a nested layout below, make this rule optional or remove it,
+# otherwise a deeper path cannot match the two-segment pattern.
+[[components.config.metadata]]
+name = "date"
+from = "path"
+pattern = "{date}/*.csv"
+required = true
+
+# --- Optional rule (commented) --------------------------------------------
+# A rule that may or may not match never breaks collection. With a second
+# directory level under the date dir (e.g. .../2026-09-06/ST-01/file.csv) this
+# captures station = ST-01; flat files simply have no "station" key.
+# [[components.config.metadata]]
+# name = "station"
+# from = "path"
+# pattern = "{date}/{station}/*.csv"
+# required = false
+
+# --- Nested business layout (commented alternative) ------------------------
+# Use this instead of Example 2 when files live under nested directories, e.g.
+# ./data/production/2026-09-07/line-A/station-03/product-X.csv.
+# Uncommenting requires REMOVING Example 2 above: two rules named "date" would
+# be rejected as a duplicate key (M-09). Required path rules also mean every
+# discovered file must match the four-segment layout.
+# [[components.config.metadata]]
+# name = "line"
+# from = "path"
+# pattern = "{date}/{line}/{station}/*.csv"
+# required = true
+#
+# [[components.config.metadata]]
+# name = "station"
+# from = "path"
+# pattern = "{date}/{line}/{station}/*.csv"
+# required = true
+#
+# [[components.config.metadata]]
+# name = "date"
+# from = "path"
+# pattern = "{date}/{line}/{station}/*.csv"
+# required = true
+#
+# [[components.config.metadata]]
+# name = "product"
+# from = "filename"
+# pattern = "{product}.csv"
+# required = true

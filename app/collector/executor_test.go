@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	datepolicy "gocordis-csv-collector/app/date"
+	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/parser"
 	"gocordis-csv-collector/app/recovery"
@@ -131,5 +132,73 @@ func TestCollectorStorageFailureIsolation(t *testing.T) {
 	_, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err == nil || !strings.Contains(err.Error(), "simulated storage failure") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCollectorMetadataPropagatesToBatchesAndResult(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "orders.csv", "id,name\n1,a\n2,b\n")
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	ex, err := appmetadata.NewExtractor("", []appmetadata.Rule{
+		{Name: "file", From: appmetadata.SourceFilename, Pattern: "{file}.csv", Required: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.MetadataExtractor = ex
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || len(res[0].Files) != 1 {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+	fr := res[0].Files[0]
+	if got, _ := fr.Metadata.Get("file"); got != "orders" {
+		t.Fatalf("FileResult metadata file = %q, want orders", got)
+	}
+	batches := mem.Batches()
+	if len(batches) == 0 {
+		t.Fatal("no stored batches")
+	}
+	for _, b := range batches {
+		got, ok := b.Metadata.Get("file")
+		if !ok || got != "orders" {
+			t.Fatalf("batch metadata file = %q (present=%v), want orders", got, ok)
+		}
+	}
+}
+
+func TestCollectorMetadataErrorIsFileLevelFailure(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
+	writeDateCSV(t, root, "2026-09-06", "order-7.csv", "id,name\n7,o\n")
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	ex, err := appmetadata.NewExtractor("", []appmetadata.Rule{
+		{Name: "id", From: appmetadata.SourceFilename, Pattern: "order-{id}.csv", Required: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.MetadataExtractor = ex
+	_, err = e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err == nil {
+		t.Fatal("metadata mismatch for a.csv must fail the collection run")
+	}
+	if mem.Total() != 1 {
+		t.Fatalf("rows = %d, want 1 (only order-7.csv)", mem.Total())
+	}
+	// The failed file is left incomplete so a corrected retry can proceed;
+	// the successful file was not duplicated.
+	_, err = e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err == nil {
+		t.Fatal("retry must still report a.csv")
+	}
+	if mem.Total() != 1 {
+		t.Fatalf("retry duplicated rows: total=%d", mem.Total())
 	}
 }

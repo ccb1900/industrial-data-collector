@@ -4,6 +4,7 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
+	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/parser"
 	"gocordis-csv-collector/plugins/internal/configutil"
@@ -31,7 +32,12 @@ func (c *ParserComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 // NewParser creates the CSV parser Component from configuration.
 func NewParser(cc config.ComponentConfig) (*ParserComponent, error) {
 	header := configutil.OptionalBool(cc, "header", true)
+	skipLines := configutil.OptionalInt(cc, "skip_lines", 0)
+	if skipLines < 0 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser skip_lines must be >= 0")
+	}
 	p := parser.New()
 	p.Header = header
+	p.SkipLines = skipLines
 	return &ParserComponent{cfg: p}, nil
 }

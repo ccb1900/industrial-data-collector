@@ -9,6 +9,8 @@ import (
 	"time"
 
 	extconfig "dynamic-runtime/extensions/config"
+
+	appmetadata "gocordis-csv-collector/app/metadata"
 )
 
 type TypeInfo struct {
@@ -28,6 +30,7 @@ var knownTypes = map[string]TypeInfo{
 	"file-state":         {Kind: "state", Capability: "state"},
 	"scheduler":          {Kind: "scheduler", Capability: "trigger"},
 	"csv-collector":      {Kind: "collector", Capability: "collector"},
+	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor"},
 }
 
 // Validate rejects invalid application configuration before Runtime mutation.
@@ -47,6 +50,21 @@ func Validate(cfg extconfig.Config) error {
 		}
 		if err := validateOne(cc, ti); err != nil {
 			return err
+		}
+	}
+	metadataCount := 0
+	for id, cc := range byID {
+		if cc.Type != "path-metadata" {
+			continue
+		}
+		metadataCount++
+		ref := str(cc.Config, "source")
+		target, ok := byID[ref]
+		if !ok {
+			return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
+		}
+		if knownTypes[target.Type].Kind != "source" {
+			return fmt.Errorf("metadata component %q must reference a source component", id)
 		}
 	}
 	collectorCount := 0
@@ -75,6 +93,12 @@ func Validate(cfg extconfig.Config) error {
 	if collectorCount > 1 {
 		return errors.New("v0.1 supports one csv-collector per Runtime realm")
 	}
+	if metadataCount > 1 {
+		return errors.New("v0.1 supports one path-metadata component per Runtime realm (single MetadataExtractor)")
+	}
+	if collectorCount == 1 && metadataCount == 0 {
+		return errors.New("csv-collector requires one path-metadata component (metadata dependency)")
+	}
 	return nil
 }
 
@@ -94,6 +118,15 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			}
 		}
 	case "parser":
+		if raw, ok := cc.Config["skip_lines"]; ok {
+			n, valid := intCfgValue(raw)
+			if !valid {
+				return fmt.Errorf("parser %q skip_lines must be an integer", cc.ID)
+			}
+			if n < 0 {
+				return fmt.Errorf("parser %q skip_lines must be >= 0", cc.ID)
+			}
+		}
 	case "storage":
 		switch cc.Type {
 		case "memory-storage":
@@ -120,6 +153,13 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		}
 		if _, err := parseClock(str(cc.Config, "time")); err != nil {
 			return fmt.Errorf("scheduler %q: %w", cc.ID, err)
+		}
+	case "metadata":
+		if str(cc.Config, "source") == "" {
+			return fmt.Errorf("metadata component %q missing source", cc.ID)
+		}
+		if _, err := appmetadata.ParseRules(cc.Config["metadata"]); err != nil {
+			return fmt.Errorf("metadata component %q: %w", cc.ID, err)
 		}
 	case "collector":
 		for _, field := range []string{"source", "parser", "storage", "state"} {

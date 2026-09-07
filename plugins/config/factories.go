@@ -7,6 +7,7 @@ import (
 	"dynamic-runtime/runtime"
 
 	collectorplugin "gocordis-csv-collector/plugins/collector"
+	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
 	sourceplugin "gocordis-csv-collector/plugins/source"
@@ -67,6 +68,11 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
 	}
 	if err := register("csv-collector", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return collectorplugin.NewCollector(cc, logger)
+	}); err != nil {
+		return err
+	}
+	if err := register("path-metadata", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return metadataplugin.NewMetadata(cc)
 	}); err != nil {
 		return err
 	}

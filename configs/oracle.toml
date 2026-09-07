@@ -54,3 +54,10 @@ storage = "oracle-storage"
 state = "collection-state"
 date_policy = "yesterday"
 batch_size = 1000
+
+[[components]]
+id = "production-metadata"
+type = "path-metadata"
+
+[components.config]
+source = "production-source"

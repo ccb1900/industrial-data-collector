@@ -34,3 +34,26 @@ func TestCollectionKeyAndFileIdentityStable(t *testing.T) {
 		t.Fatal("size change must change identity")
 	}
 }
+
+func TestM11MetadataNeverParticipatesInFileIdentity(t *testing.T) {
+	f := FileIdentity{SourceID: "prod", Path: "/a.csv", Name: "a.csv", Size: 10, ModTime: time.Unix(10, 0)}
+	base := f.Identity()
+	if base == "" {
+		t.Fatal("identity must be non-empty")
+	}
+	// A metadata change (v1 -> v2) must yield the same file identity even when
+	// metadata travels next to the file (FileDescriptor / Batch / FileResult).
+	v1 := Metadata{Values: map[string]string{"line": "line-A"}}
+	v2 := Metadata{Values: map[string]string{"line": "line-B", "station": "ST01"}}
+	if v1.Equal(v2) {
+		t.Fatal("test fixtures must differ")
+	}
+	for _, d := range []FileDescriptor{
+		{Identity: f, Metadata: v1},
+		{Identity: f, Metadata: v2},
+	} {
+		if d.Identity.Identity() != base {
+			t.Fatal("metadata must never participate in FileIdentity.Identity()")
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/recovery"
 	"gocordis-csv-collector/plugins/internal/configutil"
+	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	sourceplugin "gocordis-csv-collector/plugins/source"
 	stateplugin "gocordis-csv-collector/plugins/state"
@@ -34,6 +35,7 @@ func (c *CollectorComponent) Inject() []runtime.Dependency {
 		runtime.Requires(parserplugin.Key),
 		runtime.Requires(storageplugin.Key),
 		runtime.Requires(stateplugin.Key),
+		runtime.Requires(metadataplugin.Key),
 	}
 }
 func (c *CollectorComponent) Provide() []runtime.Capability { return nil }
@@ -61,12 +63,17 @@ func (c *CollectorComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 	if err != nil {
 		return nil, err
 	}
+	metadataExtractor, err := runtime.Require(ctx, metadataplugin.Key)
+	if err != nil {
+		return nil, err
+	}
 	exec := &collector.Executor{
-		Source:   src,
-		Parser:   parserService,
-		Storage:  st,
-		State:    collectionState,
-		Recovery: recovery.Planner{State: collectionState},
+		Source:            src,
+		Parser:            parserService,
+		Storage:           st,
+		State:             collectionState,
+		MetadataExtractor: metadataExtractor,
+		Recovery:          recovery.Planner{State: collectionState},
 		Config: collector.Config{
 			BatchSize:  c.batchSize,
 			DatePolicy: c.policy,

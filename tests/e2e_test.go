@@ -65,8 +65,25 @@ func basicComponents(root, sourceID, sourceType, storageID string, statePath str
 		{ID: storageID, Type: "memory-storage"},
 		{ID: "collection-state", Type: stateType, Config: stateCfg},
 		{ID: "scheduler", Type: "scheduler", Config: map[string]any{"schedule": "daily", "time": "02:00"}},
+		{ID: "metadata", Type: "path-metadata", Config: map[string]any{"source": sourceID}},
 		{ID: "production-collector", Type: "csv-collector", Config: cfg},
 	}
+}
+
+// withMetadataRules replaces the default (rule-less) path-metadata component
+// with one carrying the given metadata rules.
+func withMetadataRules(cs []config.ComponentConfig, rules []any) []config.ComponentConfig {
+	for i := range cs {
+		if cs[i].ID == "metadata" {
+			cfg := map[string]any{"source": cs[i].Config["source"]}
+			if rules != nil {
+				cfg["metadata"] = rules
+			}
+			cs[i].Config = cfg
+			return cs
+		}
+	}
+	return cs
 }
 
 func cfg(cs ...config.ComponentConfig) config.Config { return config.Config{Components: cs} }
@@ -372,7 +389,7 @@ func TestRuntimeIntegrationDependencyActiveCollectionUnloadGone(t *testing.T) {
 	for _, o := range h.Owned() {
 		states[o.ID] = o.Fiber.State().String()
 	}
-	for _, want := range []string{"src", "csv-parser", "store", "collection-state", "scheduler", "production-collector"} {
+	for _, want := range []string{"src", "csv-parser", "store", "collection-state", "scheduler", "metadata", "production-collector"} {
 		if states[want] != "Active" {
 			t.Fatalf("%s state = %q", want, states[want])
 		}

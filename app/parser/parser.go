@@ -15,9 +15,14 @@ import (
 
 // Parser is a streaming, standard-encoding/csv-backed parser. It owns no file
 // handles and has no knowledge of collectors, dates, storage, or Runtime.
+//
+// Some exported CSV files begin with a few metadata lines (device, export
+// time, comments) before the actual table. SkipLines drops that many leading
+// physical lines so the table can start at a later line.
 type Parser struct {
-	Header bool
-	Comma  rune
+	Header    bool
+	Comma     rune
+	SkipLines int
 }
 
 func New() *Parser { return &Parser{} }
@@ -32,6 +37,19 @@ func (p *Parser) Parse(ctx context.Context, r io.Reader) (model.RecordStream, er
 	br := bufio.NewReader(r)
 	if peek, err := br.Peek(3); err == nil && len(peek) == 3 && peek[0] == 0xEF && peek[1] == 0xBB && peek[2] == 0xBF {
 		_, _ = br.Discard(3)
+	}
+	if p.SkipLines < 0 {
+		return nil, errs.Sourcef(errs.ErrInvalidFile, "skip_lines must be >= 0")
+	}
+	for i := 0; i < p.SkipLines; i++ {
+		if _, err := br.ReadString('\n'); err != nil {
+			if err == io.EOF {
+				// The preamble consumed the whole file: there is no table.
+				s := &stream{ctx: ctx, parser: p, done: true}
+				return s, nil
+			}
+			return nil, errs.Sourcef(errs.ErrMalformedCSV, "csv preamble line %d: %v", i+1, err)
+		}
 	}
 	cr := csv.NewReader(br)
 	if p.Comma != 0 {

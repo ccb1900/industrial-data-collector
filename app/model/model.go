@@ -126,6 +126,7 @@ type Record struct {
 type Batch struct {
 	Key       CollectionKey
 	File      FileIdentity
+	Metadata  Metadata
 	Records   []Record
 	Sequence  int
 	Header    []string
@@ -144,10 +145,11 @@ const (
 
 // FileResult reports the outcome of one input file.
 type FileResult struct {
-	File    FileIdentity
-	Status  Status
-	Records int64
-	Error   string
+	File     FileIdentity
+	Metadata Metadata
+	Status   Status
+	Records  int64
+	Error    string
 }
 
 // CollectionResult reports one source/date collection execution.
@@ -180,6 +182,9 @@ type ListRequest struct {
 // Component activation; their Close is the activation cleanup.
 type FileSource interface {
 	ID() SourceID
+	// Root returns the configured source root. The metadata plugin uses it to
+	// derive the root-relative path required by path metadata patterns.
+	Root() string
 	List(ctx context.Context, req ListRequest) ([]FileIdentity, error)
 	Read(ctx context.Context, file FileIdentity) (io.ReadCloser, error)
 	Close() error

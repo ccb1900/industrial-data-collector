@@ -7,8 +7,8 @@ cmd/csv-collector
 app/host
 plugins/config
 plugins/collector + plugins/scheduler
-plugins/source + plugins/parser + plugins/storage + plugins/state
-app/collector + app/recovery + app/scheduler
+plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
+app/collector + app/recovery + app/scheduler + app/metadata
 app/source + app/parser + app/storage + app/state + app/model
 dynamic-runtime (replace: ../gocordis)
 ```
@@ -39,11 +39,15 @@ Each config component type maps to one Component:
 | `csv-parser` | CSVParser | streaming CSV rows |
 | `mysql-storage` / `postgresql-storage` / `oracle-storage` / `memory-storage` | Storage | idempotent batch writes |
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
+| `path-metadata` | MetadataExtractor | per-source business metadata (requires FileSource root) |
 | `scheduler` | Trigger | daily tick to Runtime Event |
 | `csv-collector` | none | worker + event handler |
 
-Collector declares exactly four required dependencies. There is no
-`switch databaseType` or `switch sourceKind` in Collector.
+Collector declares exactly five required dependencies. There is no
+`switch databaseType` or `switch sourceKind` in Collector. The Metadata plugin
+is an ordinary Component: it provides `MetadataExtractor`, reads the active
+source root through the FileSource capability, and is replaced by Config
+Reconciliation when rules change.
 
 ## Event flow
 
@@ -54,7 +58,9 @@ Scheduler extension job
   -> Collector Component event handler
   -> Effect-owned worker
   -> Executor.Handle
-  -> State.Begin -> FileSource.List -> Parser -> Storage -> State file marks
+  -> State.Begin -> FileSource.List (recursive below <root>/<date>)
+  -> MetadataExtractor.Extract (before CSV read)
+  -> Parser -> Storage (Batch carries Metadata) -> State file marks
 ```
 
 The handler registration and worker goroutine are activation effects. Unloading
