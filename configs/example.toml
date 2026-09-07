@@ -1,0 +1,51 @@
+[[components]]
+id = "production-source"
+type = "local-file-source"
+
+[components.config]
+root = "./data/production"
+pattern = "*.csv"
+file_stable_window_seconds = 30
+
+
+[[components]]
+id = "csv-parser"
+type = "csv-parser"
+
+[components.config]
+header = true
+
+
+[[components]]
+id = "memory-storage"
+type = "memory-storage"
+
+
+[[components]]
+id = "collection-state"
+type = "file-state"
+
+[components.config]
+path = "./state/collection-state.json"
+
+
+[[components]]
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "02:00"
+
+
+[[components]]
+id = "production-collector"
+type = "csv-collector"
+
+[components.config]
+source = "production-source"
+parser = "csv-parser"
+storage = "memory-storage"
+state = "collection-state"
+date_policy = "yesterday"
+batch_size = 1000

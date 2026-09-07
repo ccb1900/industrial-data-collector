@@ -1,0 +1,56 @@
+[[components]]
+id = "production-source"
+type = "local-file-source"
+
+[components.config]
+root = "./data/production"
+pattern = "*.csv"
+file_stable_window_seconds = 30
+
+
+[[components]]
+id = "csv-parser"
+type = "csv-parser"
+
+[components.config]
+header = true
+
+
+[[components]]
+id = "oracle-storage"
+type = "oracle-storage"
+
+[components.config]
+driver = "godror"
+dsn = "user/password@//127.0.0.1:1521/service"
+table = "gocordis_records"
+
+
+[[components]]
+id = "collection-state"
+type = "file-state"
+
+[components.config]
+path = "./state/collection-state.json"
+
+
+[[components]]
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "02:00"
+
+
+[[components]]
+id = "production-collector"
+type = "csv-collector"
+
+[components.config]
+source = "production-source"
+parser = "csv-parser"
+storage = "oracle-storage"
+state = "collection-state"
+date_policy = "yesterday"
+batch_size = 1000

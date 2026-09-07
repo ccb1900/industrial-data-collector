@@ -1,0 +1,63 @@
+# Test Results and Gate Report
+
+Commands run in this workspace:
+
+```text
+go vet ./...
+go test ./...
+go test -race ./...
+```
+
+Sandbox verification used `GOCACHE=/tmp/gocache GOPROXY=off` because the
+default Go build cache was read-only and no network was available.
+
+Status: local functional, runtime, boundary, reliability, race, and resource
+gates PASS. Live MySQL/PostgreSQL/Oracle databases and a real remote UNC share
+were not available, so those adapter/external-service portions are CONDITIONAL
+PASS based on code inspection plus the in-process fake `database/sql` driver.
+
+## Unit and plugin coverage
+
+| File | Test | Verifies |
+| --- | --- | --- |
+| `app/model/model_test.go` | `TestCollectionDateIgnoresTimeZoneForCalendarComparison` | calendar date identity |
+| `app/model/model_test.go` | `TestCollectionKeyAndFileIdentityStable` | collection key/file identity |
+| `app/date/policy_test.go` | `TestYesterdayPolicy`, `TestSpecificPolicy`, `TestUnknownPolicyRejected` | date policies |
+| `app/errs/errors_test.go` | `TestClassifySourceError` | source error classes |
+| `app/parser/parser_test.go` | `TestParseHeadersQuotesCommasAndLineEndings`, `TestParseWithoutHeader`, `TestParseMalformed` | streaming CSV parsing |
+| `app/source/source_test.go` | `TestListReadStableFile`, `TestMissingDateDirectoryClassified`, `TestStableWindowSkipsNewFile` | file discovery/stability/classification |
+| `app/state/state_test.go` | `TestMemoryStateClaimCompleteAndFileIdempotency`, `TestMemoryStateFailedCanRetryAndListIncomplete`, `TestFileStatePersistsAcrossRestart` | claim/retry/persistence |
+| `app/storage/memory_test.go` | `TestMemoryStoreIdempotent`, `TestMemoryStoreBatchFailureIsRetryable` | idempotent batch writes |
+| `app/storage/sql_test.go` | `TestSQLStoreOpenWriteCloseForDialects` | MySQL/PostgreSQL/Oracle open/write/close SQL paths against a fake driver |
+| `app/recovery/planner_test.go` | `TestPlannerFindsKnownAndCalendarGaps` | known rows plus calendar gap planning |
+| `app/config/validate_test.go` | `TestValidateAcceptCompleteConfig`, `TestValidateRejectsMissingReference`, `TestValidateRejectsWrongReferenceKind`, `TestValidateRejectsBadScheduleAndBatch`, `TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues` | config validation before Runtime mutation |
+| `app/collector/executor_test.go` | `TestCollectorStoresFilesAndIsIdempotent`, `TestCollectorPartialFileFailureSkipsCompletedFiles`, `TestMissingDirectoryStaysPending`, `TestCollectorStorageFailureIsolation` | executor semantics |
+
+## E2E and runtime coverage
+
+| File | Test | Verifies |
+| --- | --- | --- |
+| `tests/e2e_test.go` | `TestCSVE2E01LocalToCSVToStorage` | local source -> parser -> storage |
+| `tests/e2e_test.go` | `TestCSVE2E02UNCTypeSameCollector` | UNC-typed source as ordinary path value |
+| `tests/e2e_test.go` | `TestCSVE2E03YesterdayPolicy` | today -> yesterday collection |
+| `tests/e2e_test.go` | `TestCSVE2E04RestartRecovery` | persistent state and restart recovery |
+| `tests/e2e_test.go` | `TestCSVE2E05RepeatRunNoDuplicate` | repeated execution stays idempotent |
+| `tests/e2e_test.go` | `TestCSVE2E06MultipleFilesAllSucceed` | multi-file success |
+| `tests/e2e_test.go` | `TestCSVE2E07PartialFileRetry` | A skip / B retry / C skip |
+| `tests/e2e_test.go` | `TestCSVE2E08StorageReplacementCollectorUnchangedSemantics` | storage replacement without Collector changes |
+| `tests/e2e_test.go` | `TestCSVE2E09SourceReplacement` | source replacement without Collector changes |
+| `tests/e2e_test.go` | `TestCSVE2E10ConfigReconciliationNoOpAndReplace` | Config Controller no-op and replace convergence |
+| `tests/e2e_scheduler_test.go` | `TestCSVE2E11SchedulerEventCollector` | scheduler -> event -> collector |
+| `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
+| `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
+
+## Gates
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Functional | CONDITIONAL PASS | local/memory paths PASS; SQL dialects run through a fake driver; real MySQL/PostgreSQL/Oracle services and a remote UNC share were unavailable |
+| Runtime | PASS | component/fiber/activation/dependency/effect/event reconciliation tests above |
+| Boundary | PASS | no domain concept added under `runtime/`; see BOUNDARY_AUDIT.md |
+| Reliability | PASS | exercised restart/missing/partial/storage/repeat/close paths |
+| Race | PASS | `go test -race ./...` |
+| Resource | PASS | exercised code-owned resources; see RESOURCE_OWNERSHIP_AUDIT.md |
