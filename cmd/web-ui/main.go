@@ -70,8 +70,12 @@ func run(logger *slog.Logger, configPath, addr string) error {
 		return fmt.Errorf("no active ui component in configuration")
 	}
 
-	var assets fs.FS = fs.FS(web.Dist)
-	srv := webui.New(ui.HostAdapter(), assets)
+	// The embed root contains a "dist/" prefix; serve its contents at "/".
+	sub, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return fmt.Errorf("embedded ui assets: %w", err)
+	}
+	srv := webui.New(ui.HostAdapter(), fs.FS(sub))
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSink(srv))
 
