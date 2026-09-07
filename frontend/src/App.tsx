@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { api, onObservation } from "./api/client";
+import { commands, onObservation } from "./api/client";
 import { useCollectionData } from "./hooks/useCollectionData";
 import { Collections, Files, Sources } from "./components/Lists";
 
@@ -12,7 +12,7 @@ export default function App() {
   useEffect(() => onObservation(() => void refresh()), [refresh]);
 
   const trigger = async () => {
-    await api.triggerCollection({ reason: "ui" });
+    await commands.triggerCollection({ reason: "ui" });
     await refresh();
   };
 

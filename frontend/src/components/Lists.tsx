@@ -1,5 +1,6 @@
 import React from "react";
 import { UICollection, UIFile, UISource } from "../models/types";
+import { metadataEntries } from "../lib/metadata";
 
 export function Sources({ items }: { items: UISource[] }) {
   return (
@@ -36,7 +37,7 @@ function MetadataTable({ metadata }: { metadata: Record<string, string> }) {
   return (
     <table>
       <tbody>
-        {Object.entries(metadata).map(([k, v]) => (
+        {metadataEntries(metadata).map(([k, v]) => (
           <tr key={k}>
             <td>{k}</td>
             <td>{v}</td>

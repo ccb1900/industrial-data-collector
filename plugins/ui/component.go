@@ -27,6 +27,13 @@ type ViewSnapshot struct {
 	EventFeed   []query.ObservationEvent
 }
 
+// ObservationSink is the production observation emitter boundary. The real
+// Wails Host implements it with runtime.EventsEmit("observation", ...); tests
+// use an in-process adapter. UI Plugin never owns the sink.
+type ObservationSink interface {
+	NotifyObservation(ev UIObservation)
+}
+
 type queryBundle struct {
 	collections query.CollectionQuery
 	sources     query.SourceQuery
@@ -44,6 +51,7 @@ type UIComponent struct {
 
 	host        *host
 	bridge      *observationBridge
+	sink        ObservationSink
 	hostAdapter *Host
 	baseCtx     context.Context
 	obs         query.Observation
@@ -142,7 +150,10 @@ func (c *UIComponent) onObservation(ev query.ObservationEvent) {
 	c.invalidations++
 	c.latest = ev
 	c.mu.Unlock()
-	if c.bridge != nil {
+	if c.sink != nil {
+		c.sink.NotifyObservation(toUIObservation(ev))
+	} else if c.bridge != nil {
+		// test adapter only; production path uses SetObservationSink.
 		c.bridge.notify(toUIObservation(ev))
 	}
 	c.refresh()
@@ -174,13 +185,17 @@ func (c *UIComponent) refresh() {
 	c.mu.Unlock()
 }
 
-// TriggerCollection is the UI-side Application Command entry point. It calls
-// the CollectionCommand capability, never the Executor.
+// TriggerCollection is the UI-side Application Command entry point. It routes
+// through the Host (CollectionCommand capability), never the Executor, and
+// returns once the command is accepted (it does not wait for the run).
 func (c *UIComponent) TriggerCollection(ctx context.Context, req query.CollectionRequest) error {
-	if c.cmd == nil {
-		return errors.New("ui: collection command unavailable")
+	if c.hostAdapter == nil {
+		return errors.New("ui: host adapter not active")
 	}
-	return c.cmd.TriggerCollection(ctx, req)
+	if ue := c.hostAdapter.submit(req); ue != nil {
+		return errors.New(ue.Message)
+	}
+	return nil
 }
 
 // Invalidations returns how many Observation-driven refreshes ran.
@@ -218,6 +233,14 @@ func (c *UIComponent) OnObservation(handler func(UIObservation)) (func() error, 
 		return nil, errors.New("ui: observation bridge not active")
 	}
 	return c.bridge.on(handler)
+}
+
+// SetObservationSink switches observation delivery to the production sink
+// (real Wails EventsEmit). The in-process bridge remains a test adapter.
+func (c *UIComponent) SetObservationSink(sink ObservationSink) {
+	c.mu.Lock()
+	c.sink = sink
+	c.mu.Unlock()
 }
 
 // Observations returns the observation events seen since activation (Wails

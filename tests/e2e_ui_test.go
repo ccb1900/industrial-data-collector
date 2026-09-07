@@ -62,16 +62,15 @@ func TestUIE2EQueryObservationCommandLoop(t *testing.T) {
 	}
 
 	// UI -> Application Command (U-10/U-18). This is what a React button would
-	// call; it never touches the Executor.
+	// call; it never touches the Executor. The command is accepted asynchronously.
 	if err := ui.TriggerCollection(ctx, model.CollectionRequested{Reason: "ui", Date: ptrD(cfgDate(t, "2026-09-06"))}); err != nil {
 		t.Fatalf("UI command: %v", err)
 	}
-	if got := rows(h, "store"); got != 2 {
-		t.Fatalf("rows = %d, want 2", got)
-	}
-	if ui.Invalidations() < 1 {
-		t.Fatalf("UI invalidations = %d, want >= 1 (U-06 observation)", ui.Invalidations())
-	}
+	waitFor(t, "collection converged in UI snapshot", func() bool {
+		s := ui.Snapshot()
+		return rows(h, "store") == 2 && ui.Invalidations() >= 1 &&
+			len(s.Collections) == 1 && s.Collections[0].Status == "Succeeded"
+	})
 	snap := ui.Snapshot()
 	if len(snap.Collections) != 1 {
 		t.Fatalf("UI collections = %d, want 1 (U-05 query)", len(snap.Collections))
@@ -140,4 +139,18 @@ func TestUIE2EPluginIsolation(t *testing.T) {
 	if got := rows(h, "store"); got != 3 {
 		t.Fatalf("rows after UI unload = %d, want 3 (U-08 isolation)", got)
 	}
+}
+
+// waitFor polls until cond is true. UI commands are accepted asynchronously,
+// so tests must wait for the Application to converge before asserting state.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

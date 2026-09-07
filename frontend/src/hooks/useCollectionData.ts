@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api/client";
+import { queries } from "../api/client";
 import { UICollection, UIFile, UISource } from "../models/types";
 
 export interface CollectionData {
@@ -23,12 +23,12 @@ export function useCollectionData(): CollectionData {
   const refresh = useCallback(async () => {
     try {
       const [srcs, cols] = await Promise.all([
-        api.listSources(),
-        api.listCollections(),
+        queries.listSources(),
+        queries.listCollections(),
       ]);
       const last = cols.length > 0 ? cols[cols.length - 1] : undefined;
       const fs = last
-        ? await api.listFiles({ sourceId: last.sourceId, date: last.date })
+        ? await queries.listFiles({ sourceId: last.sourceId, date: last.date })
         : [];
       setSources(srcs);
       setCollections(cols);

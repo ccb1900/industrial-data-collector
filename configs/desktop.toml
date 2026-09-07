@@ -1,0 +1,63 @@
+# Desktop (Wails) configuration for cmd/collector-ui.
+# UI commands (TriggerCollection) drive the Collector through the
+# CollectionRequested Runtime Event; a Scheduler component is optional.
+
+[[components]]
+id = "production-source"
+type = "local-file-source"
+
+[components.config]
+root = "./data/production"
+pattern = "*.csv"
+file_stable_window_seconds = 0
+
+[[components]]
+id = "csv-parser"
+type = "csv-parser"
+
+[components.config]
+header = true
+
+[[components]]
+id = "memory-storage"
+type = "memory-storage"
+
+[[components]]
+id = "collection-state"
+type = "memory-state"
+
+[[components]]
+id = "production-metadata"
+type = "path-metadata"
+
+[components.config]
+
+[[components.config.sources]]
+source = "production-source"
+root = "./data/production"
+
+[[components.config.sources.metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.csv"
+required = true
+
+[[components]]
+id = "production-collector"
+type = "csv-collector"
+
+[components.config]
+source = "production-source"
+parser = "csv-parser"
+storage = "memory-storage"
+state = "collection-state"
+date_policy = "yesterday"
+batch_size = 1000
+
+[[components]]
+id = "query-provider"
+type = "query-provider"
+
+[[components]]
+id = "ui"
+type = "ui"

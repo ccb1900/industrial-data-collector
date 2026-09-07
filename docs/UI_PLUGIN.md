@@ -136,3 +136,50 @@ React Trigger -> Host.TriggerCollection -> CollectionCommand capability
 
 Dashboard/charts, Wails main binary and generated JS bindings (needs a Wails
 toolchain), `npm` build/test, and any multi-UI-plugin registry.
+
+## Batch 2.1 — Real Wails Desktop Host (P2.1)
+
+P2.1 wires the existing Host/DTO/Query/Command/Observation Contracts to the real
+Wails Desktop Runtime (commit target per P2.1 spec).
+
+### Production Observation path
+
+```text
+Application -> UI Plugin Observation -> ObservationSink
+  -> cmd/collector-ui (Wails) -> runtime.EventsEmit("observation", UIObservation)
+  -> React EventsOn("observation") -> invalidate -> Query
+```
+
+- `plugins/ui`: new `ObservationSink` interface. The UI Component calls
+  `SetObservationSink(sink)` for the production path; the old
+  `observationBridge` remains a test adapter only (spec P2.1 §25).
+- Event name fixed: `observation`. Payload stays the minimal `UIObservation`
+  (type/sourceId/timestamp) — never full state.
+- Command is asynchronous: `Host.TriggerCollection` submits via the
+  CollectionCommand capability and returns "accepted"; completion arrives
+  through Observation/Query (tests poll; no UI polling).
+- `cmd/collector-ui/` — real Wails Application Host as a SEPARATE nested Go
+  module (so Wails never leaks into the core module):
+  `main -> apphost.New -> config Reconcile (Runtime+Plugins+UI) -> find ui
+  component -> App{ui.Host} -> wails.Run`; `App` only forwards Query/Command
+  and emits observations; it never touches Collector/Storage/Executor.
+- `frontend/` api layer split into `queries.ts`, `commands.ts`, `events.ts`
+  behind `transport.ts`; components only import `api`.
+
+### P2.1 acceptance mapping (Go-verifiable part)
+
+| P2.1 | Evidence |
+| --- | --- |
+| 01/02 Real Wails Host + Binding | `cmd/collector-ui` (separate module; needs Wails toolchain) |
+| 03 Query Bridge | Host methods -> app/query (tests) |
+| 04 Command Bridge (async) | `Host.TriggerCollection` accepts; `TestP21ProductionSinkAndAsyncCommand` |
+| 05/06 Real Observation + React listener | `ObservationSink` + `EventsEmit("observation")` in cmd; frontend `EventsOn` |
+| 07 DTO / 08 Error boundary | `dto.go` camelCase; `UIError` (tests) |
+| 09/10/11 Effect cleanup + isolation | `TestP21ProductionSinkAndAsyncCommand` (unload releases sink, Collector keeps running) |
+| 12 Dynamic Metadata | frontend `metadataEntries` + `metadata.test.ts` |
+| 13/14 frontend build/test | `npm run build` + `npm test` pass (this env) |
+| 15/16..20 Desktop startup/E2E | requires GUI + `wails generate`; not runnable in this headless sandbox |
+
+Not runnable here: `wails generate`, desktop window startup, and the real
+browser E2E (no display; Wails module deps unavailable offline). The Go side of
+the same loop is covered in-process (`TestP21ProductionSinkAndAsyncCommand`).

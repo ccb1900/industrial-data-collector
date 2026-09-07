@@ -60,6 +60,8 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `app/query/query_test.go` | read model/observation unit tests | views from events, failures, subscribe/publish/feed |
 | `tests/e2e_ui_test.go` | `TestUIE2EQueryObservationCommandLoop`, `TestUIE2EPluginIsolation` | UI Command -> Event -> Collector -> Query -> Observation -> UI view; UI unload isolation |
 | `tests/e2e_ui_p2_test.go` | `TestUIP2HostBridgeFullLoop`, `TestUIP2ErrorBoundary`, `TestUIP2Isolation` | Wails/React host bridge: Query DTOs, Observation listener, Command, error boundary, isolation |
+| `tests/e2e_p21_test.go` | `TestP21ProductionSinkAndAsyncCommand` | production ObservationSink, async command acceptance, unload releases sink, Collector isolation |
+| `frontend` | `npm run build`, `npm test` | PASS in this environment (tsc+vite; vitest 2 tests); desktop E2E needs GUI/Wails toolchain |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

@@ -58,9 +58,10 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-06", Reason: "p2"}); ue != nil {
 		t.Fatalf("trigger: %#v", ue)
 	}
-	if got := rows(h, "store"); got != 2 {
-		t.Fatalf("rows = %d, want 2", got)
-	}
+	waitFor(t, "first collection converged", func() bool {
+		cols, e := adapter.ListCollections()
+		return e == nil && len(cols) == 1 && cols[0].Status == "Succeeded" && rows(h, "store") == 2
+	})
 	if observed.Load() < 1 {
 		t.Fatalf("react listener saw %d observations, want >= 1", observed.Load())
 	}
@@ -106,6 +107,11 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-07", Reason: "p2"}); ue != nil {
 		t.Fatalf("trigger2: %#v", ue)
 	}
+	waitFor(t, "second collection observed and queryable", func() bool {
+		cs, e := adapter.ListCollections()
+		fs, fe := adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "2026-09-07"})
+		return observed.Load() > before && e == nil && len(cs) == 2 && fe == nil && len(fs) == 1 && fs[0].Metadata["product"] == "product-B"
+	})
 	if observed.Load() <= before {
 		t.Fatalf("listener did not observe the second run (before=%d after=%d)", before, observed.Load())
 	}
@@ -124,6 +130,7 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-08", Reason: "p2"}); ue != nil {
 		t.Fatalf("trigger3: %#v", ue)
 	}
+	waitFor(t, "third collection stored", func() bool { return rows(h, "store") == 5 })
 	if observed.Load() != after {
 		t.Fatalf("listener still called after unsubscribe")
 	}

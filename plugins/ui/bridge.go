@@ -109,11 +109,34 @@ func (h *Host) GetFileMetadata(req UIFileRequest) (map[string]string, *UIError) 
 // Command Bridge ---------------------------------------------------------------
 
 // TriggerCollection forwards the UI command to the Application CollectionCommand
-// capability. It never calls a Collector Executor.
+// capability. It never calls a Collector Executor. The command is accepted
+// (returned synchronously) and runs asynchronously: UI observes progress
+// through Observation/Query, never by blocking the RPC on the whole run.
 func (h *Host) TriggerCollection(req UITriggerRequest) *UIError {
 	if h.command == nil {
 		return uiErr(errs.Sourcef(errs.ErrDependency, "collection command unavailable"))
 	}
+	cr, ue := toCollectionRequest(req)
+	if ue != nil {
+		return ue
+	}
+	return h.submit(cr)
+}
+
+// submit accepts an Application command and returns immediately. Later state
+// (CollectionStarted/FileCompleted/CollectionCompleted/CollectionFailed)
+// reaches UI through Observation and Query.
+func (h *Host) submit(req query.CollectionRequest) *UIError {
+	if err := h.ctx().Err(); err != nil {
+		return uiErr(err)
+	}
+	go func() {
+		_ = h.command.TriggerCollection(h.ctx(), req)
+	}()
+	return nil
+}
+
+func toCollectionRequest(req UITriggerRequest) (query.CollectionRequest, *UIError) {
 	cr := model.CollectionRequested{Reason: req.Reason}
 	if cr.Reason == "" {
 		cr.Reason = "ui"
@@ -121,14 +144,11 @@ func (h *Host) TriggerCollection(req UITriggerRequest) *UIError {
 	if req.Date != "" {
 		var d model.CollectionDate
 		if err := d.UnmarshalText([]byte(req.Date)); err != nil {
-			return uiErr(errs.Sourcef(errs.ErrInvalidConfig, "invalid date %q", req.Date))
+			return cr, uiErr(errs.Sourcef(errs.ErrInvalidConfig, "invalid date %q", req.Date))
 		}
 		cr.Date = &d
 	}
-	if err := h.command.TriggerCollection(h.ctx(), cr); err != nil {
-		return uiErr(err)
-	}
-	return nil
+	return cr, nil
 }
 
 // Error boundary ---------------------------------------------------------------

@@ -127,8 +127,10 @@ identity, so rule changes do not cause re-collection. See
 - `type`: `ui`. No config keys in v0.1. Registers the UI Host composition
   (pages/panels), subscribes Observation, and exposes the UI Host Adapter
   (`Host`: Query/Command forwarding + `UIObservation` events). A minimal
-  React host scaffold lives in `frontend/` (needs `wails generate` + `npm
-  install`; not built in this environment).
+  A React host scaffold lives in `frontend/` (npm build/test pass here). The
+  real desktop host is `cmd/collector-ui` with `configs/desktop.toml` (separate
+  Go module; needs a Wails toolchain). Observation event name is fixed to
+  `observation`.
 
 ## Collector
 
