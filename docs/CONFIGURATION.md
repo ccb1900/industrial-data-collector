@@ -31,17 +31,22 @@ semantics, schedule/time syntax, date policy, and positive batch size.
 
 ## Metadata
 
-Each source has one `path-metadata` component that provides the
-`MetadataExtractor` capability to the Collector.
+One `path-metadata` component per Runtime Realm provides the single
+`MetadataExtractor` capability to the Collector. It aggregates the metadata
+rule sets of every source: rules stay per-source (`sources` array, each entry
+bound to one source component) and are never global and never placed on the
+Collector. The extractor internally routes by `FileIdentity.SourceID`.
 
 - `type`: `path-metadata`.
-- `source`: the component ID of the source whose layout this component
-  interprets.
-- `metadata`: array of rule tables. A rule produces exactly one business key.
+- `sources`: array of per-source tables:
+  - `source`: the component ID of the source whose layout this entry
+    interprets.
+  - `root`: must equal that source component's `root`.
+  - `metadata`: array of rule tables. A rule produces exactly one business key.
 
 Rule fields:
 
-- `name`: metadata key, `[A-Za-z_][A-Za-z0-9_]*`, unique per component.
+- `name`: metadata key, `[A-Za-z_][A-Za-z0-9_]*`, unique per source entry.
 - `from`: `path` (source-root-relative path) or `filename` (`FileIdentity.Name`).
 - `pattern`: `/`-separated template; segments contain literal text, `{field}`
   captures, and `*` wildcards. The rule's own `name` must appear as a capture.
@@ -54,23 +59,34 @@ id = "production-metadata"
 type = "path-metadata"
 
 [components.config]
-source = "production-source"
 
-[[components.config.metadata]]
+[[components.config.sources]]
+source = "source-a"
+root = "./data/a"
+
+[[components.config.sources.metadata]]
 name = "line"
 from = "path"
 pattern = "{line}/{station}/{date}/*.csv"
 required = true
 
-[[components.config.metadata]]
+[[components.config.sources]]
+source = "source-b"
+root = "./data/b"
+
+[[components.config.sources.metadata]]
 name = "product"
-from = "filename"
-pattern = "{product}.csv"
+from = "path"
+pattern = "{product}/{batch}/{date}.csv"
 required = true
 ```
 
-Metadata never participates in file identity, so rule changes do not cause
-re-collection. See [`docs/METADATA.md`](METADATA.md).
+Different sources may use completely different directory layouts and rule sets;
+all of them are served by the same single `MetadataExtractor` Provider. There
+is never one provider per source, and the Collector only ever depends on the
+one `MetadataExtractor` capability. Metadata never participates in file
+identity, so rule changes do not cause re-collection. See
+[`docs/METADATA.md`](METADATA.md).
 
 ## Parser
 

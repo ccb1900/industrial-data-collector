@@ -9,6 +9,7 @@ import (
 	"dynamic-runtime/extensions/configwatch"
 
 	appconfig "gocordis-csv-collector/app/config"
+	appmetadata "gocordis-csv-collector/app/metadata"
 )
 
 // TestSampleConfigsParseAndValidate keeps every shipped TOML example valid:
@@ -28,6 +29,22 @@ func TestSampleConfigsParseAndValidate(t *testing.T) {
 			}
 			if err := appconfig.Validate(parsed); err != nil {
 				t.Fatal(err)
+			}
+			if name == "example.toml" {
+				// Guard against the config shape silently losing rules: the
+				// example must still parse into per-source rule sets.
+				for _, cc := range parsed.Components {
+					if cc.ID != "production-metadata" {
+						continue
+					}
+					sets, err := appmetadata.ParseSourceConfig(cc.Config["sources"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(sets) != 1 || len(sets[0].Rules) == 0 {
+						t.Fatalf("example metadata rules must be parsed: %#v", sets)
+					}
+				}
 			}
 		})
 	}

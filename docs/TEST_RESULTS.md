@@ -24,6 +24,9 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `app/model/model_test.go` | `TestCollectionKeyAndFileIdentityStable` | collection key/file identity |
 | `app/model/model_test.go` | `TestM11MetadataNeverParticipatesInFileIdentity` | metadata is excluded from file identity |
 | `app/metadata/metadata_test.go` | M-01..M-10 matcher/config acceptance tests | filename/single/multi-directory/Windows/UNC/root-relative/required/optional/duplicate/mismatch |
+| `app/metadata/metadata_test.go` | M-MULTI-01..04 engine tests | one extractor serves many sources, reload/invalid isolation, identity, unconfigured source |
+| `plugins/metadata/metadata_test.go` | `TestMMulti05SingleProviderServesTwoSources` | one Realm, one MetadataExtractor provider, two source rule sets |
+| `plugins/collector/collector_test.go` | `TestCollectorDeclaresSingleMetadataDependency` | Collector depends on one MetadataExtractor capability |
 | `app/date/policy_test.go` | `TestYesterdayPolicy`, `TestSpecificPolicy`, `TestUnknownPolicyRejected` | date policies |
 | `app/errs/errors_test.go` | `TestClassifySourceError` | source error classes |
 | `app/parser/parser_test.go` | `TestParseHeadersQuotesCommasAndLineEndings`, `TestParseWithoutHeader`, `TestParseMalformed` | streaming CSV parsing |
@@ -32,7 +35,7 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `app/storage/memory_test.go` | `TestMemoryStoreIdempotent`, `TestMemoryStoreBatchFailureIsRetryable` | idempotent batch writes |
 | `app/storage/sql_test.go` | `TestSQLStoreOpenWriteCloseForDialects` | MySQL/PostgreSQL/Oracle open/write/close SQL paths against a fake driver |
 | `app/recovery/planner_test.go` | `TestPlannerFindsKnownAndCalendarGaps` | known rows plus calendar gap planning |
-| `app/config/validate_test.go` | `TestValidateAcceptCompleteConfig`, `TestValidateRejectsMissingReference`, `TestValidateRejectsWrongReferenceKind`, `TestValidateRejectsBadScheduleAndBatch`, `TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues` | config validation before Runtime mutation |
+| `app/config/validate_test.go` | `TestValidateAcceptCompleteConfig`, `TestValidateRejectsMissingReference`, `TestValidateRejectsWrongReferenceKind`, `TestValidateRejectsBadScheduleAndBatch`, `TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues`, `TestValidateAcceptsMultipleSourcesWithOwnRules`, `TestValidateRejectsOneSourceLeavesOtherValid` | config validation before Runtime mutation, multi-source metadata |
 | `app/collector/executor_test.go` | `TestCollectorStoresFilesAndIsIdempotent`, `TestCollectorPartialFileFailureSkipsCompletedFiles`, `TestMissingDirectoryStaysPending`, `TestCollectorStorageFailureIsolation` | executor semantics |
 | `app/collector/executor_test.go` | `TestCollectorMetadataPropagatesToBatchesAndResult`, `TestCollectorMetadataErrorIsFileLevelFailure` | metadata to Batch/FileResult propagation and error isolation |
 

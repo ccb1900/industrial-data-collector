@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	"gocordis-csv-collector/app/errs"
+	"gocordis-csv-collector/app/model"
 )
 
 // Source selects which FileIdentity input a MetadataRule reads from.
@@ -102,6 +103,48 @@ func parseRule(m map[string]any) (Rule, error) {
 		required = b
 	}
 	return Rule{Name: name, From: from, Pattern: pattern, Required: required}, nil
+}
+
+// ParseSourceConfig decodes the raw configuration value of a path-metadata
+// component: an array of per-source tables, each carrying the source id, the
+// source root used for root-relative path rules, and that source's metadata
+// rules. Multiple sources may declare completely different rule sets; all of
+// them end up in the single MetadataExtractor Provider (M-MULTI).
+func ParseSourceConfig(raw any) ([]SourceRuleSet, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: metadata sources must be an array of tables", errs.ErrInvalidConfig)
+	}
+	sets := make([]SourceRuleSet, 0, len(list))
+	seen := make(map[model.SourceID]bool, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: metadata source #%d is not a table", errs.ErrInvalidConfig, i)
+		}
+		sourceRaw, ok := mapString(m, "source")
+		if !ok || sourceRaw == "" {
+			return nil, fmt.Errorf("%w: metadata source #%d: missing string field %q", errs.ErrInvalidConfig, i, "source")
+		}
+		sid := model.SourceID(sourceRaw)
+		if seen[sid] {
+			return nil, fmt.Errorf("%w: duplicate metadata rule set for source %q", errs.ErrInvalidConfig, sid)
+		}
+		seen[sid] = true
+		root, _ := mapString(m, "root")
+		rules, err := ParseRules(m["metadata"])
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, SourceRuleSet{SourceID: sid, Root: root, Rules: rules})
+	}
+	if _, err := NewExtractor(sets...); err != nil {
+		return nil, fmt.Errorf("%w: %v", errs.ErrInvalidConfig, err)
+	}
+	return sets, nil
 }
 
 func mapString(m map[string]any, key string) (string, bool) {

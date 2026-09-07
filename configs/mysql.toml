@@ -60,4 +60,7 @@ id = "production-metadata"
 type = "path-metadata"
 
 [components.config]
+
+[[components.config.sources]]
 source = "production-source"
+root = "./data/production"

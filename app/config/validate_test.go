@@ -10,6 +10,26 @@ func component(id, typ string, cfg map[string]any) extconfig.ComponentConfig {
 	return extconfig.ComponentConfig{ID: id, Type: typ, Config: cfg}
 }
 
+func rule(name, from, pattern string, required bool) map[string]any {
+	return map[string]any{"name": name, "from": from, "pattern": pattern, "required": required}
+}
+
+func metadataEntry(source, root string, rules ...any) map[string]any {
+	m := map[string]any{"source": source, "root": root}
+	if len(rules) > 0 {
+		m["metadata"] = rules
+	}
+	return m
+}
+
+func metadataConfig(entries ...map[string]any) map[string]any {
+	arr := make([]any, 0, len(entries))
+	for _, e := range entries {
+		arr = append(arr, e)
+	}
+	return map[string]any{"sources": arr}
+}
+
 func validConfig() extconfig.Config {
 	return extconfig.Config{Components: []extconfig.ComponentConfig{
 		component("src", "local-file-source", map[string]any{"root": "/data", "file_stable_window_seconds": 0}),
@@ -17,7 +37,7 @@ func validConfig() extconfig.Config {
 		component("store", "memory-storage", map[string]any{}),
 		component("state", "memory-state", map[string]any{}),
 		component("sched", "scheduler", map[string]any{"schedule": "daily", "time": "02:00"}),
-		component("meta", "path-metadata", map[string]any{"source": "src"}),
+		component("meta", "path-metadata", metadataConfig(metadataEntry("src", "/data"))),
 		component("col", "csv-collector", map[string]any{
 			"source": "src", "parser": "parser", "storage": "store", "state": "state",
 			"date_policy": "yesterday", "batch_size": 100,
@@ -85,64 +105,102 @@ func TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues(t *testing.T) {
 
 func TestValidateAcceptsMetadataRules(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[5].Config["metadata"] = []any{
-		map[string]any{"name": "line", "from": "path", "pattern": "{line}/{station}/*.csv", "required": true},
-		map[string]any{"name": "station", "from": "path", "pattern": "{line}/{station}/*.csv"},
-		map[string]any{"name": "product", "from": "filename", "pattern": "{product}.csv"},
-	}
+	cfg.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
+		rule("line", "path", "{line}/{station}/*.csv", true),
+		rule("station", "path", "{line}/{station}/*.csv", true),
+		rule("product", "filename", "{product}.csv", true),
+	))
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("valid metadata rules rejected: %v", err)
 	}
 }
 
+func TestValidateAcceptsMultipleSourcesWithOwnRules(t *testing.T) {
+	cfg := extconfig.Config{Components: []extconfig.ComponentConfig{
+		component("src-a", "local-file-source", map[string]any{"root": "/data/a", "file_stable_window_seconds": 0}),
+		component("src-b", "local-file-source", map[string]any{"root": "/data/b", "file_stable_window_seconds": 0}),
+		component("parser", "csv-parser", map[string]any{"header": true}),
+		component("store", "memory-storage", map[string]any{}),
+		component("state", "memory-state", map[string]any{}),
+		component("sched", "scheduler", map[string]any{"schedule": "daily", "time": "02:00"}),
+		component("meta", "path-metadata", metadataConfig(
+			metadataEntry("src-a", "/data/a",
+				rule("line", "path", "{line}/{station}/{date}/*.csv", true),
+				rule("station", "path", "{line}/{station}/{date}/*.csv", true),
+			),
+			metadataEntry("src-b", "/data/b",
+				rule("product", "path", "{product}/{batch}/{date}.csv", true),
+			),
+		)),
+		component("col", "csv-collector", map[string]any{
+			"source": "src-a", "parser": "parser", "storage": "store", "state": "state",
+			"date_policy": "yesterday", "batch_size": 100,
+		}),
+	}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("two sources with independent metadata rule sets must be accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsMetadataConfigErrors(t *testing.T) {
-	ruleCfg := func(rules ...any) map[string]any {
-		return map[string]any{"source": "src", "metadata": rules}
-	}
-	withRule := func(r map[string]any) map[string]any {
-		return ruleCfg(map[string]any{
-			"name": "line", "from": "path", "pattern": "{line}/{station}/*.csv", "required": true,
-		}, r)
-	}
 	cases := []struct {
 		name   string
 		mutate func(extconfig.Config) extconfig.Config
 	}{
 		{
-			"duplicate key",
+			"duplicate key within one source",
 			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = ruleCfg(
-					map[string]any{"name": "line", "from": "path", "pattern": "{line}/*.csv"},
-					map[string]any{"name": "line", "from": "filename", "pattern": "{line}.csv"},
-				)
+				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
+					rule("line", "path", "{line}/*.csv", true),
+					rule("line", "filename", "{line}.csv", true),
+				))
 				return c
 			},
 		},
 		{
 			"bad from value",
 			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = ruleCfg(map[string]any{"name": "line", "from": "content", "pattern": "{line}/*.csv"})
+				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
+					rule("line", "content", "{line}/*.csv", true)))
 				return c
 			},
 		},
 		{
 			"rule key missing from pattern",
 			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = ruleCfg(map[string]any{"name": "station", "from": "path", "pattern": "{line}/*.csv"})
+				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
+					rule("station", "path", "{line}/*.csv", true)))
 				return c
 			},
 		},
 		{
-			"missing source reference",
+			"entry missing source reference",
 			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = map[string]any{}
+				c.Components[5].Config = metadataConfig(map[string]any{"root": "/data"})
 				return c
 			},
 		},
 		{
 			"source reference is not a source",
 			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = map[string]any{"source": "store"}
+				c.Components[5].Config = metadataConfig(metadataEntry("store", "/data"))
+				return c
+			},
+		},
+		{
+			"source root mismatch",
+			func(c extconfig.Config) extconfig.Config {
+				c.Components[5].Config = metadataConfig(metadataEntry("src", "/other"))
+				return c
+			},
+		},
+		{
+			"duplicate source entry",
+			func(c extconfig.Config) extconfig.Config {
+				c.Components[5].Config = metadataConfig(
+					metadataEntry("src", "/data"),
+					metadataEntry("src", "/data"),
+				)
 				return c
 			},
 		},
@@ -158,7 +216,6 @@ func TestValidateRejectsMetadataConfigErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := tc.mutate(validConfig())
-			_ = withRule // keep helper referenced for clarity
 			if err := Validate(cfg); err == nil {
 				t.Fatal("invalid metadata configuration must be rejected")
 			}
@@ -166,12 +223,36 @@ func TestValidateRejectsMetadataConfigErrors(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsOneSourceLeavesOtherValid verifies M-MULTI-03 at config
+// level: an invalid rule set for one source is rejected, while the previous
+// valid multi-source configuration remains accepted (old config stays valid).
+func TestValidateRejectsOneSourceLeavesOtherValid(t *testing.T) {
+	cfg := validConfig()
+	cfg.Components[5].Config = metadataConfig(
+		metadataEntry("src", "/data",
+			rule("line", "path", "{line}/*.csv", true),
+			rule("line", "filename", "{line}.csv", true),
+		),
+		metadataEntry("other", "/data",
+			rule("product", "filename", "{product}.csv", true),
+		),
+	)
+	// The invalid source makes the whole desired config invalid...
+	if err := Validate(cfg); err == nil {
+		t.Fatal("invalid rule set for one source must be rejected")
+	}
+	// ...and the previous valid configuration is unaffected.
+	if err := Validate(validConfig()); err != nil {
+		t.Fatalf("previous valid config must stay valid: %v", err)
+	}
+}
+
 func TestValidateRejectsMoreThanOneMetadataComponent(t *testing.T) {
 	cfg := validConfig()
 	cfg.Components = append(cfg.Components,
-		component("meta2", "path-metadata", map[string]any{"source": "src"}))
+		component("meta2", "path-metadata", metadataConfig(metadataEntry("src", "/data"))))
 	if err := Validate(cfg); err == nil {
-		t.Fatal("multiple path-metadata components must be rejected in v0.1")
+		t.Fatal("multiple path-metadata components must be rejected (one provider per Realm)")
 	}
 }
 

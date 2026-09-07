@@ -16,7 +16,7 @@ func file(path, name string) model.FileIdentity {
 
 func mustExtract(t *testing.T, root string, rules []Rule, f model.FileIdentity) model.Metadata {
 	t.Helper()
-	ex, err := NewExtractor(root, rules)
+	ex, err := NewExtractor(SourceRuleSet{SourceID: f.SourceID, Root: root, Rules: rules})
 	if err != nil {
 		t.Fatalf("NewExtractor: %v", err)
 	}
@@ -112,9 +112,9 @@ func TestM06RootRelativePatternHasNoDriveOrRoot(t *testing.T) {
 }
 
 func TestM07RequiredMissingReturnsError(t *testing.T) {
-	ex, err := NewExtractor("/factory", []Rule{
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "prod", Root: "/factory", Rules: []Rule{
 		{Name: "line", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +152,9 @@ func TestM09DuplicateKeyRejected(t *testing.T) {
 }
 
 func TestM10PatternMismatchIsExplicit(t *testing.T) {
-	ex, err := NewExtractor("/factory", []Rule{
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "prod", Root: "/factory", Rules: []Rule{
 		{Name: "line", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +166,9 @@ func TestM10PatternMismatchIsExplicit(t *testing.T) {
 }
 
 func TestRuleValueNeverEmpty(t *testing.T) {
-	ex, err := NewExtractor("", []Rule{
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "prod", Root: "", Rules: []Rule{
 		{Name: "product", From: SourceFilename, Pattern: "pre{product}.csv", Required: true},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,9 +178,9 @@ func TestRuleValueNeverEmpty(t *testing.T) {
 }
 
 func TestFileOutsideRootIsExtractionError(t *testing.T) {
-	ex, err := NewExtractor("/factory", []Rule{
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "prod", Root: "/factory", Rules: []Rule{
 		{Name: "line", From: SourcePath, Pattern: "{line}/*.csv", Required: false},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,5 +269,172 @@ func TestParseRulesAcceptsOptionalAndNil(t *testing.T) {
 	}
 	if rules[0].Required {
 		t.Fatal("required=false must be honored")
+	}
+}
+
+// --- M-MULTI: one MetadataExtractor serving many sources -------------------
+
+func srcFile(sid string, path, name string) model.FileIdentity {
+	return model.FileIdentity{SourceID: model.SourceID(sid), Path: path, Name: name}
+}
+
+func TestMMulti01TwoSourcesDifferentLayouts(t *testing.T) {
+	sets := []SourceRuleSet{
+		{SourceID: "source-a", Root: "/data/a", Rules: []Rule{
+			{Name: "line", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
+			{Name: "station", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
+			{Name: "product", From: SourcePath, Pattern: "{line}/{station}/{product}.csv", Required: true},
+		}},
+		{SourceID: "source-b", Root: "/data/b", Rules: []Rule{
+			{Name: "product", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+			{Name: "batch", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+			{Name: "date", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+		}},
+	}
+	ex, err := NewExtractor(sets...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdA, err := ex.Extract(context.Background(), srcFile("source-a", "/data/a/line-A/station-01/product-A.csv", "product-A.csv"))
+	if err != nil {
+		t.Fatalf("source A extraction: %v", err)
+	}
+	wantA := map[string]string{"line": "line-A", "station": "station-01", "product": "product-A"}
+	for k, w := range wantA {
+		if got, _ := mdA.Get(k); got != w {
+			t.Fatalf("source A %s = %q, want %q", k, got, w)
+		}
+	}
+	mdB, err := ex.Extract(context.Background(), srcFile("source-b", "/data/b/product-B/batch-001/2026-09-07.csv", "2026-09-07.csv"))
+	if err != nil {
+		t.Fatalf("source B extraction: %v", err)
+	}
+	wantB := map[string]string{"product": "product-B", "batch": "batch-001", "date": "2026-09-07"}
+	for k, w := range wantB {
+		if got, _ := mdB.Get(k); got != w {
+			t.Fatalf("source B %s = %q, want %q", k, got, w)
+		}
+	}
+	if mdA.Has("batch") || mdB.Has("station") {
+		t.Fatal("rule sets of different sources must not leak into each other")
+	}
+}
+
+func TestMMulti02ReloadOneSourceLeavesOtherUntouched(t *testing.T) {
+	rulesB := []Rule{
+		{Name: "batch", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+	}
+	ex1, err := NewExtractor(
+		SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: []Rule{
+			{Name: "product", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+		}},
+		SourceRuleSet{SourceID: "source-b", Root: "/data/b", Rules: rulesB},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileB := srcFile("source-b", "/data/b/product-B/batch-001/2026-09-07.csv", "2026-09-07.csv")
+	mdB1, err := ex1.Extract(context.Background(), fileB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Source A metadata reload: rule set for A changes completely.
+	ex2, err := NewExtractor(
+		SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: []Rule{
+			{Name: "area", From: SourcePath, Pattern: "{area}/*.csv", Required: true},
+		}},
+		SourceRuleSet{SourceID: "source-b", Root: "/data/b", Rules: rulesB},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdB2, err := ex2.Extract(context.Background(), fileB)
+	if err != nil {
+		t.Fatalf("source B must keep working after source A reload: %v", err)
+	}
+	if !mdB1.Equal(mdB2) {
+		t.Fatalf("source B metadata changed after source A reload: %#v -> %#v", mdB1.Values, mdB2.Values)
+	}
+}
+
+func TestMMulti03InvalidOneSourceDoesNotAffectOthers(t *testing.T) {
+	rulesA := []Rule{
+		{Name: "line", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
+		{Name: "station", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
+	}
+	rulesB := []Rule{
+		{Name: "batch", From: SourcePath, Pattern: "{product}/{batch}/{date}.csv", Required: true},
+	}
+	ex, err := NewExtractor(
+		SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: rulesA},
+		SourceRuleSet{SourceID: "source-b", Root: "/data/b", Rules: rulesB},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Invalid desired config for source A is rejected at build time...
+	invalidA := append([]Rule(nil), rulesA...)
+	invalidA = append(invalidA, Rule{Name: "line", From: SourcePath, Pattern: "{line}/*.csv", Required: true})
+	if _, err := NewExtractor(
+		SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: invalidA},
+		SourceRuleSet{SourceID: "source-b", Root: "/data/b", Rules: rulesB},
+	); err == nil {
+		t.Fatal("invalid rule set for source A must be rejected")
+	}
+	// ...and the old valid extractor still serves source B.
+	md, err := ex.Extract(context.Background(), srcFile("source-b", "/data/b/product-B/batch-001/x.csv", "x.csv"))
+	if err != nil {
+		t.Fatalf("source B must keep working: %v", err)
+	}
+	if got, _ := md.Get("batch"); got != "batch-001" {
+		t.Fatalf("batch = %q", got)
+	}
+}
+
+func TestMMulti04ExtractionDoesNotChangeFileIdentity(t *testing.T) {
+	f := srcFile("source-a", "/data/a/line-A/station-01/product-A.csv", "product-A.csv")
+	base := f.Identity()
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: []Rule{
+		{Name: "line", From: SourcePath, Pattern: "{line}/{station}/*.csv", Required: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := ex.Extract(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Identity() != base {
+		t.Fatal("extraction must never change FileIdentity.Identity()")
+	}
+	fd := model.FileDescriptor{Identity: f, Metadata: md}
+	if fd.Identity.Identity() != base {
+		t.Fatal("FileDescriptor identity must ignore metadata")
+	}
+}
+
+func TestUnconfiguredSourceYieldsEmptyMetadata(t *testing.T) {
+	ex, err := NewExtractor(SourceRuleSet{SourceID: "source-a", Root: "/data/a", Rules: []Rule{
+		{Name: "line", From: SourcePath, Pattern: "{line}/*.csv", Required: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Source b has no configured rule set: v0.1 semantics = empty, no error.
+	md, err := ex.Extract(context.Background(), srcFile("source-b", "/data/b/anything.csv", "anything.csv"))
+	if err != nil {
+		t.Fatalf("unconfigured source must not error: %v", err)
+	}
+	if md.Len() != 0 {
+		t.Fatalf("unconfigured source must yield empty metadata: %#v", md.Values)
+	}
+}
+
+func TestDuplicateSourceRuleSetRejected(t *testing.T) {
+	if _, err := NewExtractor(
+		SourceRuleSet{SourceID: "source-a", Root: "/a"},
+		SourceRuleSet{SourceID: "source-a", Root: "/a"},
+	); err == nil {
+		t.Fatal("duplicate rule set for one source must be rejected")
 	}
 }

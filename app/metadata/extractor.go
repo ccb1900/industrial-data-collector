@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -9,38 +10,69 @@ import (
 	"gocordis-csv-collector/app/model"
 )
 
-// Extractor implements model.MetadataExtractor from a configured source root
-// and a validated rule set. Extraction is a pure computation: it never stats,
-// opens, or re-reads the input file.
+// SourceRuleSet binds one validated metadata rule set to one application
+// source. SourceID must equal the FileIdentity.SourceID of files produced by
+// that source; Root is the source root used to make from="path" patterns
+// root-relative.
+type SourceRuleSet struct {
+	SourceID model.SourceID
+	Root     string
+	Rules    []Rule
+}
+
+// Extractor implements model.MetadataExtractor. One Extractor serves any
+// number of sources: Extract selects the rule set registered for
+// file.SourceID and never lets one source's rules leak into another source.
+//
+// A file whose SourceID has no registered rule set gets empty metadata, which
+// is the v0.1 semantics for a source without configured metadata rules (no
+// new error class is introduced).
 type Extractor struct {
+	sets map[model.SourceID]*sourceSet
+}
+
+type sourceSet struct {
 	root  string
 	rules []*compiledRule
 }
 
-// NewExtractor compiles rules for files under root. root is the source root
-// used to compute root-relative paths for from="path" rules.
-func NewExtractor(root string, rules []Rule) (*Extractor, error) {
-	compiled, err := compileRules(rules)
-	if err != nil {
-		return nil, err
+// NewExtractor compiles the per-source rule sets into one extractor. Duplicate
+// SourceIDs and per-source rule errors are rejected here.
+func NewExtractor(sets ...SourceRuleSet) (*Extractor, error) {
+	bySource := make(map[model.SourceID]*sourceSet, len(sets))
+	for _, set := range sets {
+		if set.SourceID == "" {
+			return nil, fmt.Errorf("%w: metadata rule set requires a non-empty source id", errs.ErrInvalidConfig)
+		}
+		if _, dup := bySource[set.SourceID]; dup {
+			return nil, fmt.Errorf("%w: duplicate metadata rule set for source %q", errs.ErrInvalidConfig, set.SourceID)
+		}
+		compiled, err := compileRules(set.Rules)
+		if err != nil {
+			return nil, fmt.Errorf("metadata source %q: %v", set.SourceID, err)
+		}
+		bySource[set.SourceID] = &sourceSet{root: set.Root, rules: compiled}
 	}
-	return &Extractor{root: root, rules: compiled}, nil
+	return &Extractor{sets: bySource}, nil
 }
 
-// Root returns the source root bound to this extractor.
-func (e *Extractor) Root() string { return e.root }
-
-// Extract interprets file and returns the file-level business metadata. A
-// missing optional rule is not an error and simply leaves its key absent.
-// A missing required rule or a path that cannot be interpreted is a
-// file-level extraction error (M-07/M-10).
+// Extract interprets file using the rule set registered for file.SourceID. A
+// missing optional rule is not an error and simply leaves its key absent. A
+// missing required rule or a path that cannot be interpreted is a file-level
+// extraction error (M-07/M-10).
 func (e *Extractor) Extract(ctx context.Context, file model.FileIdentity) (model.Metadata, error) {
 	if err := ctx.Err(); err != nil {
 		return model.Metadata{}, err
 	}
+	set, ok := e.sets[file.SourceID]
+	if !ok {
+		// v0.1: a source without configured metadata rules yields empty
+		// metadata, not an error.
+		return model.NewMetadata(), nil
+	}
 	md := model.NewMetadata()
-	for _, r := range e.rules {
-		segments, err := e.inputSegments(r, file)
+	for _, r := range set.rules {
+		segments, err := set.inputSegments(r, file)
 		if err != nil {
 			return model.Metadata{}, err
 		}
@@ -61,16 +93,16 @@ func (e *Extractor) Extract(ctx context.Context, file model.FileIdentity) (model
 	return md, nil
 }
 
-func (e *Extractor) inputSegments(r *compiledRule, file model.FileIdentity) ([]string, error) {
+func (s *sourceSet) inputSegments(r *compiledRule, file model.FileIdentity) ([]string, error) {
 	switch r.from {
 	case SourceFilename:
 		return []string{file.Name}, nil
 	case SourcePath:
-		if e.root == "" {
+		if s.root == "" {
 			return nil, errs.Sourcef(errs.ErrMetadataExtraction,
 				"path metadata rule %q requires a source root", r.name)
 		}
-		rel, err := relToRoot(e.root, file.Path)
+		rel, err := relToRoot(s.root, file.Path)
 		if err != nil {
 			return nil, err
 		}

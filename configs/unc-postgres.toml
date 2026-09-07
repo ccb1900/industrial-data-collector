@@ -60,4 +60,7 @@ id = "remote-metadata"
 type = "path-metadata"
 
 [components.config]
+
+[[components.config.sources]]
 source = "remote-source"
+root = "\\\\192.168.1.100\\production\\data"

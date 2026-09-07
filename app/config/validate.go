@@ -52,19 +52,31 @@ func Validate(cfg extconfig.Config) error {
 			return err
 		}
 	}
+	// One path-metadata component = the single MetadataExtractor Provider of
+	// the Realm. It may carry per-source rule sets for many sources; it never
+	// becomes one provider per source.
 	metadataCount := 0
 	for id, cc := range byID {
 		if cc.Type != "path-metadata" {
 			continue
 		}
 		metadataCount++
-		ref := str(cc.Config, "source")
-		target, ok := byID[ref]
-		if !ok {
-			return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
+		sets, err := appmetadata.ParseSourceConfig(cc.Config["sources"])
+		if err != nil {
+			return fmt.Errorf("metadata component %q: %w", id, err)
 		}
-		if knownTypes[target.Type].Kind != "source" {
-			return fmt.Errorf("metadata component %q must reference a source component", id)
+		for _, set := range sets {
+			ref := string(set.SourceID)
+			target, ok := byID[ref]
+			if !ok {
+				return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
+			}
+			if knownTypes[target.Type].Kind != "source" {
+				return fmt.Errorf("metadata component %q source %q must reference a source component", id, ref)
+			}
+			if str(target.Config, "root") != set.Root {
+				return fmt.Errorf("metadata component %q source %q root %q does not match source root %q", id, ref, set.Root, str(target.Config, "root"))
+			}
 		}
 	}
 	collectorCount := 0
@@ -94,7 +106,7 @@ func Validate(cfg extconfig.Config) error {
 		return errors.New("v0.1 supports one csv-collector per Runtime realm")
 	}
 	if metadataCount > 1 {
-		return errors.New("v0.1 supports one path-metadata component per Runtime realm (single MetadataExtractor)")
+		return errors.New("v0.1 supports exactly one path-metadata component per Runtime realm (single MetadataExtractor provider)")
 	}
 	if collectorCount == 1 && metadataCount == 0 {
 		return errors.New("csv-collector requires one path-metadata component (metadata dependency)")
@@ -155,10 +167,7 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			return fmt.Errorf("scheduler %q: %w", cc.ID, err)
 		}
 	case "metadata":
-		if str(cc.Config, "source") == "" {
-			return fmt.Errorf("metadata component %q missing source", cc.ID)
-		}
-		if _, err := appmetadata.ParseRules(cc.Config["metadata"]); err != nil {
+		if _, err := appmetadata.ParseSourceConfig(cc.Config["sources"]); err != nil {
 			return fmt.Errorf("metadata component %q: %w", cc.ID, err)
 		}
 	case "collector":

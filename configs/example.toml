@@ -55,11 +55,12 @@ id = "production-metadata"
 type = "path-metadata"
 
 [components.config]
-source = "production-source"
 
-# Metadata rules belong to the source (never the collector). Each rule emits
-# exactly one business key (its "name"); other {field} captures in the pattern
-# only describe the surrounding layout and are never stored.
+# One path-metadata component = the single MetadataExtractor Provider of the
+# Realm. It carries each source's metadata rules (SourceID -> RuleSet); rules
+# are never global and never live on the Collector. Each rule emits exactly one
+# business key (its "name"); other {field} captures in the pattern only
+# describe the surrounding layout and are never stored.
 #
 # Grammar per "/"-separated segment: literal text, {field} capture, and *
 # wildcard. Key grammar: [A-Za-z_][A-Za-z0-9_]*. "required" defaults to true:
@@ -74,11 +75,15 @@ source = "production-source"
 # 2026-09-06/orders.csv and a nested file has e.g.
 # 2026-09-06/line-A/station-03/product-X.csv.
 
+[[components.config.sources]]
+source = "production-source"
+root = "./data/production"
+
 # --- Flat layout (active) ------------------------------------------------
 # Every file is directly under the date directory.
 
 # Example 1 (filename): capture the file stem as key "file".
-[[components.config.metadata]]
+[[components.config.sources.metadata]]
 name = "file"
 from = "filename"
 pattern = "{file}.csv"
@@ -87,7 +92,7 @@ required = true
 # Example 2 (path): capture the collection date directory as key "date".
 # NOTE: with a nested layout below, make this rule optional or remove it,
 # otherwise a deeper path cannot match the two-segment pattern.
-[[components.config.metadata]]
+[[components.config.sources.metadata]]
 name = "date"
 from = "path"
 pattern = "{date}/*.csv"
@@ -97,7 +102,7 @@ required = true
 # A rule that may or may not match never breaks collection. With a second
 # directory level under the date dir (e.g. .../2026-09-06/ST-01/file.csv) this
 # captures station = ST-01; flat files simply have no "station" key.
-# [[components.config.metadata]]
+# [[components.config.sources.metadata]]
 # name = "station"
 # from = "path"
 # pattern = "{date}/{station}/*.csv"
@@ -109,26 +114,39 @@ required = true
 # Uncommenting requires REMOVING Example 2 above: two rules named "date" would
 # be rejected as a duplicate key (M-09). Required path rules also mean every
 # discovered file must match the four-segment layout.
-# [[components.config.metadata]]
+# [[components.config.sources.metadata]]
 # name = "line"
 # from = "path"
 # pattern = "{date}/{line}/{station}/*.csv"
 # required = true
 #
-# [[components.config.metadata]]
+# [[components.config.sources.metadata]]
 # name = "station"
 # from = "path"
 # pattern = "{date}/{line}/{station}/*.csv"
 # required = true
 #
-# [[components.config.metadata]]
+# [[components.config.sources.metadata]]
 # name = "date"
 # from = "path"
 # pattern = "{date}/{line}/{station}/*.csv"
 # required = true
 #
-# [[components.config.metadata]]
+# [[components.config.sources.metadata]]
 # name = "product"
 # from = "filename"
 # pattern = "{product}.csv"
+# required = true
+
+# A second source with a completely different business layout would be another
+# [[components.config.sources]] table under this same component:
+#
+# [[components.config.sources]]
+# source = "another-source"
+# root = "./data/another"
+#
+# [[components.config.sources.metadata]]
+# name = "product"
+# from = "path"
+# pattern = "{product}/{batch}/{date}.csv"
 # required = true

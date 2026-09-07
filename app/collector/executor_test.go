@@ -141,9 +141,9 @@ func TestCollectorMetadataPropagatesToBatchesAndResult(t *testing.T) {
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	ex, err := appmetadata.NewExtractor("", []appmetadata.Rule{
+	ex, err := appmetadata.NewExtractor(appmetadata.SourceRuleSet{SourceID: "prod", Root: "", Rules: []appmetadata.Rule{
 		{Name: "file", From: appmetadata.SourceFilename, Pattern: "{file}.csv", Required: true},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,9 +178,9 @@ func TestCollectorMetadataErrorIsFileLevelFailure(t *testing.T) {
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	ex, err := appmetadata.NewExtractor("", []appmetadata.Rule{
+	ex, err := appmetadata.NewExtractor(appmetadata.SourceRuleSet{SourceID: "prod", Root: "", Rules: []appmetadata.Rule{
 		{Name: "id", From: appmetadata.SourceFilename, Pattern: "order-{id}.csv", Required: true},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ metadata rules therefore never makes an already collected file look new
 | Area | Location | Responsibility |
 | --- | --- | --- |
 | Contracts and value objects | `app/model/metadata.go` | `Metadata`, `FileDescriptor`, `MetadataExtractor`, `FileSource.Root()` |
-| Pure extraction engine | `app/metadata/` | rule parsing/validation, template grammar, matcher, `Extractor` |
+| Pure extraction engine | `app/metadata/` | per-source rule sets (`SourceRuleSet`), template grammar, matcher, `Extractor` |
 | GOCORDIS plugin | `plugins/metadata/` | `PathMetadataComponent` providing the `MetadataExtractor` capability |
 | Collector wiring | `plugins/collector/` | requires the metadata capability through the Dependency graph |
 | Application validation | `app/config/validate.go` | rejects invalid metadata config before Runtime mutation |
@@ -33,48 +33,70 @@ application (`gocordis-csv-collector`).
 
 ## 3. Configuration
 
-Metadata rules are configured per source and never on the Collector. In the
-component configuration model each source has one `path-metadata` component
-bound to it by a `source` reference:
+Metadata rules are configured per source and never on the Collector. One
+`path-metadata` component is the single `MetadataExtractor` Provider of the
+Realm; its config aggregates per-source rule sets (`SourceID -> RuleSet`):
 
 ```toml
-[[components]]
-id = "production-source"
-type = "local-file-source"
-
-[components.config]
-root = "./data/production"
-pattern = "*.csv"
-
 [[components]]
 id = "production-metadata"
 type = "path-metadata"
 
 [components.config]
-source = "production-source"
 
-[[components.config.metadata]]
+[[components.config.sources]]
+source = "source-a"
+root = "./data/a"
+
+[[components.config.sources.metadata]]
 name = "line"
 from = "path"
 pattern = "{line}/{station}/{date}/*.csv"
 required = true
 
-[[components.config.metadata]]
+[[components.config.sources]]
+source = "source-b"
+root = "./data/b"
+
+[[components.config.sources.metadata]]
 name = "product"
-from = "filename"
-pattern = "{product}.csv"
+from = "path"
+pattern = "{product}/{batch}/{date}.csv"
 required = true
 ```
 
 `path-metadata` is an ordinary GOCORDIS Component (A-04, spec section 33). It
-declares the `FileSource` capability as a dependency only to read the active
-source root; it never duplicates the root and never calls `List`/`Read`. The
-Collector declares `runtime.Requires(metadataplugin.Key)` and receives the
-`MetadataExtractor` through the Dependency graph (M-14).
+provides exactly one `MetadataExtractor` capability; it never creates one
+provider per source. `root` is kept per source entry and application validation
+enforces it equals the referenced source component's root. The Collector
+declares `runtime.Requires(metadataplugin.Key)` and receives the single
+`MetadataExtractor` through the Dependency graph (M-14/M-MULTI-05); it never
+routes by source id itself.
 
 A configuration with a Collector but no `path-metadata` component is rejected
 during application validation, as is more than one `path-metadata` component
-per Runtime realm (v0.1 single-provider realm).
+per Runtime realm (exactly one provider per Realm). Multiple sources inside the
+one component are allowed with completely different rule sets.
+
+## 3.1 Multi-source routing
+
+`Extractor` holds one compiled rule set per `SourceID`. `Extract(file)` selects
+the rule set for `file.SourceID`:
+
+```text
+one Runtime Realm
+  └── MetadataExtractor Provider
+        ├── Source A -> RuleSet A
+        ├── Source B -> RuleSet B
+        └── Source C -> RuleSet C
+```
+
+A file whose `SourceID` has no registered rule set gets empty metadata (v0.1
+semantics for "source without metadata rules"), never an error. Reloading one
+source's rules rebuilds the provider with that source's new rule set; other
+sources keep their rule sets unchanged (M-MULTI-02). Invalid new rules for one
+source are rejected before Runtime mutation, so the previous valid provider
+(including other sources' rule sets) stays effective (M-MULTI-03).
 
 ## 4. Rule semantics
 
@@ -83,7 +105,9 @@ per Runtime realm (v0.1 single-provider realm).
 - Additional `{field}` captures in the same pattern only describe the business
   layout and are not stored.
 - Key grammar: `[A-Za-z_][A-Za-z0-9_]*`.
-- Duplicate keys across rules are rejected (M-09).
+- Duplicate keys within one source's rule set are rejected (M-09). The same
+  key may appear in different sources because each source is its own
+  namespace.
 - `required` defaults to `true`; a missing required rule is a file-level
   `ErrMetadataExtraction` error, a missing optional rule leaves the key absent
   (M-07/M-08). Empty capture values are treated as "no meaningful value".
@@ -96,8 +120,9 @@ per Runtime realm (v0.1 single-provider realm).
 
 ## 5. Windows / UNC and root-relative matching
 
-`FileIdentity.Path` is interpreted relative to the active `FileSource.Root()`
-using Go `filepath` semantics. Windows drive and UNC values are ordinary path
+`FileIdentity.Path` is interpreted relative to the per-source root registered
+in the extractor (validated to equal the referenced `FileSource` root) using
+Go `filepath` semantics. Windows drive and UNC values are ordinary path
 values: backslashes are normalized once and all segment work delegates to the
 standard `filepath` package. Patterns never contain drive letters or UNC roots
 (M-04/M-05/M-06). A file outside the source root is a technical extraction
@@ -158,6 +183,11 @@ effective (M-17).
 | M-16 Reload | `TestMetadataE2EReloadKeepsIdentityAndActivatesNewRules` |
 | M-17 Failed Reload | `TestMetadataE2EFailedReloadKeepsOldProvider` |
 | M-18 Idempotency | `TestMetadataE2EReloadKeepsIdentityAndActivatesNewRules` |
+| M-MULTI-01 Two sources, one extractor | `TestMMulti01TwoSourcesDifferentLayouts`, `TestMMulti05SingleProviderServesTwoSources` |
+| M-MULTI-02 Source A reload leaves B | `TestMMulti02ReloadOneSourceLeavesOtherUntouched` |
+| M-MULTI-03 Invalid A keeps B + old config | `TestMMulti03InvalidOneSourceDoesNotAffectOthers`, `TestValidateRejectsOneSourceLeavesOtherValid` |
+| M-MULTI-04 Identity invariance (multi) | `TestMMulti04ExtractionDoesNotChangeFileIdentity` |
+| M-MULTI-05 One capability, one provider | `TestMMulti05SingleProviderServesTwoSources`, `TestCollectorDeclaresSingleMetadataDependency` |
 
 ## 9. Boundary gate
 

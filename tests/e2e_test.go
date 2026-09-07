@@ -59,29 +59,53 @@ func basicComponents(root, sourceID, sourceType, storageID string, statePath str
 		cfg["date_policy"] = "specific"
 		cfg["specific_date"] = specific
 	}
+	meta := metadataComponent(sourceID, root, nil)
 	return []config.ComponentConfig{
 		{ID: sourceID, Type: sourceType, Config: map[string]any{"root": root, "pattern": "*.csv", "file_stable_window_seconds": 0}},
 		{ID: "csv-parser", Type: "csv-parser", Config: map[string]any{"header": true}},
 		{ID: storageID, Type: "memory-storage"},
 		{ID: "collection-state", Type: stateType, Config: stateCfg},
 		{ID: "scheduler", Type: "scheduler", Config: map[string]any{"schedule": "daily", "time": "02:00"}},
-		{ID: "metadata", Type: "path-metadata", Config: map[string]any{"source": sourceID}},
+		meta,
 		{ID: "production-collector", Type: "csv-collector", Config: cfg},
 	}
 }
 
+// metadataComponent builds the single path-metadata component (one
+// MetadataExtractor Provider) carrying the metadata rule set of sourceID.
+// With multiple entries it can carry several sources' rule sets at once.
+func metadataComponent(sourceID, root string, rules []any) config.ComponentConfig {
+	entry := map[string]any{"source": sourceID, "root": root}
+	if len(rules) > 0 {
+		entry["metadata"] = rules
+	}
+	return config.ComponentConfig{
+		ID:   "metadata",
+		Type: "path-metadata",
+		Config: map[string]any{
+			"sources": []any{entry},
+		},
+	}
+}
+
 // withMetadataRules replaces the default (rule-less) path-metadata component
-// with one carrying the given metadata rules.
+// with one carrying the given metadata rules for the same source/root.
 func withMetadataRules(cs []config.ComponentConfig, rules []any) []config.ComponentConfig {
 	for i := range cs {
-		if cs[i].ID == "metadata" {
-			cfg := map[string]any{"source": cs[i].Config["source"]}
-			if rules != nil {
-				cfg["metadata"] = rules
-			}
-			cs[i].Config = cfg
+		if cs[i].ID != "metadata" {
+			continue
+		}
+		srcArr, ok := cs[i].Config["sources"].([]any)
+		if !ok || len(srcArr) == 0 {
 			return cs
 		}
+		entry := srcArr[0].(map[string]any)
+		if len(rules) > 0 {
+			entry["metadata"] = rules
+		} else {
+			delete(entry, "metadata")
+		}
+		return cs
 	}
 	return cs
 }

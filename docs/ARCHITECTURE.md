@@ -39,15 +39,17 @@ Each config component type maps to one Component:
 | `csv-parser` | CSVParser | streaming CSV rows |
 | `mysql-storage` / `postgresql-storage` / `oracle-storage` / `memory-storage` | Storage | idempotent batch writes |
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
-| `path-metadata` | MetadataExtractor | per-source business metadata (requires FileSource root) |
+| `path-metadata` (one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
 | `scheduler` | Trigger | daily tick to Runtime Event |
 | `csv-collector` | none | worker + event handler |
 
 Collector declares exactly five required dependencies. There is no
-`switch databaseType` or `switch sourceKind` in Collector. The Metadata plugin
-is an ordinary Component: it provides `MetadataExtractor`, reads the active
-source root through the FileSource capability, and is replaced by Config
-Reconciliation when rules change.
+`switch databaseType` or `switch sourceKind` in Collector and no source-specific
+metadata routing: the Collector depends only on the one `MetadataExtractor`
+capability. The Metadata plugin is an ordinary Component: one component is the
+single `MetadataExtractor` Provider of the Realm and internally routes by
+`FileIdentity.SourceID`; it is replaced by Config Reconciliation when any
+source's rules change.
 
 ## Event flow
 
