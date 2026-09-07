@@ -71,3 +71,68 @@ UI Command (UIComponent.TriggerCollection)
 ## Next batch
 
 Wails binding + React host consuming `UIHost`/`ViewSnapshot`/queries.
+
+## Batch 2 — Wails/React host bridge (P2)
+
+Batch 2 adds the UI Host Adapter + Wails Bridge surface (no Dashboard).
+
+### Added
+
+- `plugins/ui/dto.go` — camelCase UI DTOs (`UISource`, `UICollection`,
+  `UIFile`, `UIObservation`, `UIError`, request DTOs). Go internal types are
+  never exposed.
+- `plugins/ui/bridge.go` — `Host` (UI Host Adapter): Query forwarding
+  (`ListSources/ListCollections/GetCollection/ListFiles/GetFileMetadata`),
+  Command forwarding (`TriggerCollection`), and error boundary
+  (`*UIError{Code,Message}`). An `observationBridge` emulates the Wails Event
+  channel in-process (React listeners subscribe; events only say "re-query").
+- `plugins/ui/component.go` — the UI Plugin now creates the `Host` at Apply
+  and forwards Application Observations as `UIObservation` events to the
+  bridge. Lifecycle is Effect-owned: unload unsubscribes Observation, clears
+  the bridge, and resets the composition registry.
+- `frontend/` — minimal React scaffold (api client, DTO types, hook,
+  components, App). It requires `wails generate` + `npm install` and is NOT
+  built/tested in the batch-2 sandbox (no Node/Wails dependency resolution);
+  the Go side is covered by the same DTO surface in-process.
+
+### Query Bridge
+
+```text
+React -> Wails binding -> plugins/ui Host.ListFiles(...) -> app/query
+```
+
+### Observation Bridge
+
+```text
+FileCompleted
+  -> Application Observation (query-provider)
+  -> UI Plugin -> UIObservation{type,sourceId,timestamp}
+  -> observationBridge -> React listener -> invalidate -> Query
+```
+
+### Command Bridge
+
+```text
+React Trigger -> Host.TriggerCollection -> CollectionCommand capability
+  -> CollectionRequested -> Collector
+```
+
+### Acceptance (P2) mapping
+
+| P2 | Test |
+| --- | --- |
+| P2-01 Host init | `TestUIP2HostBridgeFullLoop` (HostAdapter non-nil) |
+| P2-02..04 Query DTOs | same test (ListSources/ListCollections/ListFiles/GetCollection) |
+| P2-05 Dynamic metadata | same test (`files[].metadata["product"]`) |
+| P2-06/07 Observation + re-query | same test (listener + updated ListCollections) |
+| P2-08 Command via capability | same test (TriggerCollection through Host) |
+| P2-09 no Executor coupling | Host only holds Application capabilities |
+| P2-10 Subscription release | `unsub()` stops listener; bridge history retained |
+| P2-11 Collector isolation | `TestUIP2Isolation` |
+| P2-12 Runtime untouched | no GOCORDIS change (BOUNDARY_AUDIT) |
+| Error boundary | `TestUIP2ErrorBoundary` (not_found / invalid_request) |
+
+### Not included (per spec)
+
+Dashboard/charts, Wails main binary and generated JS bindings (needs a Wails
+toolchain), `npm` build/test, and any multi-UI-plugin registry.

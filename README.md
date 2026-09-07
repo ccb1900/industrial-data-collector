@@ -28,7 +28,8 @@ app/host/          Runtime/Config-Controller host
 plugins/           GOCORDIS Components, capability keys, and factories
 plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
 plugins/query/     Application Query provider + Observation adapter (UI-facing)
-plugins/ui/        UI Plugin GOCORDIS Component (UI Host page/panel contract)
+plugins/ui/        UI Plugin GOCORDIS Component (UI Host + Wails/React bridge)
+frontend/          Minimal React host scaffold (P2; needs wails generate + npm)
 cmd/csv-collector/ Executable
 configs/           TOML examples
 tests/             Runtime E2E scenarios
@@ -41,7 +42,7 @@ Each business capability has one plugin package under `plugins/`:
 `app/` and never starts a second lifecycle. See
 [`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature and
 [`docs/UI_PLUGIN.md`](docs/UI_PLUGIN.md) for the UI Plugin Contract Go core
-(React/Wails arrive in a later batch).
+(React/Wails host bridge arrives in batch 2; full Dashboard is batch 3).
 
 ## Run
 

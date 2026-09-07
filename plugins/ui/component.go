@@ -42,11 +42,13 @@ type queryBundle struct {
 type UIComponent struct {
 	mu sync.Mutex
 
-	host    *host
-	baseCtx context.Context
-	obs     query.Observation
-	cmd     query.CollectionCommand
-	q       queryBundle
+	host        *host
+	bridge      *observationBridge
+	hostAdapter *Host
+	baseCtx     context.Context
+	obs         query.Observation
+	cmd         query.CollectionCommand
+	q           queryBundle
 
 	invalidations int
 	latest        query.ObservationEvent
@@ -94,6 +96,7 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	c.host = newHost()
+	c.bridge = newObservationBridge()
 	c.baseCtx = ctx.Context()
 	c.obs = obs
 	c.cmd = cmd
@@ -103,6 +106,7 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		files:       files,
 		metadata:    metadata,
 	}
+	c.hostAdapter = NewHost(c.baseCtx, collections, sources, files, metadata, cmd)
 	for _, p := range defaultPages() {
 		_ = c.host.RegisterPage(p)
 	}
@@ -122,6 +126,9 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return func() error {
 			unsub()
 			c.host.reset()
+			if c.bridge != nil {
+				c.bridge.clear()
+			}
 			return nil
 		}, nil
 	}); err != nil {
@@ -135,6 +142,9 @@ func (c *UIComponent) onObservation(ev query.ObservationEvent) {
 	c.invalidations++
 	c.latest = ev
 	c.mu.Unlock()
+	if c.bridge != nil {
+		c.bridge.notify(toUIObservation(ev))
+	}
 	c.refresh()
 }
 
@@ -196,6 +206,28 @@ func (c *UIComponent) Snapshot() ViewSnapshot {
 
 // Host returns the UI Host composition registry (UI Host contract).
 func (c *UIComponent) Host() UIHost { return c.host }
+
+// HostAdapter returns the Wails-facing UI Host Adapter (Query/Observation/
+// Command forwarding). A Wails App binds its methods.
+func (c *UIComponent) HostAdapter() *Host { return c.hostAdapter }
+
+// OnObservation registers a React/Wails observation listener. It returns an
+// unsubscribe function; lifecycle is Effect-owned on the Component.
+func (c *UIComponent) OnObservation(handler func(UIObservation)) (func() error, error) {
+	if c.bridge == nil {
+		return nil, errors.New("ui: observation bridge not active")
+	}
+	return c.bridge.on(handler)
+}
+
+// Observations returns the observation events seen since activation (Wails
+// Event feed history, newest last).
+func (c *UIComponent) Observations() []UIObservation {
+	if c.bridge == nil {
+		return nil
+	}
+	return c.bridge.latest()
+}
 
 // Pages returns the registered UI pages.
 func (c *UIComponent) Pages() []PageDefinition { return c.host.Pages() }

@@ -122,11 +122,13 @@ identity, so rule changes do not cause re-collection. See
 - `type`: `query-provider`. No config keys in v0.1. Provides the Application
   Query/Observation/Command capabilities used by the UI Plugin.
 
-## UI (Go core)
+## UI (Go core + Wails/React bridge)
 
 - `type`: `ui`. No config keys in v0.1. Registers the UI Host composition
-  (pages/panels) and subscribes Observation. React/Wails bindings come in a
-  later batch.
+  (pages/panels), subscribes Observation, and exposes the UI Host Adapter
+  (`Host`: Query/Command forwarding + `UIObservation` events). A minimal
+  React host scaffold lives in `frontend/` (needs `wails generate` + `npm
+  install`; not built in this environment).
 
 ## Collector
 

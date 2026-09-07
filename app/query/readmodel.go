@@ -207,8 +207,10 @@ func (m *ReadModel) GetFileMetadata(ctx context.Context, file model.FileIdentity
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.collections {
-		if f, ok := e.files[file.Identity()]; ok {
-			return f.metadata.Clone(), nil
+		for _, f := range e.files {
+			if f.file.SourceID == file.SourceID && f.file.Path == file.Path && f.file.Name == file.Name {
+				return f.metadata.Clone(), nil
+			}
 		}
 	}
 	return model.NewMetadata(), nil

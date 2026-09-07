@@ -12,7 +12,8 @@ Sandbox verification used `GOCACHE=/tmp/gocache GOPROXY=off` because the
 default Go build cache was read-only and no network was available.
 
 Status: local functional, runtime, boundary, reliability, race, and resource
-gates PASS. Live MySQL/PostgreSQL/Oracle databases and a real remote UNC share
+gates PASS. Frontend scaffold is NOT built/tested in this sandbox (no Wails
+generate + npm dependency resolution available). Live MySQL/PostgreSQL/Oracle databases and a real remote UNC share
 were not available, so those adapter/external-service portions are CONDITIONAL
 PASS based on code inspection plus the in-process fake `database/sql` driver.
 
@@ -58,6 +59,7 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/config_smoke_test.go` | `TestSampleConfigsParseAndValidate` | shipped TOML examples parse and validate |
 | `app/query/query_test.go` | read model/observation unit tests | views from events, failures, subscribe/publish/feed |
 | `tests/e2e_ui_test.go` | `TestUIE2EQueryObservationCommandLoop`, `TestUIE2EPluginIsolation` | UI Command -> Event -> Collector -> Query -> Observation -> UI view; UI unload isolation |
+| `tests/e2e_ui_p2_test.go` | `TestUIP2HostBridgeFullLoop`, `TestUIP2ErrorBoundary`, `TestUIP2Isolation` | Wails/React host bridge: Query DTOs, Observation listener, Command, error boundary, isolation |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 
