@@ -130,7 +130,10 @@ identity, so rule changes do not cause re-collection. See
   A React host scaffold lives in `frontend/` (npm build/test pass here). The
   real desktop host is `cmd/collector-ui` with `configs/desktop.toml` (separate
   Go module; needs a Wails toolchain). Observation event name is fixed to
-  `observation`.
+  `observation`. A browser host is also provided: `cmd/web-ui` serves the
+  embedded React build (`go:embed web/dist`) with JSON API under `/api/*`
+  (`sources`, `collections`, `collection`, `files`, `trigger`) and SSE
+  `/api/stream` for `observation` events.
 
 ## Collector
 

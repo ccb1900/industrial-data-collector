@@ -31,6 +31,8 @@ plugins/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Plugin GOCORDIS Component (UI Host + Wails/React bridge)
 frontend/          React host (api layer + host verification page; npm build/test pass)
 cmd/collector-ui/   Real Wails Desktop Host (separate Go module; needs Wails toolchain)
+cmd/web-ui/         Embedded HTTP Web UI (go:embed + net/http + SSE)
+web/                Embedded frontend build (web.Dist)
 cmd/csv-collector/ Executable
 configs/           TOML examples
 tests/             Runtime E2E scenarios
@@ -49,6 +51,9 @@ Each business capability has one plugin package under `plugins/`:
 
 ```bash
 go run ./cmd/csv-collector -config configs/example.toml
+# Web UI (embedded React build over HTTP; SSE for observation):
+go run ./cmd/web-ui -config configs/desktop.toml -addr :8080
+# then open http://localhost:8080
 ```
 
 `configs/example.toml` uses `memory-storage` and a local date root. SQL target

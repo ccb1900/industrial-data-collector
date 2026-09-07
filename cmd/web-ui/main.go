@@ -1,0 +1,109 @@
+// Command web-ui serves the Industrial Data Collector UI over plain HTTP.
+// The React build is embedded via go:embed (web.Dist) and the plugins/ui Host
+// Adapter is exposed as JSON API + SSE:
+//
+//	GET  /                       embedded UI (SPA)
+//	GET  /api/sources            ListSources
+//	GET  /api/collections        ListCollections
+//	GET  /api/collection         GetCollection
+//	GET  /api/files              ListFiles
+//	POST /api/trigger            TriggerCollection (accepted asynchronously)
+//	GET  /api/stream             SSE "observation" events
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"dynamic-runtime/extensions/configwatch"
+
+	apphost "gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/internal/webui"
+	uiplugin "gocordis-csv-collector/plugins/ui"
+	"gocordis-csv-collector/web"
+)
+
+func main() {
+	configPath := flag.String("config", "configs/desktop.toml", "application TOML configuration")
+	addr := flag.String("addr", ":8080", "listen address")
+	flag.Parse()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := run(logger, *configPath, *addr); err != nil {
+		logger.Error("web-ui failed", "error", err.Error())
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger, configPath, addr string) error {
+	appHost, err := apphost.New(logger)
+	if err != nil {
+		return err
+	}
+	defer appHost.Close(context.Background())
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("config file: %w", err)
+	}
+	parsed, err := configwatch.NewTOMLParser().Parse(ctx,
+		configwatch.Source{ID: "web", Path: configPath, Format: configwatch.FormatTOML}, data)
+	if err != nil {
+		return err
+	}
+	if err := appHost.Reconcile(ctx, parsed); err != nil {
+		return err
+	}
+	ui := findUIComponent(appHost)
+	if ui == nil {
+		return fmt.Errorf("no active ui component in configuration")
+	}
+
+	var assets fs.FS = fs.FS(web.Dist)
+	srv := webui.New(ui.HostAdapter(), assets)
+	// Production Observation -> SSE subscribers.
+	ui.SetObservationSink(observationSink(srv))
+
+	httpServer := &http.Server{Addr: addr, Handler: srv}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
+	logger.Info("web ui listening", "addr", addr, "config", configPath)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+type observationSinkFunc func(uiplugin.UIObservation)
+
+func (f observationSinkFunc) NotifyObservation(ev uiplugin.UIObservation) { f(ev) }
+
+func observationSink(srv *webui.Server) uiplugin.ObservationSink {
+	return observationSinkFunc(func(ev uiplugin.UIObservation) { srv.Publish(ev) })
+}
+
+func findUIComponent(h *apphost.Host) *uiplugin.UIComponent {
+	for _, o := range h.Owned() {
+		if o.ID == "ui" {
+			if c, ok := o.Fiber.Component().(*uiplugin.UIComponent); ok {
+				return c
+			}
+		}
+	}
+	return nil
+}

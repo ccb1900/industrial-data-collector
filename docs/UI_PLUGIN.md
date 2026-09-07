@@ -183,3 +183,23 @@ Application -> UI Plugin Observation -> ObservationSink
 Not runnable here: `wails generate`, desktop window startup, and the real
 browser E2E (no display; Wails module deps unavailable offline). The Go side of
 the same loop is covered in-process (`TestP21ProductionSinkAndAsyncCommand`).
+
+## Web UI variant (go:embed + net/http)
+
+`cmd/web-ui` serves the SAME frontend over plain HTTP:
+
+```text
+Browser
+  -> /api/* JSON (ListSources/ListCollections/GetCollection/ListFiles/
+                   POST /api/trigger)
+  -> /api/stream (SSE "observation")
+  -> embedded UI (go:embed web/dist)
+```
+
+- `web/embed.go` embeds the React build (`frontend/dist` copied into
+  `web/dist`); regenerate with `npm run build && cp -R frontend/dist/. web/dist/`.
+- The React api layer is transport-agnostic: it uses `window.go` when Wails is
+  present, otherwise HTTP `/api/*` + EventSource `/api/stream`. No component
+  knows the transport.
+- `internal/webui.Server` reuses `plugins/ui.Host` (DTO/error/observation
+  contract); `TestWebUIHTTPBridge` covers the full loop without a socket.
