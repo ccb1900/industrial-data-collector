@@ -27,6 +27,8 @@ Audit checks:
 | B-08 UI bridge isolation | PASS | `plugins/ui` uses only public runtime API + `app/ui` + `app/query` contracts; no runtime/UI additions |
 | B-09 UI Composition isolation | PASS | `app/ui` owns the Registry; `plugins/ui-contrib` components register through the public UI Host capability; no second lifecycle/event bus/Kernel registry |
 | B-10 Activation ownership | PASS | cleanup is a Runtime Effect; owner activation label is application metadata only and never a lifecycle controller |
+| B-11 Snapshot boundary | PASS | `app/ui.Registry.Snapshot()` is atomic and isolated; UI Host/transport convert it to DTOs without exposing Owner/Activation |
+| B-12 P3.3 dynamic composition | PASS | real factory-registered components share one Registry; no runtime/ modification, no UI lifecycle methods, no domain imports in `app/ui` |
 
 Application components do not call `Fiber.Dispose` or mutate another plugin's
 lifecycle. The Collector worker and event handler are installed through

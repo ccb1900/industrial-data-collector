@@ -161,9 +161,9 @@ func (h *Host) ListPages() (UIPageList, *UIError) {
 	if h.registry == nil {
 		return UIPageList{}, uiErr(errs.Sourcef(errs.ErrDependency, "UI composition unavailable"))
 	}
-	defs := h.registry.ListPages()
-	pages := make([]UIPage, 0, len(defs))
-	for _, def := range defs {
+	snap := h.registry.Snapshot()
+	pages := make([]UIPage, 0, len(snap.Pages))
+	for _, def := range snap.Pages {
 		pages = append(pages, toUIPage(def))
 	}
 	return UIPageList{Pages: pages}, nil
@@ -174,9 +174,9 @@ func (h *Host) ListPanels() (UIPanelList, *UIError) {
 	if h.registry == nil {
 		return UIPanelList{}, uiErr(errs.Sourcef(errs.ErrDependency, "UI composition unavailable"))
 	}
-	defs := h.registry.ListPanels()
-	panels := make([]UIPanel, 0, len(defs))
-	for _, def := range defs {
+	snap := h.registry.Snapshot()
+	panels := make([]UIPanel, 0, len(snap.Panels))
+	for _, def := range snap.Panels {
 		panels = append(panels, toUIPanel(def))
 	}
 	return UIPanelList{Panels: panels}, nil

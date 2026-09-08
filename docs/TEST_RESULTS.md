@@ -66,7 +66,9 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/e2e_ui_p3_test.go` | `TestP3IndependentPluginLoadUnloadReload`, `TestP3MultiPluginCompositionAndHTTPDto` | independent contributor load/unload/reload, multi-plugin composition, observation payload, adapter DTOs |
 | `app/ui/p32_conformance_test.go` | P3.2-01..P3.2-08, P3.2-13 | Owner identity, idempotent reversible cleanup, activation ownership, isolation, multi-cleanup, reload, stale owner protection, deterministic snapshots, no parallel lifecycle |
 | `tests/e2e_ui_p32_test.go` | P3.2-15 A/B/C/D/E | E2E single dispose, two-plugin isolation, reload-only-new-activation, stale owner protection, multiple contributions dispose |
-| `internal/webui` | `TestWebUIHTTPBridge` | embedded web UI: static index, /api trigger+collections+files+metadata, UI composition DTOs + Wails/HTTP adapter parity, SSE observation |
+| `app/ui/p33_conformance_test.go` | P3.3-01..06, 08..13, 20 | multi-plugin, bidirectional isolation, cross-type isolation, duplicate page/panel, duplicate preserves original, reload/rapid reload, ordering, snapshot isolation, concurrent registration/cleanup, no parallel lifecycle |
+| `tests/e2e_ui_p33_test.go` | P3.3-07, 14, 15, 17, 18 | Apply rollback, host snapshot-only consumption, React DTO isolation, observation integration, real plugin E2E |
+| `internal/webui` | `TestWebUIHTTPBridge` | embedded web UI: static index, /api trigger+collections+files+metadata, Registry Snapshot/HTTP/Wails parity, SSE observation |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

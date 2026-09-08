@@ -301,3 +301,49 @@ a reversible Effect owned by the GOCORDIS Component Activation.
 | P3.2-13 No second lifecycle | `TestP32_13RegistryHasNoParallelLifecycle` |
 | P3.2-14 No second event bus | composition uses existing Observation/bridge only |
 | P3.2-15 E2E A/B/C/D/E | `tests/e2e_ui_p32_test.go` + registry conformance tests |
+
+## Batch 3.3 — Multi-Plugin Dynamic UI Composition Conformance (P3.3)
+
+P3.3 proves that multiple independent GOCORDIS Components can share one UI
+Composition Space, that every registered Page/Panel remains owned by its own
+activation, and that the UI Host/React never make composition decisions.
+
+### Added for conformance
+
+- `app/ui.Registry.Snapshot()` returns one atomic `CompositionSnapshot` with
+  isolated `Pages`/`Panels` copies. The UI Host and transport adapters consume
+  this snapshot; Owners/Activation metadata never enter the DTO boundary.
+- P3.3 conformance tests prove duplicate IDs are rejected without damaging the
+  original owner, Component Apply rollback removes earlier contributions after
+  a later registration failure, rapid reload leaves only the newest activation,
+  concurrent registration/cleanup are race-safe, and snapshots stay stable and
+  isolated.
+- Real factory-registered `ui-page` / `ui-panel` / `ui-contribution` components
+  are used for E2E; no `FakeContributionComponent`/test-only contributor drives
+  the acceptance scenarios.
+
+### P3.3 acceptance mapping
+
+| Gate | Evidence |
+| --- | --- |
+| P3.3-01 Multi-plugin registration | `TestP33_01MultiPluginRegistration` |
+| P3.3-02 Owner isolation | `TestP33_02OwnerIsolationBidirectional` |
+| P3.3-03 Cross-type isolation | `TestP33_03CrossTypeIsolation` |
+| P3.3-04 Duplicate page identity | `TestP33_04DuplicatePageIdentity` |
+| P3.3-05 Duplicate panel identity | `TestP33_05DuplicatePanelIdentity` |
+| P3.3-06 Duplicate preserves original | `TestP33_06DuplicateRegistrationPreservesOriginal` |
+| P3.3-07 Apply rollback | `TestP33_07ApplyRollback` |
+| P3.3-08 Reload | `TestP33_08Reload` + `TestP33_18RealApplicationPluginE2E` |
+| P3.3-09 Rapid reload | `TestP33_09RapidReload` |
+| P3.3-10 Deterministic ordering | `TestP33_10DeterministicOrdering` + P305/306 |
+| P3.3-11 Snapshot isolation | `TestP33_11SnapshotIsolation` |
+| P3.3-12 Concurrent registration | `TestP33_12ConcurrentRegistration` (race suite) |
+| P3.3-13 Concurrent cleanup | `TestP33_13ConcurrentCleanup` (race suite) |
+| P3.3-14 Host isolation | `TestP33_14UIHostConsumesSnapshotOnly` |
+| P3.3-15 React isolation | `TestP33_15ReactSeesDTOOnly` + `useComposition` reads pages/panels only |
+| P3.3-16 HTTP/Wails parity | `TestWebUIHTTPBridge` compares Registry Snapshot, Host Adapter, and HTTP DTOs |
+| P3.3-17 Observation integration | `TestP33_17ObservationIntegration` |
+| P3.3-18 Real application E2E | `TestP33_18RealApplicationPluginE2E` |
+| P3.3-19 Kernel boundary | no `gocordis/runtime/*` change; see BOUNDARY_AUDIT.md |
+| P3.3-20 No UI lifecycle | `TestP33_20NoParallelLifecycle` |
+| P3.3-21 Domain isolation | `app/ui` contains only Page/Panel/Contribution/Owner/Snapshot; no Collector/Metadata imports |

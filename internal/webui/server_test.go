@@ -122,6 +122,16 @@ func TestWebUIHTTPBridge(t *testing.T) {
 			t.Fatalf("HTTP page order differs from adapter: %#v vs %#v", pages, adapterPages.Pages)
 		}
 	}
+	// P3.3-16: both transports derive from the same isolated Registry Snapshot.
+	snap := ui.Registry().Snapshot()
+	if len(snap.Pages) != len(pages) {
+		t.Fatalf("registry snapshot pages = %#v, http = %#v", snap.Pages, pages)
+	}
+	for i, p := range pages {
+		if p["id"] != snap.Pages[i].ID {
+			t.Fatalf("HTTP page differs from snapshot: %#v vs %#v", pages, snap.Pages)
+		}
+	}
 
 	panels := webGetPanels(t, srv, "/api/ui/panels")
 	if len(panels) != 2 {
@@ -141,6 +151,14 @@ func TestWebUIHTTPBridge(t *testing.T) {
 	for i, p := range panels {
 		if p["id"] != adapterPanels.Panels[i].ID {
 			t.Fatalf("HTTP panel order differs from adapter: %#v vs %#v", panels, adapterPanels.Panels)
+		}
+	}
+	if len(snap.Panels) != len(panels) {
+		t.Fatalf("registry snapshot panels = %#v, http = %#v", snap.Panels, panels)
+	}
+	for i, p := range panels {
+		if p["id"] != snap.Panels[i].ID {
+			t.Fatalf("HTTP panel differs from snapshot: %#v vs %#v", panels, snap.Panels)
 		}
 	}
 

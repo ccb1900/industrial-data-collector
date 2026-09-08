@@ -38,6 +38,14 @@ type PanelDefinition struct {
 	Renderer string
 }
 
+// CompositionSnapshot is one atomic, read-only view of the current Page and
+// Panel contributions. It never carries Owner/Activation identity; callers may
+// mutate the returned slices without affecting Registry state.
+type CompositionSnapshot struct {
+	Pages  []PageDefinition
+	Panels []PanelDefinition
+}
+
 // ContributionOwner records which plugin activation owns a contribution.
 // ComponentID reuses the Config Component ID (a stable GOCORDIS Config
 // Controller identity). ActivationID is an opaque activation generation label
@@ -68,6 +76,10 @@ type Registry interface {
 	RegisterPanel(owner ContributionOwner, def PanelDefinition) (func() error, error)
 	ListPages() []PageDefinition
 	ListPanels() []PanelDefinition
+	// Snapshot returns one atomic, isolated Composition view. React and
+	// transport layers consume this Snapshot/DTO boundary; they never receive
+	// the Registry or its Owners.
+	Snapshot() CompositionSnapshot
 	// Contributions is the Application/UI-Host ownership view. It is never
 	// exposed to React: transport DTOs only consume ListPages/ListPanels.
 	Contributions() []Contribution
@@ -221,6 +233,26 @@ func (r *registry) ListPanels() []PanelDefinition {
 		entry, ok := r.panels[id]
 		if ok {
 			out = append(out, entry.def)
+		}
+	}
+	return out
+}
+
+func (r *registry) Snapshot() CompositionSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := CompositionSnapshot{
+		Pages:  make([]PageDefinition, 0, len(r.pages)),
+		Panels: make([]PanelDefinition, 0, len(r.panels)),
+	}
+	for _, id := range r.pageOrder {
+		if entry, ok := r.pages[id]; ok {
+			out.Pages = append(out.Pages, entry.def)
+		}
+	}
+	for _, id := range r.panelOrder {
+		if entry, ok := r.panels[id]; ok {
+			out.Panels = append(out.Panels, entry.def)
 		}
 	}
 	return out

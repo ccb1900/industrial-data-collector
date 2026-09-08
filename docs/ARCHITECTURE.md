@@ -42,7 +42,7 @@ Each config component type maps to one Component:
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
 | `path-metadata` (one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
 | `query-provider` | Query/Observation/Command | Application Observation Adapter + read model |
-| `ui` | UI Composition Registry | UI Host: owns one Registry per activation, Query/Observation/Command bridge, UI DTO transport |
+| `ui` | UI Composition Registry | UI Host: owns one Registry per activation, Query/Observation/Command bridge, isolated `Snapshot()`/DTO transport |
 | `ui-page` / `ui-panel` | none (contributor) | independent components: register one declarative Page/Panel through Effect-owned cleanup |
 | `ui-contribution` | none (contributor) | one component registers multiple Pages/Panels; every registration is a Runtime Effect |
 | `scheduler` | Trigger | daily tick to Runtime Event |

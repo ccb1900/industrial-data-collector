@@ -271,11 +271,11 @@ func (c *UIComponent) Observations() []UIObservation {
 	return c.bridge.latest()
 }
 
-// Pages returns the registered UI pages.
-func (c *UIComponent) Pages() []PageDefinition { return c.registry.ListPages() }
+// Pages returns the registered UI pages from the isolated Composition Snapshot.
+func (c *UIComponent) Pages() []PageDefinition { return c.registry.Snapshot().Pages }
 
-// Panels returns the registered UI panels.
-func (c *UIComponent) Panels() []PanelDefinition { return c.registry.ListPanels() }
+// Panels returns the registered UI panels from the isolated Composition Snapshot.
+func (c *UIComponent) Panels() []PanelDefinition { return c.registry.Snapshot().Panels }
 
 // NewUI creates the UI Host Plugin Component. v0.1 has no required config.
 func NewUI(cc config.ComponentConfig) (*UIComponent, error) {

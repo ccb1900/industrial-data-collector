@@ -16,11 +16,12 @@ import (
 // Re-exported composition contract aliases keep the public UI Host surface
 // stable while the canonical types live in the Application layer.
 type (
-	PageDefinition    = ui.PageDefinition
-	PanelDefinition   = ui.PanelDefinition
-	Position          = ui.Position
-	ContributionOwner = ui.ContributionOwner
-	Registry          = ui.Registry
+	PageDefinition      = ui.PageDefinition
+	PanelDefinition     = ui.PanelDefinition
+	CompositionSnapshot = ui.CompositionSnapshot
+	Position            = ui.Position
+	ContributionOwner   = ui.ContributionOwner
+	Registry            = ui.Registry
 )
 
 const (
