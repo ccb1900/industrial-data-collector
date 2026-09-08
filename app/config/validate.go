@@ -35,6 +35,7 @@ var knownTypes = map[string]TypeInfo{
 	"ui":                 {Kind: "ui-host", Capability: "ui"},
 	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page"},
 	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel"},
+	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution"},
 }
 
 // Validate rejects invalid application configuration before Runtime mutation.

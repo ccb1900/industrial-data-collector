@@ -26,6 +26,7 @@ Audit checks:
 | B-07 metadata plugin isolation | PASS | `plugins/metadata` provides one capability via `runtime.Provide` plus the public Component/Context API |
 | B-08 UI bridge isolation | PASS | `plugins/ui` uses only public runtime API + `app/ui` + `app/query` contracts; no runtime/UI additions |
 | B-09 UI Composition isolation | PASS | `app/ui` owns the Registry; `plugins/ui-contrib` components register through the public UI Host capability; no second lifecycle/event bus/Kernel registry |
+| B-10 Activation ownership | PASS | cleanup is a Runtime Effect; owner activation label is application metadata only and never a lifecycle controller |
 
 Application components do not call `Fiber.Dispose` or mutate another plugin's
 lifecycle. The Collector worker and event handler are installed through

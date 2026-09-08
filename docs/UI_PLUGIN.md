@@ -256,3 +256,48 @@ Application Plugin (ui-page/ui-panel contributor)
 | P3-16 one Registry | app/ui NewRegistry per UI Host activation; no duplicate composition package |
 | P3-17 DTO boundary | app/ui definitions -> UIPage/UIPanel only; no owner/Go internals |
 | P3-18 no Kernel change | no runtime/ui addition; see BOUNDARY_AUDIT.md |
+
+## Batch 3.2 — Runtime Component ↔ UI Contribution Lifecycle Conformance (P3.2)
+
+P3.2 proves that UI Contribution is not a standalone UI Registry state: it is
+a reversible Effect owned by the GOCORDIS Component Activation.
+
+### Added for conformance
+
+- `ContributionOwner` now carries `ComponentID` + `ActivationID` (plus
+  descriptive `PluginID`). Because the public GOCORDIS runtime API exposes no
+  numeric ActivationID inside `Apply`, the contributor allocates an opaque
+  process-unique activation generation label on every Apply. The label is
+  application ownership metadata only; no Kernel identity or lifecycle was
+  invented, and cleanup remains owned by the Runtime Effect.
+- Cleanup returned by `RegisterPage/RegisterPanel` is idempotent and
+  owner-guarded: a late stale cleanup can never delete a newer activation's
+  contribution.
+- `app/ui.Registry.Contributions()` provides the Application/UI-Host ownership
+  view. React only sees `ListPages/ListPanels` DTOs.
+- New `ui-contribution` component type can register multiple Pages and/or
+  Panels in one Apply; each registration is one Runtime Effect, so Dispose
+  removes every owned contribution.
+- P3.2 conformance tests cover stale-owner protection, idempotent cleanup,
+  deterministic snapshots, no parallel lifecycle methods, and E2E scenarios
+  A/B/C/D/E.
+
+### P3.2 acceptance mapping
+
+| Gate | Evidence |
+| --- | --- |
+| P3.2-01 Owner identity | `TestP32_01OwnerIdentity` + `Tests/e2e_ui_p32_test.go` owner checks |
+| P3.2-02 Cleanup | `TestP32_02CleanupIsReversibleAndIdempotent` |
+| P3.2-03 Activation ownership | `TestP32_03ActivationOwnsRegistration` + E2E reload |
+| P3.2-04 Dispose isolation | `TestP32_04DisposeIsolation`, `TestP32_15TwoPluginDisposeIsolation` |
+| P3.2-05 Multi-contribution cleanup | `TestP32_05MultipleContributionCleanup`, `TestP32_15MultipleContributionsDispose` |
+| P3.2-06 Reload | `TestP32_06ReloadKeepsOnlyNewActivation`, `TestP32_15ReloadOnlyNewActivation` |
+| P3.2-07 Stale activation | `TestP32_07StaleOwnerProtection`, `TestP32_15StaleActivation` |
+| P3.2-08 Deterministic ordering | `TestP32_08DeterministicOrderingStableSnapshot`, existing P305/306 |
+| P3.2-09 Host/Registry separation | Registry has no lifecycle API; transport only reads List DTOs |
+| P3.2-10 React isolation | React API exposes no Register/Dispose methods |
+| P3.2-11 Wails/HTTP parity | HTTP endpoint test compares adapter and `/api/ui/*` snapshots |
+| P3.2-12 Kernel isolation | no `runtime/` change; see BOUNDARY_AUDIT.md |
+| P3.2-13 No second lifecycle | `TestP32_13RegistryHasNoParallelLifecycle` |
+| P3.2-14 No second event bus | composition uses existing Observation/bridge only |
+| P3.2-15 E2E A/B/C/D/E | `tests/e2e_ui_p32_test.go` + registry conformance tests |

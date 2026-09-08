@@ -113,6 +113,16 @@ func TestWebUIHTTPBridge(t *testing.T) {
 	if first["id"] != "collections" || first["title"] != "Collections" || first["route"] != "/collections" || first["renderer"] != "collections" {
 		t.Fatalf("http page dto = %#v", first)
 	}
+	adapterPages, ue := ui.HostAdapter().ListPages()
+	if ue != nil || len(adapterPages.Pages) != len(pages) {
+		t.Fatalf("adapter/http page parity failed: adapter=%#v err=%#v", adapterPages, ue)
+	}
+	for i, p := range pages {
+		if p["id"] != adapterPages.Pages[i].ID {
+			t.Fatalf("HTTP page order differs from adapter: %#v vs %#v", pages, adapterPages.Pages)
+		}
+	}
+
 	panels := webGetPanels(t, srv, "/api/ui/panels")
 	if len(panels) != 2 {
 		t.Fatalf("http panels = %#v", panels)
@@ -123,6 +133,15 @@ func TestWebUIHTTPBridge(t *testing.T) {
 	}
 	if byID["metadata"]["position"] != "right" || byID["metadata"]["renderer"] != "metadata" || byID["event-feed"]["position"] != "bottom" {
 		t.Fatalf("http panels = %#v", panels)
+	}
+	adapterPanels, ue := ui.HostAdapter().ListPanels()
+	if ue != nil || len(adapterPanels.Panels) != len(panels) {
+		t.Fatalf("adapter/http panel parity failed: adapter=%#v err=%#v", adapterPanels, ue)
+	}
+	for i, p := range panels {
+		if p["id"] != adapterPanels.Panels[i].ID {
+			t.Fatalf("HTTP panel order differs from adapter: %#v vs %#v", panels, adapterPanels.Panels)
+		}
 	}
 
 	// Static UI.

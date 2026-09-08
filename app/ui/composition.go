@@ -39,12 +39,16 @@ type PanelDefinition struct {
 }
 
 // ContributionOwner records which plugin activation owns a contribution.
-// PluginID reuses the Config Type and InstanceID reuses the Config Component
-// ID: both are already stable in the GOCORDIS Config Controller identity
-// model. No second lifecycle identity is invented.
+// ComponentID reuses the Config Component ID (a stable GOCORDIS Config
+// Controller identity). ActivationID is an opaque activation generation label
+// allocated by the contributor on every Apply because the public runtime API
+// exposes no numeric ActivationID; cleanup is still owned and executed by the
+// Runtime Effect. PluginID is the Config Type, retained as descriptive
+// identity only.
 type ContributionOwner struct {
-	PluginID   string
-	InstanceID string
+	PluginID     string
+	ComponentID  string
+	ActivationID string
 }
 
 var (
@@ -64,6 +68,27 @@ type Registry interface {
 	RegisterPanel(owner ContributionOwner, def PanelDefinition) (func() error, error)
 	ListPages() []PageDefinition
 	ListPanels() []PanelDefinition
+	// Contributions is the Application/UI-Host ownership view. It is never
+	// exposed to React: transport DTOs only consume ListPages/ListPanels.
+	Contributions() []Contribution
+}
+
+// ContributionKind distinguishes Page and Panel contributions in the internal
+// ownership snapshot.
+type ContributionKind string
+
+const (
+	ContributionPage  ContributionKind = "page"
+	ContributionPanel ContributionKind = "panel"
+)
+
+// Contribution is one Application/UI-Host ownership row. Only one of Page or
+// Panel is populated based on Kind.
+type Contribution struct {
+	Kind  ContributionKind
+	Owner ContributionOwner
+	Page  PageDefinition
+	Panel PanelDefinition
 }
 
 type pageEntry struct {
@@ -98,7 +123,7 @@ func NewRegistry(onChange func()) Registry {
 }
 
 func (r *registry) RegisterPage(owner ContributionOwner, def PageDefinition) (func() error, error) {
-	if owner.PluginID == "" || owner.InstanceID == "" {
+	if owner.ComponentID == "" || owner.ActivationID == "" {
 		return nil, ErrContributionOwner
 	}
 	if def.ID == "" {
@@ -117,7 +142,7 @@ func (r *registry) RegisterPage(owner ContributionOwner, def PageDefinition) (fu
 }
 
 func (r *registry) RegisterPanel(owner ContributionOwner, def PanelDefinition) (func() error, error) {
-	if owner.PluginID == "" || owner.InstanceID == "" {
+	if owner.ComponentID == "" || owner.ActivationID == "" {
 		return nil, ErrContributionOwner
 	}
 	if def.ID == "" {
@@ -141,11 +166,11 @@ func (r *registry) unregisterPageFunc(owner ContributionOwner, id string) func()
 		entry, ok := r.pages[id]
 		if !ok {
 			r.mu.Unlock()
-			return ErrMissingPage
+			return nil // already removed; cleanup is idempotent
 		}
 		if entry.owner != owner {
 			r.mu.Unlock()
-			return ErrMissingPage
+			return nil // newer activation owns this ID; stale cleanup must not delete it
 		}
 		delete(r.pages, id)
 		r.pageOrder = removeOrderID(r.pageOrder, id)
@@ -161,11 +186,11 @@ func (r *registry) unregisterPanelFunc(owner ContributionOwner, id string) func(
 		entry, ok := r.panels[id]
 		if !ok {
 			r.mu.Unlock()
-			return ErrMissingPanel
+			return nil // already removed; cleanup is idempotent
 		}
 		if entry.owner != owner {
 			r.mu.Unlock()
-			return ErrMissingPanel
+			return nil // newer activation owns this ID; stale cleanup must not delete it
 		}
 		delete(r.panels, id)
 		r.panelOrder = removeOrderID(r.panelOrder, id)
@@ -196,6 +221,23 @@ func (r *registry) ListPanels() []PanelDefinition {
 		entry, ok := r.panels[id]
 		if ok {
 			out = append(out, entry.def)
+		}
+	}
+	return out
+}
+
+func (r *registry) Contributions() []Contribution {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Contribution, 0, len(r.pages)+len(r.panels))
+	for _, id := range r.pageOrder {
+		if entry, ok := r.pages[id]; ok {
+			out = append(out, Contribution{Kind: ContributionPage, Owner: entry.owner, Page: entry.def})
+		}
+	}
+	for _, id := range r.panelOrder {
+		if entry, ok := r.panels[id]; ok {
+			out = append(out, Contribution{Kind: ContributionPanel, Owner: entry.owner, Panel: entry.def})
 		}
 	}
 	return out

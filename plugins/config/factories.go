@@ -99,5 +99,10 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
 	}); err != nil {
 		return err
 	}
+	if err := register("ui-contribution", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uicontrib.NewContribution(cc)
+	}); err != nil {
+		return err
+	}
 	return nil
 }

@@ -30,7 +30,7 @@ plugins/           GOCORDIS Components, capability keys, and factories
 plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
 plugins/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
-plugins/ui-contrib/Independent UI Page/Panel Contribution GOCORDIS Components
+plugins/ui-contrib/Independent UI Contribution GOCORDIS Components (single or multi Page/Panel)
 frontend/          React host (api layer + host verification page; npm build/test pass)
 cmd/collector-ui/   Real Wails Desktop Host (separate Go module; needs Wails toolchain)
 cmd/web-ui/         Embedded HTTP Web UI (go:embed + net/http + SSE)

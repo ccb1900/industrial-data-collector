@@ -6,8 +6,8 @@ import (
 )
 
 var (
-	testOwnerA = ContributionOwner{PluginID: "plugin-a", InstanceID: "instance-a"}
-	testOwnerB = ContributionOwner{PluginID: "plugin-b", InstanceID: "instance-b"}
+	testOwnerA = ContributionOwner{PluginID: "ui-page", ComponentID: "plugin-a", ActivationID: "activation-a1"}
+	testOwnerB = ContributionOwner{PluginID: "ui-panel", ComponentID: "plugin-b", ActivationID: "activation-b1"}
 )
 
 func TestP301SinglePluginRegistersPage(t *testing.T) {

@@ -129,33 +129,45 @@ identity, so rule changes do not cause re-collection. See
   `UIPage`/`UIPanel` DTOs. It never hard-codes business pages or panels.
 - `type`: `ui-page` / `ui-panel`. Each component is one independent UI
   Contribution Plugin and registers one declarative Page/Panel during its own
-  activation:
+  activation. `ui-contribution` registers multiple Page/Panel values from its
+  `pages`/`panels` arrays in one component activation. Each registration is a
+  Runtime Effect owned by that activation; cleanup is idempotent and
+  owner-guarded. Contribution Owner identity is
+  `{ComponentID, ActivationID}`; the opaque ActivationID is a process-unique
+  per-Apply activation generation label because the public runtime API exposes
+  no numeric ID inside Apply.
+  Fields:
   - `ui-page`: `page_id`, `title`, `route`, `renderer`.
   - `ui-panel`: `panel_id`, `title`, `position` (`main`/`right`/`bottom`), `renderer`.
   Renderer values are declarative identities mapped centrally by React
   (`collections`, `metadata`, `event-feed`, `files`, `sources`, ...). No
   JavaScript is injected by a plugin.
 
-Example:
+Multi-contribution example (one component contributes two Pages and one
+Panel):
 
 ```toml
 [[components]]
-id = "ui-page-collections"
-type = "ui-page"
+id = "ui-multi"
+type = "ui-contribution"
 
 [components.config]
-page_id = "collections"
-title = "Collections"
-route = "/collections"
+
+[[components.config.pages]]
+page_id = "page-a"
+title = "Page A"
+route = "/a"
 renderer = "collections"
 
-[[components]]
-id = "ui-panel-event-feed"
-type = "ui-panel"
+[[components.config.pages]]
+page_id = "page-b"
+title = "Page B"
+route = "/b"
+renderer = "files"
 
-[components.config]
-panel_id = "event-feed"
-title = "Latest Events"
+[[components.config.panels]]
+panel_id = "panel-a"
+title = "Panel A"
 position = "bottom"
 renderer = "event-feed"
 ```

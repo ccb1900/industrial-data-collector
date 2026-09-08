@@ -1,20 +1,20 @@
 // Package uicontrib implements independent UI Contribution GOCORDIS
-// Components. Each configured component registers exactly one declarative
-// PageDefinition or PanelDefinition into the UI Host Registry during its own
-// activation; unloading that component runs Effect cleanup and removes only its
-// own contribution. The UI Host never names or enumerates these business
-// plugins.
+// Components. Each configured component registers declarative PageDefinition
+// and/or PanelDefinition values into the UI Host Registry during its own
+// activation; unloading that component runs Runtime Effect cleanup and removes
+// only its own contributions. The UI Host never names or enumerates these
+// business plugins.
 package uicontrib
 
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
 	appui "gocordis-csv-collector/app/ui"
-	"gocordis-csv-collector/plugins/internal/configutil"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
@@ -46,15 +46,17 @@ func (c *PageComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	cleanup, err := reg.RegisterPage(c.owner(), c.def)
-	if err != nil {
+	owner := c.owner(ctx)
+	if err := ctx.Effect(func() (func() error, error) {
+		return reg.RegisterPage(owner, c.def)
+	}); err != nil {
 		return nil, err
 	}
-	return cleanup, nil
+	return nil, nil
 }
 
-func (c *PageComponent) owner() appui.ContributionOwner {
-	return appui.ContributionOwner{PluginID: c.plugin, InstanceID: c.id}
+func (c *PageComponent) owner(ctx *runtime.Context) appui.ContributionOwner {
+	return appui.ContributionOwner{PluginID: c.plugin, ComponentID: c.id, ActivationID: activationID(ctx)}
 }
 
 // PanelComponent registers one Panel during each activation.
@@ -85,51 +87,174 @@ func (c *PanelComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	cleanup, err := reg.RegisterPanel(c.owner(), c.def)
+	owner := c.owner(ctx)
+	if err := ctx.Effect(func() (func() error, error) {
+		return reg.RegisterPanel(owner, c.def)
+	}); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (c *PanelComponent) owner(ctx *runtime.Context) appui.ContributionOwner {
+	return appui.ContributionOwner{PluginID: c.plugin, ComponentID: c.id, ActivationID: activationID(ctx)}
+}
+
+// ContributionComponent is one component that contributes multiple Pages and/or
+// Panels from its own config block. A single Apply creates one reversible
+// Runtime Effect per contribution; disposing the component removes all of them.
+type ContributionComponent struct {
+	plugin string
+	id     string
+	pages  []appui.PageDefinition
+	panels []appui.PanelDefinition
+}
+
+// NewContribution creates a UI Contribution Component from pages/panels arrays.
+func NewContribution(cc config.ComponentConfig) (*ContributionComponent, error) {
+	comp := &ContributionComponent{plugin: cc.Type, id: cc.ID}
+	if raw, ok := cc.Config["pages"]; ok {
+		pages, err := parsePages(raw)
+		if err != nil {
+			return nil, fmt.Errorf("ui-contribution %q pages: %w", cc.ID, err)
+		}
+		comp.pages = pages
+	}
+	if raw, ok := cc.Config["panels"]; ok {
+		panels, err := parsePanels(raw)
+		if err != nil {
+			return nil, fmt.Errorf("ui-contribution %q panels: %w", cc.ID, err)
+		}
+		comp.panels = panels
+	}
+	if len(comp.pages) == 0 && len(comp.panels) == 0 {
+		return nil, fmt.Errorf("ui-contribution %q requires pages and/or panels", cc.ID)
+	}
+	return comp, nil
+}
+
+func (c *ContributionComponent) Name() string                  { return fmt.Sprintf("ui-contrib-multi:%s", c.id) }
+func (c *ContributionComponent) Provide() []runtime.Capability { return nil }
+
+func (c *ContributionComponent) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(uiplugin.UIHostKey)}
+}
+
+func (c *ContributionComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	reg, err := runtime.Require(ctx, uiplugin.UIHostKey)
 	if err != nil {
 		return nil, err
 	}
-	return cleanup, nil
+	owner := appui.ContributionOwner{PluginID: c.plugin, ComponentID: c.id, ActivationID: activationID(ctx)}
+	for _, def := range c.pages {
+		if err := ctx.Effect(func() (func() error, error) {
+			return reg.RegisterPage(owner, def)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	for _, def := range c.panels {
+		if err := ctx.Effect(func() (func() error, error) {
+			return reg.RegisterPanel(owner, def)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
-func (c *PanelComponent) owner() appui.ContributionOwner {
-	return appui.ContributionOwner{PluginID: c.plugin, InstanceID: c.id}
+// activationSeq gives each Apply an opaque process-unique activation label.
+// The public GOCORDIS API does not expose the Kernel's numeric ActivationID to
+// Component code; this label is identity metadata only. Cleanup remains owned
+// and executed by the Runtime Effect, never by this sequence.
+var activationSeq atomic.Uint64
+
+func activationID(_ *runtime.Context) string {
+	return fmt.Sprintf("activation:%d", activationSeq.Add(1))
+}
+
+func parsePages(raw any) ([]appui.PageDefinition, error) {
+	rows, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an array")
+	}
+	out := make([]appui.PageDefinition, 0, len(rows))
+	for _, row := range rows {
+		m, ok := row.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("entry must be a table")
+		}
+		def, err := pageFromMap(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, def)
+	}
+	return out, nil
+}
+
+func parsePanels(raw any) ([]appui.PanelDefinition, error) {
+	rows, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an array")
+	}
+	out := make([]appui.PanelDefinition, 0, len(rows))
+	for _, row := range rows {
+		m, ok := row.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("entry must be a table")
+		}
+		def, err := panelFromMap(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, def)
+	}
+	return out, nil
 }
 
 func pageDefinition(cc config.ComponentConfig) (appui.PageDefinition, error) {
-	id, err := configutil.RequiredString(cc, "page_id")
+	return pageFromMap(cc.Config)
+}
+
+func panelDefinition(cc config.ComponentConfig) (appui.PanelDefinition, error) {
+	return panelFromMap(cc.Config)
+}
+
+func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
+	id, err := requiredMapString(m, "page_id")
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
-	title, err := configutil.RequiredString(cc, "title")
+	title, err := requiredMapString(m, "title")
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
-	route, err := configutil.RequiredString(cc, "route")
+	route, err := requiredMapString(m, "route")
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
-	renderer, err := configutil.RequiredString(cc, "renderer")
+	renderer, err := requiredMapString(m, "renderer")
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
 	return appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer}, nil
 }
 
-func panelDefinition(cc config.ComponentConfig) (appui.PanelDefinition, error) {
-	id, err := configutil.RequiredString(cc, "panel_id")
+func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
+	id, err := requiredMapString(m, "panel_id")
 	if err != nil {
 		return appui.PanelDefinition{}, err
 	}
-	title, err := configutil.RequiredString(cc, "title")
+	title, err := requiredMapString(m, "title")
 	if err != nil {
 		return appui.PanelDefinition{}, err
 	}
-	position, err := configutil.RequiredString(cc, "position")
+	position, err := requiredMapString(m, "position")
 	if err != nil {
 		return appui.PanelDefinition{}, err
 	}
-	renderer, err := configutil.RequiredString(cc, "renderer")
+	renderer, err := requiredMapString(m, "renderer")
 	if err != nil {
 		return appui.PanelDefinition{}, err
 	}
@@ -149,4 +274,13 @@ func panelDefinition(cc config.ComponentConfig) (appui.PanelDefinition, error) {
 		return appui.PanelDefinition{}, fmt.Errorf("invalid panel position %q", position)
 	}
 	return def, nil
+}
+
+func requiredMapString(m map[string]any, key string) (string, error) {
+	if v, ok := m[key]; ok && v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s, nil
+		}
+	}
+	return "", fmt.Errorf("missing string %q", key)
 }
