@@ -220,7 +220,9 @@ Application Plugin (ui-page/ui-panel contributor)
 
 - `app/ui/` — canonical `PageDefinition`, `PanelDefinition`, `Position`,
   `ContributionOwner`, and `Registry`. Registration returns an unregister
-  function; a UI Host activation owns exactly one registry.
+  function; a UI Host activation owns exactly one registry. Page/Panel
+  definitions may carry optional `Order` metadata; Registry snapshots sort by
+  `Order` first and preserve registration sequence for equal orders.
 - `plugins/ui/` — UI Host only. It no longer hard-codes dashboard/
   collections/files/sources/metadata/event-feed; it provides the Registry as a
   Runtime Capability and exposes the shared `Host.ListPages/ListPanels` DTO
@@ -245,7 +247,7 @@ Application Plugin (ui-page/ui-panel contributor)
 | --- | --- |
 | P3-01/02 single plugin registers Page/Panel | `app/ui/composition_test.go` |
 | P3-03/04 duplicate ID rejected | same registry tests |
-| P3-05/06 deterministic ordering | same registry tests (registration sequence) |
+| P3-05/06 deterministic ordering | same registry tests (Order metadata; equal orders keep registration sequence) |
 | P3-07/08 owner cleanup | `TestP307/P308` + `TestP3IndependentPluginLoadUnloadReload` |
 | P3-09 Plugin A unload leaves B | `TestP3IndependentPluginLoadUnloadReload` |
 | P3-10 reload restores | same test |

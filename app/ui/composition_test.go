@@ -92,6 +92,33 @@ func TestP306PanelOrderingDeterministic(t *testing.T) {
 	}
 }
 
+func TestExplicitOrderWinsOverRegistrationOrder(t *testing.T) {
+	r := NewRegistry(nil)
+	for _, tc := range []struct {
+		id    string
+		order int
+	}{
+		{id: "z", order: 3},
+		{id: "m", order: 1},
+		{id: "a", order: 2},
+	} {
+		if _, err := r.RegisterPage(testOwnerA, PageDefinition{ID: tc.id, Order: tc.order}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.RegisterPanel(testOwnerA, PanelDefinition{ID: tc.id + "-panel", Order: tc.order}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages := r.Snapshot().Pages
+	panels := r.Snapshot().Panels
+	if pages[0].ID != "m" || pages[1].ID != "a" || pages[2].ID != "z" {
+		t.Fatalf("explicit page order = %#v, want m,a,z", pages)
+	}
+	if panels[0].ID != "m-panel" || panels[1].ID != "a-panel" || panels[2].ID != "z-panel" {
+		t.Fatalf("explicit panel order = %#v, want m-panel,a-panel,z-panel", panels)
+	}
+}
+
 func TestP307OwnerCleanupRemovesOwnedPageOnly(t *testing.T) {
 	r := NewRegistry(nil)
 	cleanupA, err := r.RegisterPage(testOwnerA, PageDefinition{ID: "a"})

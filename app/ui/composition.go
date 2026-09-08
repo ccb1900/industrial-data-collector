@@ -6,6 +6,7 @@ package ui
 
 import (
 	"errors"
+	"sort"
 	"sync"
 )
 
@@ -28,6 +29,10 @@ type PageDefinition struct {
 	Title    string
 	Route    string
 	Renderer string
+	// Order is Contribution metadata controlling stable Composition order.
+	// Entries with the same Order keep registration sequence for
+	// deterministic Registry tests and plugin-authored contributions.
+	Order int
 }
 
 // PanelDefinition is a stable UI Panel Contribution contract.
@@ -36,6 +41,7 @@ type PanelDefinition struct {
 	Title    string
 	Position Position
 	Renderer string
+	Order    int
 }
 
 // CompositionSnapshot is one atomic, read-only view of the current Page and
@@ -215,12 +221,10 @@ func (r *registry) unregisterPanelFunc(owner ContributionOwner, id string) func(
 func (r *registry) ListPages() []PageDefinition {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]PageDefinition, 0, len(r.pages))
-	for _, id := range r.pageOrder {
-		entry, ok := r.pages[id]
-		if ok {
-			out = append(out, entry.def)
-		}
+	entries := r.orderedPageEntriesLocked()
+	out := make([]PageDefinition, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.def)
 	}
 	return out
 }
@@ -228,12 +232,10 @@ func (r *registry) ListPages() []PageDefinition {
 func (r *registry) ListPanels() []PanelDefinition {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]PanelDefinition, 0, len(r.panels))
-	for _, id := range r.panelOrder {
-		entry, ok := r.panels[id]
-		if ok {
-			out = append(out, entry.def)
-		}
+	entries := r.orderedPanelEntriesLocked()
+	out := make([]PanelDefinition, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.def)
 	}
 	return out
 }
@@ -241,19 +243,17 @@ func (r *registry) ListPanels() []PanelDefinition {
 func (r *registry) Snapshot() CompositionSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	pageEntries := r.orderedPageEntriesLocked()
+	panelEntries := r.orderedPanelEntriesLocked()
 	out := CompositionSnapshot{
-		Pages:  make([]PageDefinition, 0, len(r.pages)),
-		Panels: make([]PanelDefinition, 0, len(r.panels)),
+		Pages:  make([]PageDefinition, 0, len(pageEntries)),
+		Panels: make([]PanelDefinition, 0, len(panelEntries)),
 	}
-	for _, id := range r.pageOrder {
-		if entry, ok := r.pages[id]; ok {
-			out.Pages = append(out.Pages, entry.def)
-		}
+	for _, entry := range pageEntries {
+		out.Pages = append(out.Pages, entry.def)
 	}
-	for _, id := range r.panelOrder {
-		if entry, ok := r.panels[id]; ok {
-			out.Panels = append(out.Panels, entry.def)
-		}
+	for _, entry := range panelEntries {
+		out.Panels = append(out.Panels, entry.def)
 	}
 	return out
 }
@@ -261,18 +261,42 @@ func (r *registry) Snapshot() CompositionSnapshot {
 func (r *registry) Contributions() []Contribution {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Contribution, 0, len(r.pages)+len(r.panels))
-	for _, id := range r.pageOrder {
-		if entry, ok := r.pages[id]; ok {
-			out = append(out, Contribution{Kind: ContributionPage, Owner: entry.owner, Page: entry.def})
-		}
+	pageEntries := r.orderedPageEntriesLocked()
+	panelEntries := r.orderedPanelEntriesLocked()
+	out := make([]Contribution, 0, len(pageEntries)+len(panelEntries))
+	for _, entry := range pageEntries {
+		out = append(out, Contribution{Kind: ContributionPage, Owner: entry.owner, Page: entry.def})
 	}
-	for _, id := range r.panelOrder {
-		if entry, ok := r.panels[id]; ok {
-			out = append(out, Contribution{Kind: ContributionPanel, Owner: entry.owner, Panel: entry.def})
-		}
+	for _, entry := range panelEntries {
+		out = append(out, Contribution{Kind: ContributionPanel, Owner: entry.owner, Panel: entry.def})
 	}
 	return out
+}
+
+func (r *registry) orderedPageEntriesLocked() []pageEntry {
+	entries := make([]pageEntry, 0, len(r.pages))
+	for _, id := range r.pageOrder {
+		if entry, ok := r.pages[id]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].def.Order < entries[j].def.Order
+	})
+	return entries
+}
+
+func (r *registry) orderedPanelEntriesLocked() []panelEntry {
+	entries := make([]panelEntry, 0, len(r.panels))
+	for _, id := range r.panelOrder {
+		if entry, ok := r.panels[id]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].def.Order < entries[j].def.Order
+	})
+	return entries
 }
 
 func (r *registry) notify() {

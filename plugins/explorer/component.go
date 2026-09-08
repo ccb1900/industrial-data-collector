@@ -38,6 +38,7 @@ func NewPlugin(cc config.ComponentConfig, service *appexplorer.Service) (*Explor
 		Title:    configutil.OptionalString(cc, "title", "Plugins"),
 		Route:    configutil.OptionalString(cc, "route", "/plugins"),
 		Renderer: "plugin-explorer",
+		Order:    configutil.OptionalInt(cc, "order", 0),
 	}
 	if page.ID == "" {
 		page.ID = "plugins"

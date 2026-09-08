@@ -191,8 +191,10 @@ fetched from `GET /api/plugins` and Runtime ON/OFF is submitted to
   Explorer rows are derived from the desired component set already owned by the
   Config Controller; state is read from Runtime fibers (`Active`, `Pending`,
   `Failed`, `Gone`, ...). No plugin list is hard-coded in React.
-- Fields: `page_id`, `title`, `route` (defaults `plugins`, `Plugins`,
-  `/plugins`). The renderer is fixed to `plugin-explorer`.
+- Fields: `page_id`, `title`, `route`, optional `order` (defaults `plugins`,
+  `Plugins`, `/plugins`, registration order). The renderer is fixed to
+  `plugin-explorer`. `order` is Contribution metadata used for stable
+  navigation order regardless of Runtime activation order.
 - ON/OFF is a Runtime Control request: the Application Service calls public
   `Fiber.Load`/`Dispose` and returns `Accepted`/`Rejected`/`Failed` plus the
   current Runtime state. The Console UI refreshes after control instead of
@@ -208,7 +210,13 @@ type = "plugin-explorer"
 page_id = "plugins"
 title = "Plugins"
 route = "/plugins"
+order = 40
 ```
+
+Every `ui-page`, `ui-panel`, and `ui-contribution` page/panel entry accepts an
+optional `order` integer as well; the UI Composition Registry sorts by this
+field before registration sequence, so page order no longer depends on which
+plugin happened to activate first.
 
 ## Collector
 

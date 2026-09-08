@@ -73,6 +73,7 @@ page_id = "collections"
 title = "Collections"
 route = "/collections"
 renderer = "collections"
+order = 10
 
 [[components]]
 id = "ui-page-files"
@@ -83,6 +84,7 @@ page_id = "files"
 title = "Files"
 route = "/files"
 renderer = "files"
+order = 20
 
 [[components]]
 id = "ui-page-sources"
@@ -93,6 +95,7 @@ page_id = "sources"
 title = "Sources"
 route = "/sources"
 renderer = "sources"
+order = 30
 
 [[components]]
 id = "ui-panel-metadata"
@@ -103,6 +106,7 @@ panel_id = "metadata"
 title = "Metadata"
 position = "right"
 renderer = "metadata"
+order = 10
 
 [[components]]
 id = "ui-panel-event-feed"
@@ -113,6 +117,7 @@ panel_id = "event-feed"
 title = "Latest Events"
 position = "bottom"
 renderer = "event-feed"
+order = 20
 
 # Plugin Explorer is itself an ordinary plugin: it contributes this Console
 # page and exposes Runtime inspection/control through the application bridge.
@@ -124,3 +129,4 @@ type = "plugin-explorer"
 page_id = "plugins"
 title = "Plugins"
 route = "/plugins"
+order = 40

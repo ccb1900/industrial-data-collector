@@ -8,6 +8,7 @@ package uicontrib
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -238,7 +239,7 @@ func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
-	return appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer}, nil
+	return appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}, nil
 }
 
 func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
@@ -258,7 +259,7 @@ func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
 	if err != nil {
 		return appui.PanelDefinition{}, err
 	}
-	def := appui.PanelDefinition{ID: id, Title: title, Renderer: renderer}
+	def := appui.PanelDefinition{ID: id, Title: title, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
 	switch strings.ToLower(position) {
 	case "main":
 		def.Position = appui.PositionMain
@@ -274,6 +275,30 @@ func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
 		return appui.PanelDefinition{}, fmt.Errorf("invalid panel position %q", position)
 	}
 	return def, nil
+}
+
+func optionalMapInt(m map[string]any, key string, def int) int {
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return def
+	}
+	switch n := raw.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		if parsed, err := strconv.Atoi(n); err == nil {
+			return parsed
+		}
+	}
+	return def
 }
 
 func requiredMapString(m map[string]any, key string) (string, error) {
