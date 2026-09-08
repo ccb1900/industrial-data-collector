@@ -23,21 +23,30 @@ type Parser struct {
 	Header    bool
 	Comma     rune
 	SkipLines int
+	Document  DocumentConfig
 }
 
 func New() *Parser { return &Parser{} }
 
-func (p *Parser) Parse(ctx context.Context, r io.Reader) (model.RecordStream, error) {
+func (p *Parser) Parse(ctx context.Context, r io.Reader) (model.CSVDocument, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if r == nil {
-		return nil, errs.Sourcef(errs.ErrInvalidFile, "nil reader")
+		return model.CSVDocument{}, errs.Sourcef(errs.ErrInvalidFile, "nil reader")
 	}
 	br := bufio.NewReader(r)
 	if peek, err := br.Peek(3); err == nil && len(peek) == 3 && peek[0] == 0xEF && peek[1] == 0xBB && peek[2] == 0xBF {
 		_, _ = br.Discard(3)
 	}
+	if p.Document.Enabled() {
+		return p.parseStructuredDocument(ctx, br)
+	}
+	stream, err := p.parseFlat(ctx, br)
+	return model.CSVDocument{Data: stream}, err
+}
+
+func (p *Parser) parseFlat(ctx context.Context, br *bufio.Reader) (*stream, error) {
 	if p.SkipLines < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidFile, "skip_lines must be >= 0")
 	}

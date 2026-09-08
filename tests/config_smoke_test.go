@@ -16,7 +16,7 @@ import (
 // path-metadata components (with or without rules) must parse through the real
 // TOML parser and pass application validation before Runtime mutation.
 func TestSampleConfigsParseAndValidate(t *testing.T) {
-	for _, name := range []string{"example.toml", "mysql.toml", "unc-postgres.toml", "oracle.toml"} {
+	for _, name := range []string{"example.toml", "mysql.toml", "unc-postgres.toml", "oracle.toml", "structured-metadata.toml"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join("..", "configs", name))
 			if err != nil {

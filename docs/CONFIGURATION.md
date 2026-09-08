@@ -96,6 +96,14 @@ identity, so rule changes do not cause re-collection. See
   (default 0). Use it when an exported CSV starts with metadata/comment lines
   before the real header or data rows. Skipped lines are not parsed as CSV and
   never become rows.
+- `csv`: optional structured CSV Document layout. `csv.metadata.mode` is
+  `none` (default) or `key_value`; `key_value` also requires
+  `csv.metadata.start_row`, `csv.metadata.end_row`, and
+  `csv.data.header_row` (physical rows starting at 1). Metadata rows are
+  `key,value`, blank rows between `end_row` and `header_row` are separators,
+  and rows at/after `header_row` are the Data Header and data records.
+  Structured mode requires `header = true` and cannot be combined with
+  `skip_lines`. See [`CSV_STRUCTURED_METADATA.md`](CSV_STRUCTURED_METADATA.md).
 
 ## Storage
 

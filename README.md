@@ -13,7 +13,7 @@ modified by this project.
 ```text
 app/model/         Application models and capability contracts
 app/metadata/      Pure path/filename metadata extraction engine
-app/parser/        Streaming CSV parser
+app/parser/        Streaming CSV parser + structured CSV Document metadata
 app/query/         UI Query/Observation/Command capability contracts + read model
 app/ui/            UI Composition contract + owner-aware composition Registry
 app/explorer/      Plugin Explorer inspection/control boundary (Application layer)
@@ -47,7 +47,9 @@ Each business capability has one plugin package under `plugins/`:
 `plugins/scheduler`, `plugins/metadata`, `plugins/collector`, and
 `plugins/config` (factory registration). Application-only logic lives under
 `app/` and never starts a second lifecycle. See
-[`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature and
+[`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature,
+[`docs/CSV_STRUCTURED_METADATA.md`](docs/CSV_STRUCTURED_METADATA.md) for CSV
+Metadata Section parsing, and
 [`docs/UI_PLUGIN.md`](docs/UI_PLUGIN.md) for the UI Plugin Contract Go core
 (UI Plugin Go core through P2.1; batches 3/3.2/3.3/3.4 add dynamic UI
 Composition, runtime lifecycle conformance, and the Plugin Explorer Console).

@@ -274,6 +274,43 @@ func TestValidateParserSkipLines(t *testing.T) {
 	}
 }
 
+func TestValidateParserStructuredMetadataConfig(t *testing.T) {
+	structured := func(start, end, header int, extra func(map[string]any)) extconfig.Config {
+		cfg := validConfig()
+		parserCfg := map[string]any{
+			"header": true,
+			"csv": map[string]any{
+				"metadata": map[string]any{"mode": "key_value", "start_row": start, "end_row": end},
+				"data":     map[string]any{"header_row": header},
+			},
+		}
+		if extra != nil {
+			extra(parserCfg)
+		}
+		cfg.Components[1].Config = parserCfg
+		return cfg
+	}
+	if err := Validate(structured(1, 2, 4, nil)); err != nil {
+		t.Fatalf("valid structured parser config rejected: %v", err)
+	}
+	bad := []func() extconfig.Config{
+		func() extconfig.Config { return structured(0, 2, 4, nil) },
+		func() extconfig.Config { return structured(5, 2, 4, nil) },
+		func() extconfig.Config { return structured(1, 2, 2, nil) },
+		func() extconfig.Config {
+			return structured(1, 2, 4, func(m map[string]any) { m["header"] = false })
+		},
+		func() extconfig.Config {
+			return structured(1, 2, 4, func(m map[string]any) { m["skip_lines"] = 1 })
+		},
+	}
+	for i, makeCfg := range bad {
+		if err := Validate(makeCfg()); err == nil {
+			t.Fatalf("invalid structured parser case %d must be rejected", i)
+		}
+	}
+}
+
 func TestValidateAcceptsQueryAndUIComponents(t *testing.T) {
 	cfg := validConfig()
 	cfg.Components = append(cfg.Components,

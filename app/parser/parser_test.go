@@ -13,10 +13,11 @@ func TestParseHeadersQuotesCommasAndLineEndings(t *testing.T) {
 	body := "id,name,note\r\n1,\"alice, chen\",\"said \"\"hi\"\"\"\n2,bob,\n3,carol,\"x\nquoted\"\n"
 	p := New()
 	p.Header = true
-	s, err := p.Parse(context.Background(), bytes.NewBufferString(body))
+	doc, err := p.Parse(context.Background(), bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := doc.Data
 	if got := strings.Join(s.Header(), ","); got != "id,name,note" {
 		t.Fatalf("header = %q", got)
 	}
@@ -45,10 +46,11 @@ func TestParseHeadersQuotesCommasAndLineEndings(t *testing.T) {
 func TestParseWithoutHeader(t *testing.T) {
 	p := New()
 	p.Header = false
-	s, err := p.Parse(context.Background(), strings.NewReader("a,b\n1,2\n"))
+	doc, err := p.Parse(context.Background(), strings.NewReader("a,b\n1,2\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := doc.Data
 	first, err := s.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +63,7 @@ func TestParseWithoutHeader(t *testing.T) {
 func TestParseMalformed(t *testing.T) {
 	p := New()
 	p.Header = true
-	s, err := p.Parse(context.Background(), strings.NewReader("a,b\n1,\"bad\"x\n"))
+	doc, err := p.Parse(context.Background(), strings.NewReader("a,b\n1,\"bad\"x\n"))
 	if err != nil {
 		// Headerless? Header is true, but a parse error may surface at the
 		// first data row rather than eagerly.
@@ -70,6 +72,7 @@ func TestParseMalformed(t *testing.T) {
 		}
 		return
 	}
+	s := doc.Data
 	_, err = s.Next()
 	if err == nil {
 		t.Fatal("malformed CSV must fail")
@@ -81,10 +84,11 @@ func TestParseSkipsPreambleMetadataLines(t *testing.T) {
 	p := New()
 	p.Header = true
 	p.SkipLines = 4 // three metadata lines + one blank line
-	s, err := p.Parse(context.Background(), strings.NewReader(body))
+	doc, err := p.Parse(context.Background(), strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := doc.Data
 	if got := strings.Join(s.Header(), ","); got != "id,name" {
 		t.Fatalf("header = %q, want id,name", got)
 	}
@@ -109,10 +113,11 @@ func TestParseSkipsPreambleWithoutHeader(t *testing.T) {
 	p := New()
 	p.Header = false
 	p.SkipLines = 1
-	s, err := p.Parse(context.Background(), strings.NewReader(body))
+	doc, err := p.Parse(context.Background(), strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := doc.Data
 	first, err := s.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -126,10 +131,11 @@ func TestParseSkipLinesConsumingWholeFileIsEmpty(t *testing.T) {
 	p := New()
 	p.Header = true
 	p.SkipLines = 99
-	s, err := p.Parse(context.Background(), strings.NewReader("Device: X\n"))
+	doc, err := p.Parse(context.Background(), strings.NewReader("Device: X\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := doc.Data
 	if _, err := s.Next(); err != model.ErrEOF {
 		t.Fatalf("Next = %v, want EOF", err)
 	}

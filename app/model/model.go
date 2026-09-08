@@ -197,10 +197,20 @@ type RecordStream interface {
 	Next() (Record, error)
 }
 
-// CSVParser parses one CSV reader without knowing about files, dates, storage,
-// scheduling, recovery, or Runtime lifecycle.
+// CSVDocument is the parser result of one CSV file. Metadata describes the
+// file/business context outside DataSet and Data is the streaming Data Section.
+// Structured is true when the parser was configured to parse an explicit
+// Metadata Section; it lets the Collector namespace path/csv metadata safely.
+type CSVDocument struct {
+	Metadata   Metadata
+	Structured bool
+	Data       RecordStream
+}
+
+// CSVParser parses one CSV reader into a Document without knowing about files,
+// dates, storage, scheduling, recovery, or Runtime lifecycle.
 type CSVParser interface {
-	Parse(ctx context.Context, r io.Reader) (RecordStream, error)
+	Parse(ctx context.Context, r io.Reader) (CSVDocument, error)
 }
 
 // Storage persists batches idempotently. Batch is the minimum transaction

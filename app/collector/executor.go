@@ -10,6 +10,7 @@ import (
 
 	datepolicy "gocordis-csv-collector/app/date"
 	"gocordis-csv-collector/app/errs"
+	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/recovery"
 )
@@ -208,13 +209,16 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		return fr
 	}
 	defer rc.Close()
-	stream, err := e.Parser.Parse(ctx, rc)
+	doc, err := e.Parser.Parse(ctx, rc)
 	if err != nil {
 		fr.Status = model.StatusFailed
-		fr.Error = err.Error()
+		fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 		cfg.Logger.Error("file parse failed", "key", key.String(), "file", file.Name, "error", fr.Error)
 		return fr
 	}
+	md = appmetadata.MergeDocument(md, doc)
+	fr.Metadata = md.Clone()
+	stream := doc.Data
 	header := stream.Header()
 	var records []model.Record
 	sequence := 0
@@ -239,7 +243,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		if err != nil {
 			_ = write()
 			fr.Status = model.StatusFailed
-			fr.Error = err.Error()
+			fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 			cfg.Logger.Error("file parse row failed", "key", key.String(), "file", file.Name, "error", fr.Error)
 			return fr
 		}

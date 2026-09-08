@@ -1,0 +1,73 @@
+# CSV Document with an explicit key/value Metadata Section followed by a Data
+# Section. Physical rows below are counted from 1.
+#
+# 1 设备名称,ABC-001
+# 2 设备型号,XYZ-200
+# 3
+# 4 参数,数值,单位
+# 5 温度,23.5,℃
+
+[[components]]
+id = "production-source"
+type = "local-file-source"
+
+[components.config]
+root = "./data/production"
+pattern = "*.csv"
+file_stable_window_seconds = 0
+
+[[components]]
+id = "csv-parser"
+type = "csv-parser"
+
+[components.config]
+header = true
+
+[components.config.csv.metadata]
+mode = "key_value"
+start_row = 1
+end_row = 2
+
+[components.config.csv.data]
+header_row = 4
+
+[[components]]
+id = "memory-storage"
+type = "memory-storage"
+
+[[components]]
+id = "collection-state"
+type = "file-state"
+
+[components.config]
+path = "./state/structured-collection-state.json"
+
+[[components]]
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "02:00"
+
+[[components]]
+id = "production-collector"
+type = "csv-collector"
+
+[components.config]
+source = "production-source"
+parser = "csv-parser"
+storage = "memory-storage"
+state = "collection-state"
+date_policy = "yesterday"
+batch_size = 1000
+
+[[components]]
+id = "production-metadata"
+type = "path-metadata"
+
+[components.config]
+
+[[components.config.sources]]
+source = "production-source"
+root = "./data/production"

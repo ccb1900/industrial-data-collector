@@ -11,6 +11,7 @@ import (
 	extconfig "dynamic-runtime/extensions/config"
 
 	appmetadata "gocordis-csv-collector/app/metadata"
+	appparser "gocordis-csv-collector/app/parser"
 )
 
 type TypeInfo struct {
@@ -146,6 +147,7 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			}
 		}
 	case "parser":
+		skip := 0
 		if raw, ok := cc.Config["skip_lines"]; ok {
 			n, valid := intCfgValue(raw)
 			if !valid {
@@ -154,6 +156,25 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			if n < 0 {
 				return fmt.Errorf("parser %q skip_lines must be >= 0", cc.ID)
 			}
+			skip = n
+		}
+		header := true
+		if raw, ok := cc.Config["header"]; ok {
+			b, valid := boolCfgValue(raw)
+			if !valid {
+				return fmt.Errorf("parser %q header must be a boolean", cc.ID)
+			}
+			header = b
+		}
+		docCfg, err := appparser.ParseDocumentConfig(cc.Config)
+		if err != nil {
+			return fmt.Errorf("parser %q: %v", cc.ID, err)
+		}
+		if docCfg.Enabled() && !header {
+			return fmt.Errorf("parser %q structured csv.metadata mode requires header=true", cc.ID)
+		}
+		if docCfg.Enabled() && skip != 0 {
+			return fmt.Errorf("parser %q structured csv.metadata mode cannot be combined with skip_lines", cc.ID)
 		}
 	case "storage":
 		switch cc.Type {
@@ -250,6 +271,19 @@ func intCfgValue(raw any) (int, bool) {
 	}
 	n, err := strconv.Atoi(s)
 	return n, err == nil
+}
+
+func boolCfgValue(raw any) (bool, bool) {
+	switch b := raw.(type) {
+	case bool:
+		return b, true
+	case string:
+		v, err := strconv.ParseBool(b)
+		return v, err == nil
+	default:
+		v, err := strconv.ParseBool(fmt.Sprint(raw))
+		return v, err == nil
+	}
 }
 
 func parseClock(s string) (time.Time, error) {

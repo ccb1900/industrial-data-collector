@@ -36,8 +36,19 @@ func NewParser(cc config.ComponentConfig) (*ParserComponent, error) {
 	if skipLines < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser skip_lines must be >= 0")
 	}
+	docCfg, err := parser.ParseDocumentConfig(cc.Config)
+	if err != nil {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser: %v", err)
+	}
+	if docCfg.Enabled() && !header {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode requires header=true")
+	}
+	if docCfg.Enabled() && skipLines != 0 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode cannot be combined with skip_lines")
+	}
 	p := parser.New()
 	p.Header = header
 	p.SkipLines = skipLines
+	p.Document = docCfg
 	return &ParserComponent{cfg: p}, nil
 }
