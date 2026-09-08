@@ -19,6 +19,12 @@ Component, Fiber (observed only), Activation Context, Capability, Dependency,
 Effect, Event, Realm, Ownership, and Reconciliation. Application layer code is
 in `app/`; the runtime source is untouched.
 
+`app/sourcecomp` is the Configuration Composition layer: `[profiles.*]` and
+`[[sources]]` tables are resolved into one `csv-source-unit` component per
+logical Source before Runtime sees the config. Profiles are never Runtime
+components, and each Source keeps independent state under its logical Source
+ID.
+
 ## Package boundaries
 
 ```text
@@ -37,6 +43,7 @@ Each config component type maps to one Component:
 | Config type | Provides | Purpose |
 | --- | --- | --- |
 | `local-file-source` / `unc-file-source` | FileSource | list/read dated files |
+| `csv-source-unit` | none | one independent Source Effect produced by `app/sourcecomp`; owns FileSource/parser/sink/state/metadata |
 | `csv-parser` | CSVParser | streaming CSV rows |
 | `mysql-storage` / `postgresql-storage` / `oracle-storage` / `memory-storage` | Storage | idempotent batch writes |
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |

@@ -1,0 +1,49 @@
+# Source Configuration Composition demo: two similar machines share one CSV
+# profile and one sink profile, while each source remains an independent
+# Runtime unit with its own file-state namespace below ./state/<source_id>.
+#
+# Run:
+#   go run ./cmd/csv-collector -config configs/source-composition.toml
+
+[profiles.csv_machine]
+parser = "csv"
+header = true
+pattern = "*.csv"
+file_stable_window_seconds = 0
+date_policy = "yesterday"
+batch_size = 1000
+
+[profiles.memory_sink]
+sink = "memory-storage"
+
+[profiles.file_state]
+state_type = "file-state"
+state_dir = "./state"
+
+[[sources]]
+id = "machine001"
+path = "./data/machine001"
+profiles = ["csv_machine", "memory_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "01"
+machine = "001"
+
+[[sources]]
+id = "machine002"
+path = "./data/machine002"
+profiles = ["csv_machine", "memory_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "02"
+machine = "002"
+
+[[components]]
+id = "daily-scheduler"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "02:00"

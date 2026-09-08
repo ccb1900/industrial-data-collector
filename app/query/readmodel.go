@@ -16,7 +16,7 @@ import (
 type ReadModel struct {
 	mu          sync.Mutex
 	collections map[model.CollectionKey]*collectionEntry
-	sources     map[model.SourceID]struct{}
+	sources     map[model.SourceID]*sourceEntry
 }
 
 type collectionEntry struct {
@@ -34,11 +34,47 @@ type fileEntry struct {
 	err      string
 }
 
+type sourceEntry struct {
+	id       model.SourceID
+	path     string
+	profiles []string
+	status   string
+}
+
 // NewReadModel returns an empty read model.
 func NewReadModel() *ReadModel {
 	return &ReadModel{
 		collections: make(map[model.CollectionKey]*collectionEntry),
-		sources:     make(map[model.SourceID]struct{}),
+		sources:     make(map[model.SourceID]*sourceEntry),
+	}
+}
+
+// LoadConfiguredSources installs the Source descriptions known to the current
+// successful configuration. Collection events still add observed sources for
+// legacy component configs that do not carry source_definitions.
+func (m *ReadModel) LoadConfiguredSources(entries []ConfiguredSource) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range entries {
+		id := model.SourceID(e.ID)
+		if prev, ok := m.sources[id]; ok {
+			prev.path = e.Path
+			prev.profiles = append(prev.profiles[:0], e.Profiles...)
+			if e.Status != "" {
+				prev.status = e.Status
+			}
+			continue
+		}
+		status := e.Status
+		if status == "" {
+			status = "Active"
+		}
+		m.sources[id] = &sourceEntry{
+			id:       id,
+			path:     e.Path,
+			profiles: append([]string(nil), e.Profiles...),
+			status:   status,
+		}
 	}
 }
 
@@ -48,7 +84,9 @@ func (m *ReadModel) entry(key model.CollectionKey) *collectionEntry {
 		e = &collectionEntry{key: key, files: make(map[string]*fileEntry)}
 		m.collections[key] = e
 	}
-	m.sources[key.SourceID] = struct{}{}
+	if _, ok := m.sources[key.SourceID]; !ok {
+		m.sources[key.SourceID] = &sourceEntry{id: key.SourceID, status: "Active"}
+	}
 	return e
 }
 
@@ -159,7 +197,7 @@ func (m *ReadModel) ListSources(ctx context.Context) ([]SourceView, error) {
 	sort.Strings(ids)
 	out := make([]SourceView, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, SourceView{ID: id})
+		out = append(out, sourceViewLocked(m.sources[model.SourceID(id)]))
 	}
 	return out, nil
 }
@@ -174,7 +212,16 @@ func (m *ReadModel) GetSource(ctx context.Context, id model.SourceID) (SourceVie
 	if _, ok := m.sources[id]; !ok {
 		return SourceView{}, errs.Sourcef(errs.ErrNotFound, "source %q not found", id)
 	}
-	return SourceView{ID: string(id)}, nil
+	return sourceViewLocked(m.sources[id]), nil
+}
+
+func sourceViewLocked(e *sourceEntry) SourceView {
+	v := SourceView{ID: string(e.id), Path: e.path, Profiles: append([]string(nil), e.profiles...)}
+	v.Status = e.status
+	if v.Status == "" {
+		v.Status = "Active"
+	}
+	return v
 }
 
 // ListFiles implements FileQuery.

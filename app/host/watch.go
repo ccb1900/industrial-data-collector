@@ -12,12 +12,16 @@ import (
 	"dynamic-runtime/extensions/watch"
 
 	appconfig "gocordis-csv-collector/app/config"
+	"gocordis-csv-collector/app/sourcecomp"
 )
 
 type validatingParser struct{}
 
 func (validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
-	cfg, err := configwatch.NewTOMLParser().Parse(ctx, source, data)
+	if err := ctx.Err(); err != nil {
+		return config.Config{}, err
+	}
+	cfg, err := sourcecomp.Expand(data)
 	if err != nil {
 		return config.Config{}, err
 	}

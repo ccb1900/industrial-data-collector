@@ -12,6 +12,7 @@ modified by this project.
 
 ```text
 app/model/         Application models and capability contracts
+app/sourcecomp/    Profile/Source Composition Resolver (config before Runtime)
 app/metadata/      Pure path/filename metadata extraction engine
 app/parser/        Streaming CSV parser + structured CSV Document metadata
 app/query/         UI Query/Observation/Command capability contracts + read model
@@ -28,6 +29,7 @@ app/events/        Application event definitions (file outcomes carry Metadata)
 app/config/        TOML-compatible configuration validation
 app/host/          Runtime/Config-Controller host
 plugins/           GOCORDIS Components, capability keys, and factories
+plugins/sourceunit/ Per-Source Runtime Component produced by Composition
 plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
 plugins/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
@@ -65,9 +67,11 @@ go run ./cmd/web-ui -config configs/desktop.toml -addr :8080
 
 `configs/example.toml` uses `memory-storage` and a local date root. SQL target
 examples are in `configs/mysql.toml`, `configs/unc-postgres.toml`, and
-`configs/oracle.toml`. The `database/sql` driver packages must be registered in
-the binary; this application keeps database target selection in the Storage
-plugin and does not embed vendor-specific Collector logic.
+`configs/oracle.toml`. `configs/source-composition.toml` shows several similar
+machine roots sharing one CSV profile and one sink profile while keeping
+independent Source state namespaces. The `database/sql` driver packages must
+be registered in the binary; this application keeps database target selection
+in the Storage plugin and does not embed vendor-specific Collector logic.
 
 ## Verify
 

@@ -2,14 +2,25 @@ import React from "react";
 import { UICollection, UIFile, UISource } from "../models/types";
 import { metadataEntries } from "../lib/metadata";
 
-export function Sources({ items }: { items: UISource[] }) {
+export function Sources({
+  items,
+  onTrigger,
+}: {
+  items: UISource[];
+  onTrigger: (sourceID?: string) => void;
+}) {
   return (
     <section>
       <ul className="line-list">
         {items.map((s) => (
-          <li key={s.id} className="line-row">
-            <span>{s.name}</span>
-            <span className="status">{s.status}</span>
+          <li key={s.id} className="source-row">
+            <div className="source-identity">
+              <strong>{s.name}</strong>
+              <span className="status">{s.status}</span>
+            </div>
+            <span className="source-path">{s.path}</span>
+            <span className="source-profiles">{s.profiles.join(", ")}</span>
+            <button className="source-action" onClick={() => onTrigger(s.id)}>Run</button>
           </li>
         ))}
       </ul>

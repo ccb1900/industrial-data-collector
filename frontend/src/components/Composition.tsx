@@ -15,12 +15,12 @@ export interface CompositionProps {
   page: UIPage;
   data: CollectionDataView;
   events: UIObservation[];
-  onTrigger: () => void;
+  onTrigger: (sourceID?: string) => void;
 }
 
 interface PageViewProps {
   data: CollectionDataView;
-  onTrigger: () => void;
+  onTrigger: (sourceID?: string) => void;
 }
 
 interface PanelViewProps {
@@ -42,8 +42,12 @@ function FilesPage({ data }: PageViewProps) {
   return <div className="page-content">{!data.loading && <Files items={data.files} />}</div>;
 }
 
-function SourcesPage({ data }: PageViewProps) {
-  return <div className="page-content">{!data.loading && <Sources items={data.sources} />}</div>;
+function SourcesPage({ data, onTrigger }: PageViewProps) {
+  return (
+    <div className="page-content">
+      {!data.loading && <Sources items={data.sources} onTrigger={onTrigger} />}
+    </div>
+  );
 }
 
 function DashboardPage(props: PageViewProps) {

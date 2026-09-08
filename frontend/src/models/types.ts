@@ -5,6 +5,8 @@
 export interface UISource {
   id: string;
   name: string;
+  path: string;
+  profiles: string[];
   status: string;
 }
 

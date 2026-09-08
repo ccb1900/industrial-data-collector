@@ -27,9 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	"dynamic-runtime/extensions/configwatch"
-
 	apphost "gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/app/sourcecomp"
 	"gocordis-csv-collector/internal/webui"
 	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
@@ -62,8 +61,10 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := configwatch.NewTOMLParser().Parse(ctx,
-		configwatch.Source{ID: "web", Path: configPath, Format: configwatch.FormatTOML}, data)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	parsed, err := sourcecomp.Expand(data)
 	if err != nil {
 		return err
 	}

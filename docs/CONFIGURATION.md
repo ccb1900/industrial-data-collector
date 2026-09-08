@@ -18,6 +18,14 @@ The configuration path is validated by `app/config/Validate` before
 required references, allowed source/storage/metadata kinds, metadata rule
 semantics, schedule/time syntax, date policy, and positive batch size.
 
+Two equivalent top-level forms are accepted:
+
+- `[[components]]` tables are passed through unchanged (the original shape).
+- `[profiles.*]` + `[[sources]]` tables are resolved before Runtime into one
+  `csv-source-unit` component per Source (the Configuration Composition shape).
+
+See `Source Composition` below.
+
 ## Source
 
 - `type`: `local-file-source` or `unc-file-source`.
@@ -232,3 +240,65 @@ plugin happened to activate first.
 - `date_policy`: `yesterday` or `specific`.
 - `specific_date`: `YYYY-MM-DD` when policy is `specific`.
 - `batch_size`: rows per Storage batch (default 1000).
+
+## Source Composition
+
+For many similar collection roots (for example UNC machines sharing one CSV
+layout, parser, sink, and schedule), declare the shared parts once as
+Profiles and keep each Source as a small table:
+
+```toml
+[profiles.csv_machine]
+parser = "csv"
+header = true
+delimiter = ","
+encoding = "utf8"
+
+[profiles.memory_sink]
+sink = "memory-storage"
+
+[profiles.file_state]
+state_type = "file-state"
+state_dir = "./state"
+
+[[sources]]
+id = "machine001"
+path = "\\\\machine001\\data"
+profiles = ["csv_machine", "memory_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "01"
+machine = "001"
+
+[[sources]]
+id = "machine002"
+path = "\\\\machine002\\data"
+profiles = ["csv_machine", "memory_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "02"
+machine = "002"
+```
+
+Rules:
+
+- Profiles are deterministic configuration merge units. They have no
+  lifecycle, no state, and are never emitted as Runtime Components.
+- Source keys override Profile keys; Profile list order is deterministic;
+  neither environment variables nor runtime state override configuration.
+- `id` is the logical Source identity and state namespace. It must be unique
+  and independent from `path`, so a later path change still identifies the
+  same Source.
+- Source `metadata` becomes static business metadata on every discovered file
+  and cannot be overwritten by path/CSV derived metadata.
+- Legacy `[source.machine001]` tables are migrated into Source definitions
+  without an inheritance model.
+
+The Composition Resolver (`app/sourcecomp`) expands every Source into one
+`csv-source-unit` Runtime Component. Each unit owns its own FileSource/parser
+configuration, MemoryStore or SQL sink, CollectionState file below
+`<state_dir>/<source_id>/`, lifecycle, and outcome events. Deleting or changing
+one Source leaves every other Source untouched. A runnable two-machine example
+is `configs/source-composition.toml`.

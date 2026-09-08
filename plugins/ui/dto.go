@@ -40,9 +40,11 @@ type UIPanelList struct {
 
 // UISource is one source shown in React.
 type UISource struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Path     string   `json:"path"`
+	Profiles []string `json:"profiles"`
+	Status   string   `json:"status"`
 }
 
 // UICollection is one collection (source x date) shown in React.
@@ -105,7 +107,15 @@ type UITriggerRequest struct {
 }
 
 func toUISource(v query.SourceView) UISource {
-	return UISource{ID: v.ID, Name: v.ID, Status: query.StatusSucceeded}
+	profiles := make([]string, 0, len(v.Profiles))
+	profiles = append(profiles, v.Profiles...)
+	return UISource{
+		ID:       v.ID,
+		Name:     v.ID,
+		Path:     v.Path,
+		Profiles: profiles,
+		Status:   v.Status,
+	}
 }
 
 func toUICollection(v query.CollectionView) UICollection {

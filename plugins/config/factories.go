@@ -14,6 +14,7 @@ import (
 	queryplugin "gocordis-csv-collector/plugins/query"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
 	sourceplugin "gocordis-csv-collector/plugins/source"
+	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
 	uiplugin "gocordis-csv-collector/plugins/ui"
@@ -78,6 +79,11 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}
 	if err := register("csv-collector", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return collectorplugin.NewCollector(cc, logger)
+	}); err != nil {
+		return err
+	}
+	if err := register(sourceunitplugin.Type, func(cc config.ComponentConfig) (runtime.Component, error) {
+		return sourceunitplugin.NewSourceUnit(cc, logger)
 	}); err != nil {
 		return err
 	}

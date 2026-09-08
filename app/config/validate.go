@@ -39,6 +39,7 @@ var knownTypes = map[string]TypeInfo{
 	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel", Name: "UI Panel Contribution"},
 	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
 	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
+	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
 }
 
 // DisplayName returns the human-facing plugin label for a known component
@@ -88,11 +89,15 @@ func Validate(cfg extconfig.Config) error {
 			if !ok {
 				return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
 			}
-			if knownTypes[target.Type].Kind != "source" {
+			if knownTypes[target.Type].Kind != "source" && knownTypes[target.Type].Kind != "source-unit" {
 				return fmt.Errorf("metadata component %q source %q must reference a source component", id, ref)
 			}
-			if str(target.Config, "root") != set.Root {
-				return fmt.Errorf("metadata component %q source %q root %q does not match source root %q", id, ref, set.Root, str(target.Config, "root"))
+			targetRoot := str(target.Config, "root")
+			if targetRoot == "" {
+				targetRoot = str(target.Config, "path")
+			}
+			if targetRoot != set.Root {
+				return fmt.Errorf("metadata component %q source %q root %q does not match source root %q", id, ref, set.Root, targetRoot)
 			}
 		}
 	}
@@ -250,6 +255,10 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 				return fmt.Errorf("collector %q batch_size must be positive", cc.ID)
 			}
 		}
+	case "source-unit":
+		if err := validateSourceUnit(cc); err != nil {
+			return err
+		}
 	}
 	_ = ti.Capability
 	return nil
@@ -300,6 +309,120 @@ func parseClock(s string) (time.Time, error) {
 		return time.Time{}, errors.New("invalid minute")
 	}
 	return time.Date(2000, 1, 1, h, m, 0, 0, time.UTC), nil
+}
+
+func validateSourceUnit(cc extconfig.ComponentConfig) error {
+	if str(cc.Config, "source_id") == "" {
+		return fmt.Errorf("source-unit %q missing source_id", cc.ID)
+	}
+	if str(cc.Config, "path") == "" {
+		return fmt.Errorf("source-unit %q missing path", cc.ID)
+	}
+	if raw, ok := cc.Config["file_stable_window_seconds"]; ok {
+		w, valid := intCfgValue(raw)
+		if !valid || w < 0 {
+			return fmt.Errorf("source-unit %q file_stable_window_seconds must be a non-negative integer", cc.ID)
+		}
+	}
+	kind := str(cc.Config, "parser")
+	if kind == "" {
+		kind = "csv"
+	}
+	if kind != "csv" && kind != "csv-parser" {
+		return fmt.Errorf("source-unit %q unsupported parser %q", cc.ID, kind)
+	}
+	header := true
+	if raw, ok := cc.Config["header"]; ok {
+		b, valid := boolCfgValue(raw)
+		if !valid {
+			return fmt.Errorf("source-unit %q header must be a boolean", cc.ID)
+		}
+		header = b
+	}
+	skip := 0
+	if raw, ok := cc.Config["skip_lines"]; ok {
+		n, valid := intCfgValue(raw)
+		if !valid || n < 0 {
+			return fmt.Errorf("source-unit %q skip_lines must be a non-negative integer", cc.ID)
+		}
+		skip = n
+	}
+	if raw, ok := cc.Config["delimiter"]; ok {
+		d := fmt.Sprint(raw)
+		if len([]rune(d)) != 1 {
+			return fmt.Errorf("source-unit %q delimiter must be one character", cc.ID)
+		}
+	}
+	docCfg, err := appparser.ParseDocumentConfig(cc.Config)
+	if err != nil {
+		return fmt.Errorf("source-unit %q: %v", cc.ID, err)
+	}
+	if docCfg.Enabled() && !header {
+		return fmt.Errorf("source-unit %q structured csv.metadata mode requires header=true", cc.ID)
+	}
+	if docCfg.Enabled() && skip != 0 {
+		return fmt.Errorf("source-unit %q structured csv.metadata mode cannot be combined with skip_lines", cc.ID)
+	}
+
+	stateType := str(cc.Config, "state_type")
+	if stateType == "" {
+		stateType = "memory-state"
+	}
+	if stateType != "memory-state" && stateType != "file-state" {
+		return fmt.Errorf("source-unit %q unknown state_type %q", cc.ID, stateType)
+	}
+	if stateType == "file-state" && str(cc.Config, "state_dir") == "" {
+		return fmt.Errorf("source-unit %q file-state requires state_dir", cc.ID)
+	}
+
+	storageType := str(cc.Config, "storage")
+	if storageType == "" {
+		storageType = str(cc.Config, "sink")
+	}
+	if storageType == "" {
+		storageType = "memory-storage"
+	}
+	storageType = strings.ToLower(storageType)
+	switch storageType {
+	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage":
+	default:
+		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
+	}
+	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "oracle" || storageType == "oracle-storage" {
+		if str(cc.Config, "dsn") == "" {
+			return fmt.Errorf("source-unit %q storage requires dsn", cc.ID)
+		}
+		table := str(cc.Config, "table")
+		if table == "" {
+			table = "gocordis_records"
+		}
+		if !tableNameRE.MatchString(table) {
+			return fmt.Errorf("source-unit %q table is not a simple identifier", cc.ID)
+		}
+	}
+
+	policy := str(cc.Config, "date_policy")
+	if policy == "" {
+		policy = "yesterday"
+	}
+	if policy != "yesterday" && policy != "specific" {
+		return fmt.Errorf("source-unit %q invalid date_policy %q", cc.ID, policy)
+	}
+	if policy == "specific" {
+		if _, err := time.Parse("2006-01-02", str(cc.Config, "specific_date")); err != nil {
+			return fmt.Errorf("source-unit %q specific_date invalid", cc.ID)
+		}
+	}
+	if raw, ok := cc.Config["batch_size"]; ok {
+		b, valid := intCfgValue(raw)
+		if !valid || b <= 0 {
+			return fmt.Errorf("source-unit %q batch_size must be a positive integer", cc.ID)
+		}
+	}
+	if _, err := appmetadata.ParseRules(cc.Config["path_metadata"]); err != nil {
+		return fmt.Errorf("source-unit %q path_metadata: %w", cc.ID, err)
+	}
+	return nil
 }
 
 func AllowedSourceType(typ string) bool {

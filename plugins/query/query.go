@@ -6,6 +6,7 @@ package queryplugin
 
 import (
 	"context"
+	"fmt"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -28,9 +29,10 @@ var (
 // observation bus and never exposes CollectionState/Storage/FileSource
 // internals to UI.
 type QueryComponent struct {
-	model   *query.ReadModel
-	obs     *query.ObservationService
-	emitCtx *runtime.Context
+	model      *query.ReadModel
+	obs        *query.ObservationService
+	emitCtx    *runtime.Context
+	configured []query.ConfiguredSource
 }
 
 func (c *QueryComponent) Name() string                 { return "query:application" }
@@ -53,6 +55,7 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if c.obs == nil {
 		c.obs = query.NewObservationService()
 	}
+	c.model.LoadConfiguredSources(c.configured)
 	c.emitCtx = ctx
 
 	if err := runtime.On(ctx, events.FileCompleted, func(dctx context.Context, p events.FileCompletedPayload) error {
@@ -121,5 +124,48 @@ func (c *command) TriggerCollection(ctx context.Context, req query.CollectionReq
 
 // NewQuery creates the Application Query Component.
 func NewQuery(cc config.ComponentConfig) (*QueryComponent, error) {
-	return &QueryComponent{}, nil
+	configured, err := parseConfiguredSources(cc.Config["source_definitions"])
+	if err != nil {
+		return nil, fmt.Errorf("query provider: %w", err)
+	}
+	return &QueryComponent{configured: configured}, nil
+}
+
+func parseConfiguredSources(raw any) ([]query.ConfiguredSource, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("source_definitions must be an array")
+	}
+	out := make([]query.ConfiguredSource, 0, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("source_definitions #%d must be a table", i)
+		}
+		id, _ := m["id"].(string)
+		path, _ := m["path"].(string)
+		if id == "" || path == "" {
+			return nil, fmt.Errorf("source_definitions #%d requires id and path", i)
+		}
+		status, _ := m["status"].(string)
+		var profiles []string
+		if rawProfiles, present := m["profiles"]; present {
+			arr, ok := rawProfiles.([]any)
+			if !ok {
+				return nil, fmt.Errorf("source_definitions #%d profiles must be an array", i)
+			}
+			for _, p := range arr {
+				s, ok := p.(string)
+				if !ok {
+					return nil, fmt.Errorf("source_definitions #%d profiles must contain strings", i)
+				}
+				profiles = append(profiles, s)
+			}
+		}
+		out = append(out, query.ConfiguredSource{ID: id, Path: path, Profiles: profiles, Status: status})
+	}
+	return out, nil
 }

@@ -30,10 +30,10 @@ export default function App() {
   const active =
     composition.pages.find((page) => page.route === route) ?? composition.pages[0];
 
-  const trigger = useCallback(async () => {
+  const trigger = useCallback(async (sourceID?: string) => {
     setBusy(true);
     try {
-      await commands.triggerCollection({ reason: "ui" });
+      await commands.triggerCollection({ sourceId: sourceID, reason: "ui" });
       await data.refresh();
     } finally {
       setBusy(false);

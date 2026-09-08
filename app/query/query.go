@@ -33,9 +33,24 @@ type CollectionView struct {
 	Records        int64
 }
 
-// SourceView is one configured/observed source rendered for UI.
+// SourceView is one configured/observed source rendered for UI. Path and
+// Profiles are declarative Source identity metadata; Status is the last known
+// runtime view (Active is the healthy configured state).
 type SourceView struct {
-	ID string
+	ID       string
+	Path     string
+	Profiles []string
+	Status   string
+}
+
+// ConfiguredSource is the configuration-side source description fed to the
+// Query ReadModel by the config parser. Runtime source units still own their
+// lifecycle and state.
+type ConfiguredSource struct {
+	ID       string
+	Path     string
+	Profiles []string
+	Status   string
 }
 
 // FileIdentityView is the UI-safe projection of a file identity.

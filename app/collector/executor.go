@@ -41,6 +41,11 @@ type Executor struct {
 	Storage           model.Storage
 	State             model.CollectionState
 	MetadataExtractor model.MetadataExtractor
+	// SourceMetadata is the static business metadata owned by the configured
+	// Source. It is overlaid after path/CSV document interpretation, so an
+	// explicit source table (machine/line/plant) can never be overwritten by
+	// file-derived metadata.
+	SourceMetadata model.Metadata
 
 	Recovery recovery.Planner
 	Config   Config
@@ -200,6 +205,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			return fr
 		}
 	}
+	md = overlayMetadata(md, e.SourceMetadata)
 	fr.Metadata = md.Clone()
 	rc, err := e.Source.Read(ctx, *file)
 	if err != nil {
@@ -217,6 +223,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		return fr
 	}
 	md = appmetadata.MergeDocument(md, doc)
+	md = overlayMetadata(md, e.SourceMetadata)
 	fr.Metadata = md.Clone()
 	stream := doc.Data
 	header := stream.Header()
@@ -272,4 +279,15 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 	fr.Status = model.StatusSucceeded
 	cfg.Logger.Info("file completed", "key", key.String(), "file", file.Name, "records", fr.Records)
 	return fr
+}
+
+func overlayMetadata(base model.Metadata, source model.Metadata) model.Metadata {
+	if source.Len() == 0 {
+		return base
+	}
+	out := base.Clone()
+	for k, v := range source.Values {
+		out.Values[k] = v
+	}
+	return out
 }

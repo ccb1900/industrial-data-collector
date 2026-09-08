@@ -143,6 +143,7 @@ func toCollectionRequest(req UITriggerRequest) (query.CollectionRequest, *UIErro
 	if cr.Reason == "" {
 		cr.Reason = "ui"
 	}
+	cr.SourceID = model.SourceID(req.SourceID)
 	if req.Date != "" {
 		var d model.CollectionDate
 		if err := d.UnmarshalText([]byte(req.Date)); err != nil {

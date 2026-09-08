@@ -170,6 +170,9 @@ type CollectionResult struct {
 type CollectionRequested struct {
 	Reason string
 	Date   *CollectionDate
+	// SourceID selects one configured source. Empty means every active Source
+	// unit, preserving the historical single-collector behavior.
+	SourceID SourceID
 }
 
 // ListRequest describes one discovery request.

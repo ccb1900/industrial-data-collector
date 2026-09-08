@@ -15,6 +15,7 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/recovery"
 	"gocordis-csv-collector/plugins/internal/configutil"
+	"gocordis-csv-collector/plugins/internal/outcome"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	sourceplugin "gocordis-csv-collector/plugins/source"
@@ -81,6 +82,7 @@ func (c *CollectorComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 			Logger:     c.logger,
 		},
 	}
+	sourceID := src.ID()
 	c.emitCtx = ctx
 	workerCtx, cancel := context.WithCancel(ctx.Context())
 	reqCh := make(chan collectJob, 8)
@@ -98,6 +100,9 @@ func (c *CollectorComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 		return nil, err
 	}
 	err = runtime.On(ctx, events.CollectionRequested, func(dctx context.Context, req model.CollectionRequested) error {
+		if req.SourceID != "" && req.SourceID != sourceID {
+			return nil
+		}
 		job := collectJob{ctx: dctx, req: req, done: make(chan error, 1)}
 		select {
 		case reqCh <- job:
@@ -137,7 +142,7 @@ func (c *CollectorComponent) worker(ctx context.Context, reqCh <-chan collectJob
 			}()
 			results, runErr := exec.Handle(runCtx, job.req)
 			for i := range results {
-				c.emitOutcome(job.ctx, &results[i])
+				outcome.Publish(job.ctx, c.emitCtx, &results[i])
 			}
 			close(stop)
 			runCancel()
@@ -148,38 +153,6 @@ func (c *CollectorComponent) worker(ctx context.Context, reqCh <-chan collectJob
 		case <-ctx.Done():
 			return
 		}
-	}
-}
-
-// emitOutcome publishes the outcome of one collection as Application Events
-// (per file and per collection). Observers (e.g. the Application Query
-// Adapter) consume them; the Collector never depends on any observer.
-func (c *CollectorComponent) emitOutcome(ctx context.Context, res *model.CollectionResult) {
-	if c.emitCtx == nil || res == nil {
-		return
-	}
-	for i := range res.Files {
-		fr := &res.Files[i]
-		switch fr.Status {
-		case model.StatusSucceeded:
-			_ = runtime.Serial(ctx, c.emitCtx, events.FileCompleted, events.FileCompletedPayload{
-				Key: res.Key, File: fr.File, Metadata: fr.Metadata, Records: fr.Records,
-			})
-		case model.StatusFailed:
-			_ = runtime.Serial(ctx, c.emitCtx, events.FileFailed, events.FileFailedPayload{
-				Key: res.Key, File: fr.File, Metadata: fr.Metadata, Records: fr.Records, Error: fr.Error,
-			})
-		}
-	}
-	switch res.Status {
-	case model.StatusSucceeded:
-		_ = runtime.Serial(ctx, c.emitCtx, events.CollectionCompleted, events.CollectionCompletedPayload{
-			Key: res.Key, Files: len(res.Files), Records: res.Records, Duration: res.Duration, EndedAt: res.EndedAt,
-		})
-	case model.StatusFailed:
-		_ = runtime.Serial(ctx, c.emitCtx, events.CollectionFailed, events.CollectionFailedPayload{
-			Key: res.Key, Error: res.Error, Duration: res.Duration,
-		})
 	}
 }
 
