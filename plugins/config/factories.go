@@ -15,6 +15,7 @@ import (
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
 	uiplugin "gocordis-csv-collector/plugins/ui"
+	uicontrib "gocordis-csv-collector/plugins/ui-contrib"
 )
 
 type adapterFactory struct {
@@ -85,6 +86,16 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
 	}
 	if err := register("ui", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return uiplugin.NewUI(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("ui-page", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uicontrib.NewPage(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("ui-panel", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uicontrib.NewPanel(cc)
 	}); err != nil {
 		return err
 	}

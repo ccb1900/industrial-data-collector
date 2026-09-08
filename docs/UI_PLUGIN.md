@@ -203,3 +203,56 @@ Browser
   knows the transport.
 - `internal/webui.Server` reuses `plugins/ui.Host` (DTO/error/observation
   contract); `TestWebUIHTTPBridge` covers the full loop without a socket.
+
+## Batch 3 — Dynamic UI Composition (P3)
+
+P3 replaces the single-plugin UI registry with Application UI Composition:
+
+```text
+Application Plugin (ui-page/ui-panel contributor)
+  -> RegisterPage/RegisterPanel(owner, definition)
+  -> app/ui Registry (owned by the UI Host activation)
+  -> Wails/HTTP transport DTOs
+  -> React PageHost/PanelHost
+```
+
+### Added
+
+- `app/ui/` — canonical `PageDefinition`, `PanelDefinition`, `Position`,
+  `ContributionOwner`, and `Registry`. Registration returns an unregister
+  function; a UI Host activation owns exactly one registry.
+- `plugins/ui/` — UI Host only. It no longer hard-codes dashboard/
+  collections/files/sources/metadata/event-feed; it provides the Registry as a
+  Runtime Capability and exposes the shared `Host.ListPages/ListPanels` DTO
+  boundary to Wails and HTTP.
+- `plugins/ui-contrib/` — `ui-page` and `ui-panel` components. Each is an
+  independent GOCORDIS Component; `Apply` registers through the UI Host
+  Capability and the returned cleanup is Effect-owned. Unloading one plugin
+  removes only its owned page/panel.
+- `internal/webui` — `GET /api/ui/pages`, `GET /api/ui/panels`.
+- UI Observation — a composition mutation emits
+  `UIObservation{type:"composition.changed", timestamp}` through the same
+  Observation sink/bridge. It never carries pages/panels.
+- `frontend/` — `useComposition` fetches pages/panels, `PageHost`/`PanelHost`
+  map declarative renderers centrally, and observations invalidate composition.
+- Existing UI migration appears in `configs/desktop.toml`: independent
+  `ui-page-collections`, `ui-page-files`, `ui-page-sources`, `ui-panel-metadata`,
+  and `ui-panel-event-feed` components compose the UI.
+
+### Acceptance mapping (P3)
+
+| Gate | Evidence |
+| --- | --- |
+| P3-01/02 single plugin registers Page/Panel | `app/ui/composition_test.go` |
+| P3-03/04 duplicate ID rejected | same registry tests |
+| P3-05/06 deterministic ordering | same registry tests (registration sequence) |
+| P3-07/08 owner cleanup | `TestP307/P308` + `TestP3IndependentPluginLoadUnloadReload` |
+| P3-09 Plugin A unload leaves B | `TestP3IndependentPluginLoadUnloadReload` |
+| P3-10 reload restores | same test |
+| P3-11/12 composition.changed invalidates only | `TestP311` + E2E JSON payload check |
+| P3-13 HTTP DTO | `TestWebUIHTTPBridge` (`/api/ui/pages`, `/api/ui/panels`) |
+| P3-14 React consumes composition | `frontend` build/test; PageHost/PanelHost |
+| P3-15 Wails same composition | `Host.ListPages/ListPanels` adapter + `cmd/collector-ui` App methods |
+| P3-16 one Registry | app/ui NewRegistry per UI Host activation; no duplicate composition package |
+| P3-17 DTO boundary | app/ui definitions -> UIPage/UIPanel only; no owner/Go internals |
+| P3-18 no Kernel change | no runtime/ui addition; see BOUNDARY_AUDIT.md |

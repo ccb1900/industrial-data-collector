@@ -22,7 +22,8 @@ type App struct {
 }
 
 // ListSources / ListCollections / GetCollection / ListFiles /
-// GetFileMetadata / TriggerCollection mirror the plugins/ui Host surface.
+// GetFileMetadata / ListPages / ListPanels / TriggerCollection mirror the
+// plugins/ui Host surface.
 func (a *App) ListSources() ([]uiplugin.UISource, error) {
 	out, ue := a.ad.ListSources()
 	return out, ueError(ue)
@@ -45,6 +46,16 @@ func (a *App) ListFiles(req uiplugin.UIListFilesRequest) ([]uiplugin.UIFile, err
 
 func (a *App) GetFileMetadata(req uiplugin.UIFileRequest) (map[string]string, error) {
 	out, ue := a.ad.GetFileMetadata(req)
+	return out, ueError(ue)
+}
+
+func (a *App) ListPages() (uiplugin.UIPageList, error) {
+	out, ue := a.ad.ListPages()
+	return out, ueError(ue)
+}
+
+func (a *App) ListPanels() (uiplugin.UIPanelList, error) {
+	out, ue := a.ad.ListPanels()
 	return out, ueError(ue)
 }
 

@@ -17,8 +17,26 @@ func withUI(cs []config.ComponentConfig) []config.ComponentConfig {
 	out = append(out,
 		config.ComponentConfig{ID: "query-provider", Type: "query-provider"},
 		config.ComponentConfig{ID: "ui", Type: "ui"},
+		uiPageComponent("ui-page-dashboard", "dashboard", "Dashboard", "/", "dashboard"),
+		uiPageComponent("ui-page-collections", "collections", "Collections", "/collections", "collections"),
+		uiPageComponent("ui-page-files", "files", "Files", "/files", "files"),
+		uiPageComponent("ui-page-sources", "sources", "Sources", "/sources", "sources"),
+		uiPageComponent("ui-page-metadata", "metadata", "Metadata", "/metadata", "metadata"),
+		uiPanelComponent("ui-panel-event-feed", "event-feed", "Latest Events", "bottom", "event-feed"),
 	)
 	return out
+}
+
+func uiPageComponent(id, pageID, title, route, renderer string) config.ComponentConfig {
+	return config.ComponentConfig{ID: id, Type: "ui-page", Config: map[string]any{
+		"page_id": pageID, "title": title, "route": route, "renderer": renderer,
+	}}
+}
+
+func uiPanelComponent(id, panelID, title, position, renderer string) config.ComponentConfig {
+	return config.ComponentConfig{ID: id, Type: "ui-panel", Config: map[string]any{
+		"panel_id": panelID, "title": title, "position": position, "renderer": renderer,
+	}}
 }
 
 func findUI(h *host.Host) *uiplugin.UIComponent {

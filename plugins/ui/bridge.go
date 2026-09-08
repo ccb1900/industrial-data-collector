@@ -8,6 +8,7 @@ import (
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
+	appui "gocordis-csv-collector/app/ui"
 )
 
 // Host is the UI Host Adapter. It only forwards Wails RPC calls to the
@@ -20,15 +21,16 @@ type Host struct {
 	files       query.FileQuery
 	metadata    query.MetadataQuery
 	command     query.CollectionCommand
+	registry    appui.Registry
 }
 
 // NewHost builds the UI Host Adapter from the injected Application
-// capabilities.
-func NewHost(base context.Context, collections query.CollectionQuery, sources query.SourceQuery, files query.FileQuery, metadata query.MetadataQuery, command query.CollectionCommand) *Host {
+// capabilities and the UI Composition Registry owned by the same activation.
+func NewHost(base context.Context, collections query.CollectionQuery, sources query.SourceQuery, files query.FileQuery, metadata query.MetadataQuery, command query.CollectionCommand, registry appui.Registry) *Host {
 	if base == nil {
 		base = context.Background()
 	}
-	return &Host{base: base, collections: collections, sources: sources, files: files, metadata: metadata, command: command}
+	return &Host{base: base, collections: collections, sources: sources, files: files, metadata: metadata, command: command, registry: registry}
 }
 
 func (h *Host) ctx() context.Context { return h.base }
@@ -151,6 +153,35 @@ func toCollectionRequest(req UITriggerRequest) (query.CollectionRequest, *UIErro
 	return cr, nil
 }
 
+// Composition Bridge -----------------------------------------------------------
+
+// ListPages returns the current UI Composition as UI DTOs. It reads one shared
+// Registry; Wails and HTTP expose the same method.
+func (h *Host) ListPages() (UIPageList, *UIError) {
+	if h.registry == nil {
+		return UIPageList{}, uiErr(errs.Sourcef(errs.ErrDependency, "UI composition unavailable"))
+	}
+	defs := h.registry.ListPages()
+	pages := make([]UIPage, 0, len(defs))
+	for _, def := range defs {
+		pages = append(pages, toUIPage(def))
+	}
+	return UIPageList{Pages: pages}, nil
+}
+
+// ListPanels returns the current UI Composition Panels as UI DTOs.
+func (h *Host) ListPanels() (UIPanelList, *UIError) {
+	if h.registry == nil {
+		return UIPanelList{}, uiErr(errs.Sourcef(errs.ErrDependency, "UI composition unavailable"))
+	}
+	defs := h.registry.ListPanels()
+	panels := make([]UIPanel, 0, len(defs))
+	for _, def := range defs {
+		panels = append(panels, toUIPanel(def))
+	}
+	return UIPanelList{Panels: panels}, nil
+}
+
 // Error boundary ---------------------------------------------------------------
 
 // uiErr converts any Go error into the UIError front-end contract. Concrete
@@ -226,6 +257,12 @@ func (b *observationBridge) on(handler func(UIObservation)) (func() error, error
 		delete(b.subs, id)
 		return nil
 	}, nil
+}
+
+func (b *observationBridge) hasSubscribers() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs) > 0
 }
 
 func (b *observationBridge) latest() []UIObservation {

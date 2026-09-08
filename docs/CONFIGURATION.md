@@ -122,18 +122,53 @@ identity, so rule changes do not cause re-collection. See
 - `type`: `query-provider`. No config keys in v0.1. Provides the Application
   Query/Observation/Command capabilities used by the UI Plugin.
 
-## UI (Go core + Wails/React bridge)
+## UI Host and UI Contributions
 
-- `type`: `ui`. No config keys in v0.1. Registers the UI Host composition
-  (pages/panels), subscribes Observation, and exposes the UI Host Adapter
-  (`Host`: Query/Command forwarding + `UIObservation` events). A minimal
-  A React host scaffold lives in `frontend/` (npm build/test pass here). The
-  real desktop host is `cmd/collector-ui` with `configs/desktop.toml` (separate
-  Go module; needs a Wails toolchain). Observation event name is fixed to
-  `observation`. A browser host is also provided: `cmd/web-ui` serves the
-  embedded React build (`go:embed web/dist`) with JSON API under `/api/*`
-  (`sources`, `collections`, `collection`, `files`, `trigger`) and SSE
-  `/api/stream` for `observation` events.
+- `type`: `ui`. No config keys in v0.1. The UI Host owns one Application UI
+  Composition Registry per activation and exposes Query/Observation/Command and
+  `UIPage`/`UIPanel` DTOs. It never hard-codes business pages or panels.
+- `type`: `ui-page` / `ui-panel`. Each component is one independent UI
+  Contribution Plugin and registers one declarative Page/Panel during its own
+  activation:
+  - `ui-page`: `page_id`, `title`, `route`, `renderer`.
+  - `ui-panel`: `panel_id`, `title`, `position` (`main`/`right`/`bottom`), `renderer`.
+  Renderer values are declarative identities mapped centrally by React
+  (`collections`, `metadata`, `event-feed`, `files`, `sources`, ...). No
+  JavaScript is injected by a plugin.
+
+Example:
+
+```toml
+[[components]]
+id = "ui-page-collections"
+type = "ui-page"
+
+[components.config]
+page_id = "collections"
+title = "Collections"
+route = "/collections"
+renderer = "collections"
+
+[[components]]
+id = "ui-panel-event-feed"
+type = "ui-panel"
+
+[components.config]
+panel_id = "event-feed"
+title = "Latest Events"
+position = "bottom"
+renderer = "event-feed"
+```
+
+A desktop/web configuration therefore contains `query-provider`, `ui`, and
+the desired contribution components (see `configs/desktop.toml`). Observation
+event name is fixed to `observation`. A browser host is also provided:
+`cmd/web-ui` serves the embedded React build (`go:embed web/dist`) with JSON
+API under `/api/*` (`sources`, `collections`, `collection`, `files`,
+`ui/pages`, `ui/panels`, `trigger`) and SSE `/api/stream` for `observation`
+events. Composition DTOs are fetched from `GET /api/ui/pages` and
+`GET /api/ui/panels`; the React host invalidates on `composition.changed` and
+re-fetches.
 
 ## Collector
 

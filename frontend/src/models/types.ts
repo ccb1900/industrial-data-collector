@@ -27,6 +27,28 @@ export interface UIFile {
   metadata: Record<string, string>;
 }
 
+export interface UIPage {
+  id: string;
+  title: string;
+  route: string;
+  renderer: string;
+}
+
+export interface UIPanel {
+  id: string;
+  title: string;
+  position: string;
+  renderer: string;
+}
+
+export interface UIPageList {
+  pages: UIPage[];
+}
+
+export interface UIPanelList {
+  panels: UIPanel[];
+}
+
 export interface UIObservation {
   type: string;
   sourceId?: string;

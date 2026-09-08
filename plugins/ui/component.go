@@ -4,20 +4,27 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
+	appui "gocordis-csv-collector/app/ui"
 	queryplugin "gocordis-csv-collector/plugins/query"
 )
 
-// UIHostKey is the UI Host composition capability exposed by this plugin. The
-// later Wails/React host binds to it.
-var UIHostKey = runtime.NewKey[UIHost]("ui.host")
+// UIHostKey is the UI Composition Registry capability exposed by the UI Host
+// plugin. Independent UI Contribution plugins require this key and register
+// their own Pages/Panels through Effect-owned cleanup.
+var UIHostKey = runtime.NewKey[appui.Registry]("ui.host")
 
-// ViewSnapshot is the current UI View Model produced by the UI Plugin from
+// CompositionChangedType is the Observation type used when composition has
+// changed. It carries no full page/panel state; React invalidates and re-queries.
+const CompositionChangedType = "composition.changed"
+
+// ViewSnapshot is the current UI View Model produced by the UI Host from
 // Application Query data (never from Application internals). It is a view
 // contract, refreshed by re-query, not an incremental second database.
 type ViewSnapshot struct {
@@ -29,7 +36,7 @@ type ViewSnapshot struct {
 
 // ObservationSink is the production observation emitter boundary. The real
 // Wails Host implements it with runtime.EventsEmit("observation", ...); tests
-// use an in-process adapter. UI Plugin never owns the sink.
+// use an in-process adapter. UI Host never owns the sink.
 type ObservationSink interface {
 	NotifyObservation(ev UIObservation)
 }
@@ -41,15 +48,15 @@ type queryBundle struct {
 	metadata    query.MetadataQuery
 }
 
-// UIComponent is the v0.1 UI Plugin. It is an ordinary GOCORDIS Component:
-// it requires Application Query/Observation/Command capabilities, registers
-// the UI composition (pages/panels), subscribes Observation, and converts
-// Application data into UI View Models. All resources are Effect-owned and
-// released on unload; unloading never affects the Collector.
+// UIComponent is the GOCORDIS UI Host component. It requires Application
+// Query/Observation/Command capabilities, owns the Application UI Composition
+// Registry, subscribes Observation, and converts Application data into UI View
+// Models. Business UI Contributions are separate independent components whose
+// registration is owned by their own activations.
 type UIComponent struct {
 	mu sync.Mutex
 
-	host        *host
+	registry    appui.Registry
 	bridge      *observationBridge
 	sink        ObservationSink
 	hostAdapter *Host
@@ -63,7 +70,7 @@ type UIComponent struct {
 	snapshot      ViewSnapshot
 }
 
-func (c *UIComponent) Name() string { return "ui:core" }
+func (c *UIComponent) Name() string { return "ui:host" }
 func (c *UIComponent) Inject() []runtime.Dependency {
 	return []runtime.Dependency{
 		runtime.Requires(queryplugin.CollectionQueryKey),
@@ -103,7 +110,6 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.host = newHost()
 	c.bridge = newObservationBridge()
 	c.baseCtx = ctx.Context()
 	c.obs = obs
@@ -114,14 +120,11 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		files:       files,
 		metadata:    metadata,
 	}
-	c.hostAdapter = NewHost(c.baseCtx, collections, sources, files, metadata, cmd)
-	for _, p := range defaultPages() {
-		_ = c.host.RegisterPage(p)
-	}
-	for _, p := range defaultPanels() {
-		_ = c.host.RegisterPanel(p)
-	}
-	if err := runtime.Provide(ctx, UIHostKey, UIHost(c.host)); err != nil {
+	// The registry belongs to this UI Host activation. Contributions arrive
+	// later from independent plugins; no page/panel is hard-coded here.
+	c.registry = appui.NewRegistry(c.emitCompositionChanged)
+	c.hostAdapter = NewHost(c.baseCtx, collections, sources, files, metadata, cmd, c.registry)
+	if err := runtime.Provide(ctx, UIHostKey, c.registry); err != nil {
 		return nil, err
 	}
 	unsub, err := obs.Subscribe(ctx.Context(), c.onObservation)
@@ -133,7 +136,6 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {
 			unsub()
-			c.host.reset()
 			if c.bridge != nil {
 				c.bridge.clear()
 			}
@@ -145,17 +147,34 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	return nil, nil
 }
 
+func (c *UIComponent) emitUIObservation(ev UIObservation) {
+	if c.sink != nil {
+		c.sink.NotifyObservation(ev)
+	} else if c.bridge != nil {
+		// test adapter only; production path uses SetObservationSink.
+		c.bridge.notify(ev)
+	}
+}
+
+func (c *UIComponent) emitCompositionChanged() {
+	// Startup composition is fetched directly by React. Only emit an
+	// observation when a production sink or a live test listener can consume
+	// it; the event never carries state.
+	if c.sink == nil && c.bridge != nil && !c.bridge.hasSubscribers() {
+		return
+	}
+	c.emitUIObservation(UIObservation{
+		Type:      CompositionChangedType,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func (c *UIComponent) onObservation(ev query.ObservationEvent) {
 	c.mu.Lock()
 	c.invalidations++
 	c.latest = ev
 	c.mu.Unlock()
-	if c.sink != nil {
-		c.sink.NotifyObservation(toUIObservation(ev))
-	} else if c.bridge != nil {
-		// test adapter only; production path uses SetObservationSink.
-		c.bridge.notify(toUIObservation(ev))
-	}
+	c.emitUIObservation(toUIObservation(ev))
 	c.refresh()
 }
 
@@ -219,8 +238,8 @@ func (c *UIComponent) Snapshot() ViewSnapshot {
 	return c.snapshot
 }
 
-// Host returns the UI Host composition registry (UI Host contract).
-func (c *UIComponent) Host() UIHost { return c.host }
+// Registry returns the UI Host composition registry.
+func (c *UIComponent) Registry() appui.Registry { return c.registry }
 
 // HostAdapter returns the Wails-facing UI Host Adapter (Query/Observation/
 // Command forwarding). A Wails App binds its methods.
@@ -253,28 +272,12 @@ func (c *UIComponent) Observations() []UIObservation {
 }
 
 // Pages returns the registered UI pages.
-func (c *UIComponent) Pages() []PageDefinition { return c.host.Pages() }
+func (c *UIComponent) Pages() []PageDefinition { return c.registry.ListPages() }
 
 // Panels returns the registered UI panels.
-func (c *UIComponent) Panels() []PanelDefinition { return c.host.Panels() }
+func (c *UIComponent) Panels() []PanelDefinition { return c.registry.ListPanels() }
 
-func defaultPages() []PageDefinition {
-	return []PageDefinition{
-		{ID: "dashboard", Title: "Dashboard", Route: "/", Renderer: "react:page:dashboard"},
-		{ID: "collections", Title: "Collections", Route: "/collections", Renderer: "react:page:collections"},
-		{ID: "files", Title: "Files", Route: "/files", Renderer: "react:page:files"},
-		{ID: "sources", Title: "Sources", Route: "/sources", Renderer: "react:page:sources"},
-		{ID: "metadata", Title: "Metadata", Route: "/metadata", Renderer: "react:page:metadata"},
-	}
-}
-
-func defaultPanels() []PanelDefinition {
-	return []PanelDefinition{
-		{ID: "event-feed", Title: "Latest Events", Position: PositionBottom, Renderer: "react:panel:event-feed"},
-	}
-}
-
-// NewUI creates the UI Plugin Component. v0.1 has no required config.
+// NewUI creates the UI Host Plugin Component. v0.1 has no required config.
 func NewUI(cc config.ComponentConfig) (*UIComponent, error) {
 	return &UIComponent{}, nil
 }

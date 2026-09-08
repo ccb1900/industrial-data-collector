@@ -84,13 +84,13 @@ func TestP21ProductionSinkAndAsyncCommand(t *testing.T) {
 
 	// P2.1-09/10/11: unloading UI releases the sink (no listener leak) and the
 	// Collector keeps working.
-	before := sink.count()
 	withoutUI := basicComponents(root, "src", "local-file-source", "store", "", "specific", "2026-09-06")
 	withoutUI = append(withoutUI, config.ComponentConfig{ID: "query-provider", Type: "query-provider"})
 	active(ctx, t, h, cfg(withoutUI...))
 	if findUI(h) != nil {
 		t.Fatal("ui component must be gone after reconcile")
 	}
+	before := sink.count()
 	trigger(ctx, t, h, "2026-09-07")
 	waitFor(t, "collector works after UI unload", func() bool { return rows(h, "store") == 3 })
 	if sink.count() != before {

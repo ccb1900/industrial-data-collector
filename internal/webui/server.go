@@ -3,7 +3,8 @@
 // (go:embed + net/http) in addition to the Wails desktop host.
 //
 // The same DTO/Error/Observation Contract is used: React calls the same api
-// layer; transport chooses Wails or HTTP automatically.
+// layer; transport chooses Wails or HTTP automatically. Composition DTOs live
+// above transport and are served at GET /api/ui/pages and /api/ui/panels.
 package webui
 
 import (
@@ -123,6 +124,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, http.StatusAccepted, nil)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/pages":
+		data, ue := s.adapter.ListPages()
+		s.writeResult(w, data, ue)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/panels":
+		data, ue := s.adapter.ListPanels()
+		s.writeResult(w, data, ue)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/stream":
 		s.serveStream(w, r)
 	default:

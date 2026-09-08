@@ -4,7 +4,35 @@ import (
 	"time"
 
 	"gocordis-csv-collector/app/query"
+	appui "gocordis-csv-collector/app/ui"
 )
+
+// UIPage is the composition DTO for one registered Page. It contains only
+// declarative IDs/text; the Registry/Owner is never serialized.
+type UIPage struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Route    string `json:"route"`
+	Renderer string `json:"renderer"`
+}
+
+// UIPanel is the composition DTO for one registered Panel.
+type UIPanel struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Position string `json:"position"`
+	Renderer string `json:"renderer"`
+}
+
+// UIPageList is the transport DTO envelope returned by Wails and HTTP.
+type UIPageList struct {
+	Pages []UIPage `json:"pages"`
+}
+
+// UIPanelList is the transport DTO envelope returned by Wails and HTTP.
+type UIPanelList struct {
+	Panels []UIPanel `json:"panels"`
+}
 
 // DTO boundary: React only ever sees these camelCase JSON values. Go internal
 // types (SourceID, CollectionKey, FileIdentity, time.Time, error) are never
@@ -115,4 +143,12 @@ func toUIObservation(ev query.ObservationEvent) UIObservation {
 		ts = ev.At.UTC().Format(time.RFC3339)
 	}
 	return UIObservation{Type: ev.Type, SourceID: string(ev.Key.SourceID), Timestamp: ts}
+}
+
+func toUIPage(def appui.PageDefinition) UIPage {
+	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer}
+}
+
+func toUIPanel(def appui.PanelDefinition) UIPanel {
+	return UIPanel{ID: def.ID, Title: def.Title, Position: string(def.Position), Renderer: def.Renderer}
 }

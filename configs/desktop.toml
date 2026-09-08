@@ -61,3 +61,55 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
+
+# UI Composition: pages and panels are contributed by independent components.
+# The UI Host does not know which business plugin contributed them.
+[[components]]
+id = "ui-page-collections"
+type = "ui-page"
+
+[components.config]
+page_id = "collections"
+title = "Collections"
+route = "/collections"
+renderer = "collections"
+
+[[components]]
+id = "ui-page-files"
+type = "ui-page"
+
+[components.config]
+page_id = "files"
+title = "Files"
+route = "/files"
+renderer = "files"
+
+[[components]]
+id = "ui-page-sources"
+type = "ui-page"
+
+[components.config]
+page_id = "sources"
+title = "Sources"
+route = "/sources"
+renderer = "sources"
+
+[[components]]
+id = "ui-panel-metadata"
+type = "ui-panel"
+
+[components.config]
+panel_id = "metadata"
+title = "Metadata"
+position = "right"
+renderer = "metadata"
+
+[[components]]
+id = "ui-panel-event-feed"
+type = "ui-panel"
+
+[components.config]
+panel_id = "event-feed"
+title = "Latest Events"
+position = "bottom"
+renderer = "event-feed"

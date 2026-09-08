@@ -15,6 +15,7 @@ app/model/         Application models and capability contracts
 app/metadata/      Pure path/filename metadata extraction engine
 app/parser/        Streaming CSV parser
 app/query/         UI Query/Observation/Command capability contracts + read model
+app/ui/            UI Composition contract + owner-aware composition Registry
 app/source/        Local and UNC file source (recursive below <root>/<date>)
 app/scheduler/     Daily anchor policy
 app/state/         In-memory and file-persistent CollectionState
@@ -28,7 +29,8 @@ app/host/          Runtime/Config-Controller host
 plugins/           GOCORDIS Components, capability keys, and factories
 plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
 plugins/query/     Application Query provider + Observation adapter (UI-facing)
-plugins/ui/        UI Plugin GOCORDIS Component (UI Host + Wails/React bridge)
+plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
+plugins/ui-contrib/Independent UI Page/Panel Contribution GOCORDIS Components
 frontend/          React host (api layer + host verification page; npm build/test pass)
 cmd/collector-ui/   Real Wails Desktop Host (separate Go module; needs Wails toolchain)
 cmd/web-ui/         Embedded HTTP Web UI (go:embed + net/http + SSE)
@@ -45,7 +47,7 @@ Each business capability has one plugin package under `plugins/`:
 `app/` and never starts a second lifecycle. See
 [`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature and
 [`docs/UI_PLUGIN.md`](docs/UI_PLUGIN.md) for the UI Plugin Contract Go core
-(React/Wails host bridge arrives in batch 2; full Dashboard is batch 3).
+(UI Plugin Go core through P2.1; batch 3 adds dynamic UI Composition).
 
 ## Run
 

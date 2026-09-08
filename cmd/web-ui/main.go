@@ -7,6 +7,8 @@
 //	GET  /api/collections        ListCollections
 //	GET  /api/collection         GetCollection
 //	GET  /api/files              ListFiles
+//	GET  /api/ui/pages           ListPages composition DTO
+//	GET  /api/ui/panels          ListPanels composition DTO
 //	POST /api/trigger            TriggerCollection (accepted asynchronously)
 //	GET  /api/stream             SSE "observation" events
 package main

@@ -32,3 +32,6 @@ Notes:
 - The Observation event name is fixed: `observation`.
 - `App` is only a transport; it forwards to `plugins/ui.Host` and never touches
   Collector/Storage/Executor.
+- P3 adds `App.ListPages/ListPanels`: the desktop transport consumes the same
+  Application UI Composition Registry as the HTTP host. React only fetches
+  declarative `UIPage`/`UIPanel` DTOs and maps Renderer identities.

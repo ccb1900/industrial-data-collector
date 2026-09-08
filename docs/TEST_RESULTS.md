@@ -11,9 +11,9 @@ go test -race ./...
 Sandbox verification used `GOCACHE=/tmp/gocache GOPROXY=off` because the
 default Go build cache was read-only and no network was available.
 
-Status: local functional, runtime, boundary, reliability, race, and resource
-gates PASS. Frontend scaffold is NOT built/tested in this sandbox (no Wails
-generate + npm dependency resolution available). Live MySQL/PostgreSQL/Oracle databases and a real remote UNC share
+Status: local functional, runtime, UI Composition, boundary, reliability, race,
+and resource gates PASS. `npm test`/`npm run build` PASS in this environment;
+live desktop Wails/browser E2E needs a display and the Wails toolchain. Live MySQL/PostgreSQL/Oracle databases and a real remote UNC share
 were not available, so those adapter/external-service portions are CONDITIONAL
 PASS based on code inspection plus the in-process fake `database/sql` driver.
 
@@ -58,11 +58,13 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/e2e_metadata_test.go` | MetadataE2E filename/path/reload/failed-reload/optional suite | M-12/M-16/M-17/M-18 end-to-end propagation and reconciliation |
 | `tests/config_smoke_test.go` | `TestSampleConfigsParseAndValidate` | shipped TOML examples parse and validate |
 | `app/query/query_test.go` | read model/observation unit tests | views from events, failures, subscribe/publish/feed |
+| `app/ui/composition_test.go` | P3-01..P3-11 registry tests | register/unregister ownership, duplicates, deterministic ordering, reload, change notification |
 | `tests/e2e_ui_test.go` | `TestUIE2EQueryObservationCommandLoop`, `TestUIE2EPluginIsolation` | UI Command -> Event -> Collector -> Query -> Observation -> UI view; UI unload isolation |
 | `tests/e2e_ui_p2_test.go` | `TestUIP2HostBridgeFullLoop`, `TestUIP2ErrorBoundary`, `TestUIP2Isolation` | Wails/React host bridge: Query DTOs, Observation listener, Command, error boundary, isolation |
 | `tests/e2e_p21_test.go` | `TestP21ProductionSinkAndAsyncCommand` | production ObservationSink, async command acceptance, unload releases sink, Collector isolation |
 | `frontend` | `npm run build`, `npm test` | PASS in this environment (tsc+vite; vitest 2 tests); desktop E2E needs GUI/Wails toolchain |
-| `internal/webui` | `TestWebUIHTTPBridge` | embedded web UI: static index, /api trigger+collections+files+metadata, SSE observation |
+| `tests/e2e_ui_p3_test.go` | `TestP3IndependentPluginLoadUnloadReload`, `TestP3MultiPluginCompositionAndHTTPDto` | independent contributor load/unload/reload, multi-plugin composition, observation payload, adapter DTOs |
+| `internal/webui` | `TestWebUIHTTPBridge` | embedded web UI: static index, /api trigger+collections+files+metadata, UI composition DTOs, SSE observation |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

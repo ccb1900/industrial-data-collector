@@ -32,7 +32,9 @@ var knownTypes = map[string]TypeInfo{
 	"csv-collector":      {Kind: "collector", Capability: "collector"},
 	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor"},
 	"query-provider":     {Kind: "query", Capability: "query"},
-	"ui":                 {Kind: "ui", Capability: "ui"},
+	"ui":                 {Kind: "ui-host", Capability: "ui"},
+	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page"},
+	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel"},
 }
 
 // Validate rejects invalid application configuration before Runtime mutation.
@@ -171,6 +173,21 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 	case "metadata":
 		if _, err := appmetadata.ParseSourceConfig(cc.Config["sources"]); err != nil {
 			return fmt.Errorf("metadata component %q: %w", cc.ID, err)
+		}
+	case "ui-contribution":
+		switch cc.Type {
+		case "ui-page":
+			for _, field := range []string{"page_id", "title", "route", "renderer"} {
+				if str(cc.Config, field) == "" {
+					return fmt.Errorf("ui-page %q missing %s", cc.ID, field)
+				}
+			}
+		case "ui-panel":
+			for _, field := range []string{"panel_id", "title", "position", "renderer"} {
+				if str(cc.Config, field) == "" {
+					return fmt.Errorf("ui-panel %q missing %s", cc.ID, field)
+				}
+			}
 		}
 	case "collector":
 		for _, field := range []string{"source", "parser", "storage", "state"} {

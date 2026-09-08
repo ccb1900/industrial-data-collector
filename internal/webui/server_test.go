@@ -62,6 +62,15 @@ func webComponents(root string) []config.ComponentConfig {
 		}),
 		webComponent("query-provider", "query-provider", map[string]any{}),
 		webComponent("ui", "ui", map[string]any{}),
+		webComponent("ui-page-collections", "ui-page", map[string]any{
+			"page_id": "collections", "title": "Collections", "route": "/collections", "renderer": "collections",
+		}),
+		webComponent("ui-panel-metadata", "ui-panel", map[string]any{
+			"panel_id": "metadata", "title": "Metadata", "position": "right", "renderer": "metadata",
+		}),
+		webComponent("ui-panel-event-feed", "ui-panel", map[string]any{
+			"panel_id": "event-feed", "title": "Latest Events", "position": "bottom", "renderer": "event-feed",
+		}),
 	}
 }
 
@@ -94,6 +103,27 @@ func TestWebUIHTTPBridge(t *testing.T) {
 	assets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>ok</html>")}}
 	srv := New(ui.HostAdapter(), fs.FS(assets))
 	ui.SetObservationSink(sinkFunc(func(ev uiplugin.UIObservation) { srv.Publish(ev) }))
+
+	// P3-13: HTTP Composition Query returns only the UI DTO boundary.
+	pages := webGetPages(t, srv, "/api/ui/pages")
+	if len(pages) != 1 {
+		t.Fatalf("http pages = %#v", pages)
+	}
+	first := pages[0]
+	if first["id"] != "collections" || first["title"] != "Collections" || first["route"] != "/collections" || first["renderer"] != "collections" {
+		t.Fatalf("http page dto = %#v", first)
+	}
+	panels := webGetPanels(t, srv, "/api/ui/panels")
+	if len(panels) != 2 {
+		t.Fatalf("http panels = %#v", panels)
+	}
+	byID := map[string]map[string]any{}
+	for _, p := range panels {
+		byID[p["id"].(string)] = p
+	}
+	if byID["metadata"]["position"] != "right" || byID["metadata"]["renderer"] != "metadata" || byID["event-feed"]["position"] != "bottom" {
+		t.Fatalf("http panels = %#v", panels)
+	}
 
 	// Static UI.
 	rr := webDo(srv, http.MethodGet, "/", nil)
@@ -203,3 +233,37 @@ func webGetFiles(t *testing.T, srv http.Handler, path string) []map[string]any {
 type sinkFunc func(uiplugin.UIObservation)
 
 func (f sinkFunc) NotifyObservation(ev uiplugin.UIObservation) { f(ev) }
+
+func webGetPages(t *testing.T, srv http.Handler, path string) []map[string]any {
+	t.Helper()
+	rr := webDo(srv, http.MethodGet, path, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("pages status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Pages []map[string]any `json:"pages"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Data.Pages
+}
+
+func webGetPanels(t *testing.T, srv http.Handler, path string) []map[string]any {
+	t.Helper()
+	rr := webDo(srv, http.MethodGet, path, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("panels status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Panels []map[string]any `json:"panels"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Data.Panels
+}

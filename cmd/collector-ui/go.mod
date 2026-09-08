@@ -10,4 +10,4 @@ require (
 
 replace gocordis-csv-collector => ../..
 
-replace dynamic-runtime => ../../../go-cordis
+replace dynamic-runtime => ../../../gocordis

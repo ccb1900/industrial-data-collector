@@ -7,9 +7,9 @@ cmd/csv-collector
 app/host
 plugins/config
 plugins/collector + plugins/scheduler
-plugins/query + plugins/ui
+plugins/query + plugins/ui + plugins/ui-contrib
 plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
-app/collector + app/recovery + app/scheduler + app/metadata + app/query
+app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui
 app/source + app/parser + app/storage + app/state + app/model
 dynamic-runtime (replace: ../gocordis)
 ```
@@ -42,7 +42,8 @@ Each config component type maps to one Component:
 | `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
 | `path-metadata` (one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
 | `query-provider` | Query/Observation/Command | Application Observation Adapter + read model |
-| `ui` | UIHost | UI Plugin: pages/panels + Observation subscription (React later) |
+| `ui` | UI Composition Registry | UI Host: owns one Registry per activation, Query/Observation/Command bridge, UI DTO transport |
+| `ui-page` / `ui-panel` | none (contributor) | independent components: register one declarative Page/Panel through Effect-owned cleanup |
 | `scheduler` | Trigger | daily tick to Runtime Event |
 | `csv-collector` | none | worker + event handler |
 
