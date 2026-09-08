@@ -32,7 +32,7 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `app/errs/errors_test.go` | `TestClassifySourceError` | source error classes |
 | `app/parser/parser_test.go` | `TestParseHeadersQuotesCommasAndLineEndings`, `TestParseWithoutHeader`, `TestParseMalformed` | streaming CSV parsing |
 | `app/parser/document_test.go` | CM-01..CM-16, CM-19 parser tests | explicit Metadata/Data boundary, blank separator, quoting, malformed/duplicate/header/error location |
-| `app/metadata/document_test.go` | `TestCM10MetadataDataNamespaceCollision`, `TestCM11PathAndCSVMetadataMerge` | csv.*/path.* merge and namespace isolation |
+| `app/metadata/document_test.go` | `TestCM10MetadataDataNamespaceCollision`, `TestCM10ANoFlatMetadataLeakage`, `TestCM11PathAndCSVMetadataMerge` | csv.*/path.* merge, namespace isolation, no flat key leakage |
 | `app/source/source_test.go` | `TestListReadStableFile`, `TestMissingDateDirectoryClassified`, `TestStableWindowSkipsNewFile`, `TestListRecursiveNestedDirectories`, `TestListRecursiveRespectsStableWindowAndPattern` | file discovery/stability/classification/recursion |
 | `app/state/state_test.go` | `TestMemoryStateClaimCompleteAndFileIdempotency`, `TestMemoryStateFailedCanRetryAndListIncomplete`, `TestFileStatePersistsAcrossRestart` | claim/retry/persistence |
 | `app/storage/memory_test.go` | `TestMemoryStoreIdempotent`, `TestMemoryStoreBatchFailureIsRetryable` | idempotent batch writes |
@@ -59,7 +59,7 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `tests/e2e_scheduler_test.go` | `TestCSVE2E11SchedulerEventCollector` | scheduler -> event -> collector |
 | `tests/e2e_metadata_test.go` | MetadataE2E filename/path/reload/failed-reload/optional suite | M-12/M-16/M-17/M-18 end-to-end propagation and reconciliation |
 | `tests/config_smoke_test.go` | `TestSampleConfigsParseAndValidate` | shipped TOML examples parse and validate |
-| `tests/e2e_csv_metadata_test.go` | CM-13/14/17/19/20 | structured CSV document E2E, reload/invalid reload, idempotency, error location, storage propagation |
+| `tests/e2e_csv_metadata_test.go` | CM-10A/13/14/17/19/20 | structured CSV document E2E, path+csv storage namespace, reload/invalid reload, idempotency, error location |
 | `app/query/query_test.go` | read model/observation unit tests | views from events, failures, subscribe/publish/feed |
 | `app/ui/composition_test.go` | P3-01..P3-11 registry tests | register/unregister ownership, duplicates, deterministic ordering, reload, change notification |
 | `tests/e2e_ui_test.go` | `TestUIE2EQueryObservationCommandLoop`, `TestUIE2EPluginIsolation` | UI Command -> Event -> Collector -> Query -> Observation -> UI view; UI unload isolation |

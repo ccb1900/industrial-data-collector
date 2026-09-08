@@ -2,6 +2,8 @@ package tests
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +67,51 @@ func TestCM20StructuredMetadataE2EToStorage(t *testing.T) {
 	if got := rows(h, "store"); got != 1 {
 		t.Fatalf("rows after rerun = %d, want 1", got)
 	}
+}
+
+func TestCM10AStructuredPathAndCSVMetadataReachStorage(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "2026-09-06", "line-A", "station-03")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "station,Station-CSV\n\n参数,数值\n温度,23.5\n"
+	if err := os.WriteFile(filepath.Join(nested, "product-X.csv"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	h := newApp(t)
+	defer h.Close(context.Background())
+	cs := withStructuredParser(
+		basicComponents(root, "src", "local-file-source", "store", "", "specific", "2026-09-06"), 1, 1, 3)
+	cs = withMetadataRules(cs, []any{
+		metadataRule("station", "path", "{date}/{line}/{station}/*.csv", true),
+	})
+	active(ctx, t, h, cfg(cs...))
+	trigger(ctx, t, h, "2026-09-06")
+	for _, b := range storedBatches(h, "store") {
+		if b.File.Name != "product-X.csv" {
+			continue
+		}
+		for key, want := range map[string]string{
+			"path.station": "station-03",
+			"csv.station":  "Station-CSV",
+		} {
+			got, ok := b.Metadata.Get(key)
+			if !ok || got != want {
+				t.Fatalf("metadata %s = %q (present=%v), want %q", key, got, ok, want)
+			}
+		}
+		if b.Metadata.Has("station") {
+			t.Fatalf("structured CSV must not expose raw station: %#v", b.Metadata.Values)
+		}
+		if b.Metadata.Len() != 2 {
+			t.Fatalf("metadata length = %d, want 2: %#v", b.Metadata.Len(), b.Metadata.Values)
+		}
+		return
+	}
+	t.Fatal("no stored batch for product-X.csv")
 }
 
 func TestCM19StructuredMetadataErrorLocatesSourceFileAndRow(t *testing.T) {

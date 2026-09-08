@@ -13,17 +13,37 @@ func TestCM10MetadataDataNamespaceCollision(t *testing.T) {
 		Metadata:   model.Metadata{Values: map[string]string{"station": "csv-station"}},
 	}
 	got := MergeDocument(path, doc)
-	if v, _ := got.Get("station"); v != "path-station" {
-		t.Fatalf("legacy path key = %q", v)
-	}
 	if v, _ := got.Get("path.station"); v != "path-station" {
 		t.Fatalf("path.station = %q", v)
 	}
 	if v, _ := got.Get("csv.station"); v != "csv-station" {
 		t.Fatalf("csv.station = %q", v)
 	}
-	if got.Len() != 3 {
-		t.Fatalf("metadata length = %d, want 3", got.Len())
+	if got.Len() != 2 {
+		t.Fatalf("metadata length = %d, want 2", got.Len())
+	}
+}
+
+func TestCM10ANoFlatMetadataLeakage(t *testing.T) {
+	path := model.Metadata{Values: map[string]string{"station": "path-station", "line": "path-line"}}
+	doc := model.CSVDocument{
+		Structured: true,
+		Metadata:   model.Metadata{Values: map[string]string{"station": "csv-station"}},
+	}
+	got := MergeDocument(path, doc)
+	for _, raw := range []string{"station", "line"} {
+		if got.Has(raw) {
+			t.Fatalf("structured CSV must not expose raw %q: %#v", raw, got.Values)
+		}
+	}
+	for key, want := range map[string]string{
+		"path.station": "path-station",
+		"path.line":    "path-line",
+		"csv.station":  "csv-station",
+	} {
+		if v, _ := got.Get(key); v != want {
+			t.Fatalf("%s = %q, want %q", key, v, want)
+		}
 	}
 }
 
@@ -43,6 +63,18 @@ func TestCM11PathAndCSVMetadataMerge(t *testing.T) {
 		if v, _ := got.Get(key); v != want {
 			t.Fatalf("%s = %q, want %q", key, v, want)
 		}
+	}
+}
+
+func TestStructuredMergeDoesNotLeakRawPathKeys(t *testing.T) {
+	path := model.Metadata{Values: map[string]string{"line": "Line01", "file": "ABC001"}}
+	doc := model.CSVDocument{
+		Structured: true,
+		Metadata:   model.Metadata{Values: map[string]string{"设备型号": "XYZ200"}},
+	}
+	got := MergeDocument(path, doc)
+	if got.Has("line") || got.Has("file") || got.Has("设备型号") {
+		t.Fatalf("structured merge leaked flat keys: %#v", got.Values)
 	}
 }
 

@@ -113,9 +113,10 @@ csv.*     metadata from the CSV Metadata Section
 ```
 
 `path.station = Station-03` and `csv.station = Station-04` therefore cannot
-overwrite each other. For compatibility, legacy path metadata keys remain
-available under their original rule names when the CSV is ordinary; when a
-Document is structured, the same values are also exposed as `path.*`.
+overwrite each other. Structured mode never leaks the raw `station` key:
+ordinary CSV keeps the historical flat path metadata contract, while a
+structured CSV enters the namespaced Document Metadata contract (`path.*`
+plus `csv.*` only). Flat keys require an explicit mapping/transform.
 
 ## 5. Boundary
 
@@ -141,6 +142,7 @@ Metadata Component or capability is introduced.
 | CM-08 Header Position | same test |
 | CM-09 Duplicate Data Header | `TestCM09DuplicateDataHeader` |
 | CM-10 Namespace Collision | `TestCM10MetadataDataNamespaceCollision` |
+| CM-10A No Flat Metadata Leakage | `TestCM10ANoFlatMetadataLeakage`, `TestStructuredMergeDoesNotLeakRawPathKeys`, `TestCM10AStructuredPathAndCSVMetadataReachStorage` |
 | CM-11 Path + CSV Merge | `TestCM11PathAndCSVMetadataMerge` |
 | CM-12 Multiple Sources | `TestCM12IndependentParserLayoutsDoNotLeak` + path metadata multi-source tests |
 | CM-13 Reload | `TestCM13ReloadAndCM14InvalidReloadKeepsCurrentParser` |
