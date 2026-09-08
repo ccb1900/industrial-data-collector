@@ -347,3 +347,69 @@ activation, and that the UI Host/React never make composition decisions.
 | P3.3-19 Kernel boundary | no `gocordis/runtime/*` change; see BOUNDARY_AUDIT.md |
 | P3.3-20 No UI lifecycle | `TestP33_20NoParallelLifecycle` |
 | P3.3-21 Domain isolation | `app/ui` contains only Page/Panel/Contribution/Owner/Snapshot; no Collector/Metadata imports |
+
+## Batch 3.4 — Runtime Plugin Explorer & Console Composition (P3.4)
+
+P3.4 proves that Plugin Explorer itself is an ordinary GOCORDIS Component and
+that Explorer data/control never bypasses Runtime.
+
+### Added for conformance
+
+- `app/explorer.Service` keeps the Application inspection/control boundary: it
+  stores only the desired component set refreshed after a successful
+  Reconcile and reads current state from Controller-owned Runtime fibers.
+  ON/OFF uses public Runtime `Fiber.Load`/`Dispose`; no second lifecycle,
+  UI-owned enabled map, or Runtime persistence is introduced.
+- `plugins/explorer.ExplorerComponent` is the `plugin-explorer` config
+  component. It Requires the existing UI Host capability and registers its
+  `plugins` Console Page through a Runtime Effect. Its transport Host is
+  active only while the component activation is active.
+- Explorer rows contain ID, Name, Type, Runtime State, Components, and
+  Capabilities. State values reuse Runtime `FiberState`; a disposed plugin is
+  `Gone`, not an optimistic frontend boolean.
+- Control results return `Accepted`/`Rejected`/`Failed` plus Current State and
+  Error. The frontend refreshes the Runtime snapshot after control; no polling
+  was added.
+- Navigation remains Contribution-driven: the Explorer page appears because
+  its component registered it; React never contains a fixed `Plugins` page.
+- Wails/HTTP transport methods `ListPlugins`/`ControlPlugin` are exposed
+  through the plugin Explorer Host; `/api/plugins` and
+  `/api/plugins/control` mirror them for the embedded web host.
+
+### P3.4 acceptance mapping
+
+| Gate | Evidence |
+| --- | --- |
+| PE-01 Explorer discovers plugins | `TestPE01DiscoverAllPluginsAndStateFromRuntime` |
+| PE-02 State matches Runtime | same test (all rows assert `Active` from fibers) |
+| PE-03 ON follows Runtime activation | `TestPE03to06ToggleCreatesAndRemovesContribution` |
+| PE-04 OFF follows Runtime deactivation | same test |
+| PE-05 Activation creates UI Contribution | same test (`assertPageSet`) |
+| PE-06 Deactivation removes UI Contribution | same test |
+| PE-07 Reload no stale Contribution | `TestPE07ReloadLeavesOnlyNewContribution` |
+| PE-08 Duplicate Register rejected | `TestPE08DuplicateRegistrationRejected` |
+| PE-09 Idempotent cleanup | `TestPE09IdempotentCleanup` + existing P3.2/P3.3 registry tests |
+| PE-10 Concurrent Register/Remove/Snapshot | `TestPE10ConcurrentRegistrySnapshotAndRefresh` (race suite) |
+| PE-11 Activate failure no fake Active | `TestPE11ActivationFailureDoesNotFakeActive` |
+| PE-12 Gone plugin no stale interaction | `TestPE12GonePluginHasNoStaleInteraction` |
+| P3.4 acceptance checklist | `[x]` all items below |
+
+Acceptance checklist:
+
+```text
+[x] Plugin Explorer is a Plugin / Component
+[x] Explorer data comes from Runtime
+[x] no frontend-hardcoded Plugin list
+[x] Plugin State comes from Runtime
+[x] ON/OFF through Runtime Public API
+[x] UI Contribution bound to Activation
+[x] Activation Gone -> Contribution Gone
+[x] Reload has no stale Contribution
+[x] Registry Snapshot isolation
+[x] Cleanup is idempotent
+[x] Concurrency-safe
+[x] React/Wails does not own Runtime Lifecycle
+[x] no second Plugin Lifecycle
+[x] Kernel Lifecycle Semantics unchanged
+[x] no Runtime Persistence added
+```

@@ -39,9 +39,20 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
       return { url: `${API_BASE}/ui/pages`, init: {} };
     case "ListPanels":
       return { url: `${API_BASE}/ui/panels`, init: {} };
+    case "ListPlugins":
+      return { url: `${API_BASE}/plugins`, init: {} };
     case "TriggerCollection":
       return {
         url: `${API_BASE}/trigger`,
+        init: {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(args[0] ?? {}),
+        },
+      };
+    case "ControlPlugin":
+      return {
+        url: `${API_BASE}/plugins/control`,
         init: {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -113,3 +113,14 @@ panel_id = "event-feed"
 title = "Latest Events"
 position = "bottom"
 renderer = "event-feed"
+
+# Plugin Explorer is itself an ordinary plugin: it contributes this Console
+# page and exposes Runtime inspection/control through the application bridge.
+[[components]]
+id = "plugin-explorer"
+type = "plugin-explorer"
+
+[components.config]
+page_id = "plugins"
+title = "Plugins"
+route = "/plugins"

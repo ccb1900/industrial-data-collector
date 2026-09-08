@@ -19,7 +19,7 @@ Audit checks:
 | --- | --- |
 | B-01 no domain concept in Kernel | PASS, runtime untouched |
 | B-02 no second lifecycle | PASS, Config Controller and Runtime own lifecycles |
-| B-03 no direct Fiber mutation | PASS, Components only observe/Ready |
+| B-03 no direct Fiber mutation | PASS, Components only observe/Ready; lifecycle control is confined to the Application Explorer service via public `Fiber` API |
 | B-04 no direct Orchestrator access | PASS |
 | B-05 no direct Provider Registry access | PASS, only `runtime.Provide/Require` |
 | B-06 public API only | PASS |
@@ -29,11 +29,15 @@ Audit checks:
 | B-10 Activation ownership | PASS | cleanup is a Runtime Effect; owner activation label is application metadata only and never a lifecycle controller |
 | B-11 Snapshot boundary | PASS | `app/ui.Registry.Snapshot()` is atomic and isolated; UI Host/transport convert it to DTOs without exposing Owner/Activation |
 | B-12 P3.3 dynamic composition | PASS | real factory-registered components share one Registry; no runtime/ modification, no UI lifecycle methods, no domain imports in `app/ui` |
+| B-13 Plugin Explorer control | PASS | `plugin-explorer` is an ordinary GOCORDIS Component; its page is an Effect-owned UI Contribution and its Application Service uses only public Runtime `Fiber.Load`/`Dispose`/`Ready`/`Gone` |
 
-Application components do not call `Fiber.Dispose` or mutate another plugin's
-lifecycle. The Collector worker and event handler are installed through
-`Context.Effect`/`runtime.On`. The PathMetadata component is the single
-MetadataExtractor Provider of the Realm: one component aggregates every
-source's rule set and never creates one provider per source. It never touches
-Fibers, the Orchestrator, the Provider Registry, or the Dependency Graph
-directly.
+Runtime ON/OFF is deliberately kept outside every GOCORDIS Component body. The
+Collector worker and event handler are installed through
+`Context.Effect`/`runtime.On`, and the PathMetadata component is the single
+MetadataExtractor Provider of the Realm. The one Application-layer exception is
+`app/explorer.Service`, which exists outside the Components and exposes only
+the public `Fiber` API (`Load`/`Dispose`/`Ready`/`Gone`) to the Plugin
+Explorer transport. Components, including Explorer itself, never mutate Fiber
+lifecycle; the Console therefore gets Runtime-backed inspection/control without
+Registry internals, Provider Registry access, the Orchestrator, or the
+Dependency Graph.

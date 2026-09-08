@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
@@ -24,8 +25,9 @@ const ObservationEvent = "observation"
 
 // Server is the Web UI host: static assets + JSON Query/Command API + SSE.
 type Server struct {
-	adapter *uiplugin.Host
-	assets  fs.FS
+	adapter  *uiplugin.Host
+	assets   fs.FS
+	explorer *explorerplugin.Host
 
 	mu   sync.Mutex
 	subs map[chan uiplugin.UIObservation]struct{}
@@ -34,6 +36,13 @@ type Server struct {
 // New builds the web UI server over the given plugins/ui Host adapter.
 func New(adapter *uiplugin.Host, assets fs.FS) *Server {
 	return &Server{adapter: adapter, assets: assets, subs: map[chan uiplugin.UIObservation]struct{}{}}
+}
+
+// SetExplorer installs the optional Plugin Explorer transport adapter. The
+// Console is still Contribution-driven: the endpoint exists only when the
+// plugin-explorer component is active.
+func (s *Server) SetExplorer(exp *explorerplugin.Host) {
+	s.explorer = exp
 }
 
 // Publish pushes one observation to every SSE subscriber (non-blocking).
@@ -129,6 +138,25 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, data, ue)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/panels":
 		data, ue := s.adapter.ListPanels()
+		s.writeResult(w, data, ue)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins":
+		if s.explorer == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
+			return
+		}
+		data, ue := s.explorer.ListPlugins()
+		s.writeResult(w, data, ue)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/control":
+		if s.explorer == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
+			return
+		}
+		var req explorerplugin.ExplorerControlRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		data, ue := s.explorer.ControlPluginContext(r.Context(), req)
 		s.writeResult(w, data, ue)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/stream":
 		s.serveStream(w, r)

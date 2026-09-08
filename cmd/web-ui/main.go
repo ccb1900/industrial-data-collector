@@ -9,6 +9,8 @@
 //	GET  /api/files              ListFiles
 //	GET  /api/ui/pages           ListPages composition DTO
 //	GET  /api/ui/panels          ListPanels composition DTO
+//	GET  /api/plugins            Plugin Explorer snapshot
+//	POST /api/plugins/control    Runtime ON/OFF control
 //	POST /api/trigger            TriggerCollection (accepted asynchronously)
 //	GET  /api/stream             SSE "observation" events
 package main
@@ -29,6 +31,7 @@ import (
 
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/internal/webui"
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 	"gocordis-csv-collector/web"
 )
@@ -78,6 +81,9 @@ func run(logger *slog.Logger, configPath, addr string) error {
 		return fmt.Errorf("embedded ui assets: %w", err)
 	}
 	srv := webui.New(ui.HostAdapter(), fs.FS(sub))
+	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
+		srv.SetExplorer(exp.HostAdapter())
+	}
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSink(srv))
 
@@ -109,6 +115,18 @@ func findUIComponent(h *apphost.Host) *uiplugin.UIComponent {
 			if c, ok := o.Fiber.Component().(*uiplugin.UIComponent); ok {
 				return c
 			}
+		}
+	}
+	return nil
+}
+
+func findExplorerComponent(h *apphost.Host) *explorerplugin.ExplorerComponent {
+	for _, o := range h.Owned() {
+		if o.Type != "plugin-explorer" {
+			continue
+		}
+		if c, ok := o.Fiber.Component().(*explorerplugin.ExplorerComponent); ok {
+			return c
 		}
 	}
 	return nil

@@ -1,5 +1,6 @@
 import React, { ComponentType } from "react";
 import { UICollection, UIFile, UIObservation, UIPanel, UIPage, UISource } from "../models/types";
+import { PluginExplorer } from "./Explorer";
 import { Collections, Files, MetadataTable, Sources } from "./Lists";
 
 export interface CollectionDataView {
@@ -49,6 +50,10 @@ function DashboardPage(props: PageViewProps) {
   return <CollectionsPage {...props} />;
 }
 
+function PluginExplorerPage(_props: PageViewProps) {
+  return <PluginExplorer />;
+}
+
 function MetadataPanel({ data }: PanelViewProps) {
   const file = data.files[0];
   return <div className="panel-body">{file ? <MetadataTable metadata={file.metadata} /> : null}</div>;
@@ -74,6 +79,7 @@ const pageRenderers: Record<string, ComponentType<PageViewProps>> = {
   collections: CollectionsPage,
   files: FilesPage,
   sources: SourcesPage,
+  "plugin-explorer": PluginExplorerPage,
 };
 
 const panelRenderers: Record<string, ComponentType<PanelViewProps>> = {

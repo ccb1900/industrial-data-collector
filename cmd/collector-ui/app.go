@@ -8,6 +8,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"gocordis-csv-collector/app/host"
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
@@ -18,6 +19,8 @@ type App struct {
 	host *host.Host
 	ui   *uiplugin.UIComponent
 	ad   *uiplugin.Host
+	exp  *explorerplugin.ExplorerComponent
+	ex   *explorerplugin.Host
 	ctx  context.Context
 }
 
@@ -56,6 +59,24 @@ func (a *App) ListPages() (uiplugin.UIPageList, error) {
 
 func (a *App) ListPanels() (uiplugin.UIPanelList, error) {
 	out, ue := a.ad.ListPanels()
+	return out, ueError(ue)
+}
+
+// ListPlugins and ControlPlugin expose the Plugin Explorer Runtime Control
+// boundary to Wails. The Explorer component is a plugin; App is only transport.
+func (a *App) ListPlugins() (explorerplugin.ExplorerPluginList, error) {
+	if a.ex == nil {
+		return explorerplugin.ExplorerPluginList{}, errors.New("unavailable: plugin explorer is not active")
+	}
+	out, ue := a.ex.ListPlugins()
+	return out, ueError(ue)
+}
+
+func (a *App) ControlPlugin(req explorerplugin.ExplorerControlRequest) (explorerplugin.ExplorerControlResult, error) {
+	if a.ex == nil {
+		return explorerplugin.ExplorerControlResult{}, errors.New("unavailable: plugin explorer is not active")
+	}
+	out, ue := a.ex.ControlPlugin(req)
 	return out, ueError(ue)
 }
 

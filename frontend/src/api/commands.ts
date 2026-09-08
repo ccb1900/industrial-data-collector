@@ -1,4 +1,4 @@
-import { UITriggerRequest } from "../models/types";
+import { ExplorerControlRequest, ExplorerControlResult, UITriggerRequest } from "../models/types";
 import { invoke } from "./transport";
 
 // Command Bridge: React -> Wails -> plugins/ui Host -> CollectionCommand.
@@ -6,4 +6,6 @@ import { invoke } from "./transport";
 export const commands = {
   triggerCollection: (req: UITriggerRequest) =>
     invoke<void>("TriggerCollection", req),
+  controlPlugin: (req: ExplorerControlRequest) =>
+    invoke<ExplorerControlResult>("ControlPlugin", req),
 };

@@ -21,6 +21,7 @@ import (
 	wails "github.com/wailsapp/wails/v2"
 
 	apphost "gocordis-csv-collector/app/host"
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
@@ -64,6 +65,10 @@ func run(logger *slog.Logger, configPath, frontendDir string) error {
 		return fmt.Errorf("no active ui component in configuration")
 	}
 	app := &App{host: appHost, ui: ui, ad: ui.HostAdapter()}
+	if exp := findExplorerComponent(appHost); exp != nil {
+		app.exp = exp
+		app.ex = exp.HostAdapter()
+	}
 
 	wails.Run(&wails.Options{
 		Title:      "Industrial Data Collector",
@@ -81,6 +86,17 @@ func findUIComponent(h *apphost.Host) *uiplugin.UIComponent {
 	for _, o := range h.Owned() {
 		if o.ID == "ui" {
 			if c, ok := o.Fiber.Component().(*uiplugin.UIComponent); ok {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+func findExplorerComponent(h *apphost.Host) *explorerplugin.ExplorerComponent {
+	for _, o := range h.Owned() {
+		if o.Type == "plugin-explorer" {
+			if c, ok := o.Fiber.Component().(*explorerplugin.ExplorerComponent); ok {
 				return c
 			}
 		}

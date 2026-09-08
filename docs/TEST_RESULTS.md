@@ -69,6 +69,8 @@ PASS based on code inspection plus the in-process fake `database/sql` driver.
 | `app/ui/p33_conformance_test.go` | P3.3-01..06, 08..13, 20 | multi-plugin, bidirectional isolation, cross-type isolation, duplicate page/panel, duplicate preserves original, reload/rapid reload, ordering, snapshot isolation, concurrent registration/cleanup, no parallel lifecycle |
 | `tests/e2e_ui_p33_test.go` | P3.3-07, 14, 15, 17, 18 | Apply rollback, host snapshot-only consumption, React DTO isolation, observation integration, real plugin E2E |
 | `internal/webui` | `TestWebUIHTTPBridge` | embedded web UI: static index, /api trigger+collections+files+metadata, Registry Snapshot/HTTP/Wails parity, SSE observation |
+| `internal/webui` | `TestWebUIPluginExplorerHTTP` | embedded /api/plugins snapshot and /api/plugins/control parity with Runtime fiber state |
+| `tests/e2e_ui_p34_test.go` | PE-01..PE-12 | Explorer discovery/state, Runtime ON/OFF, contribution lifecycle, reload, duplicate/idempotent cleanup, concurrency, failure and stale-interaction results |
 | `tests/e2e_test.go` | `TestCSVE2E12RuntimeCloseAllGone` | close leaves no owned components |
 | `tests/e2e_test.go` | `TestRuntimeIntegrationDependencyActiveCollectionUnloadGone` | config -> component -> dependency -> active -> collection -> gone |
 

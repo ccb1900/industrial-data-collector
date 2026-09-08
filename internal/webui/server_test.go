@@ -18,6 +18,7 @@ import (
 
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
@@ -230,6 +231,100 @@ func TestWebUIHTTPBridge(t *testing.T) {
 	}
 }
 
+func TestWebUIPluginExplorerHTTP(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h, err := apphost.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+
+	components := []config.ComponentConfig{
+		webComponent("query-provider", "query-provider", map[string]any{}),
+		webComponent("ui", "ui", map[string]any{}),
+		webComponent("plugin-explorer", "plugin-explorer", map[string]any{
+			"page_id": "plugins", "title": "Plugins", "route": "/plugins",
+		}),
+		webComponent("plugin-a", "ui-page", map[string]any{
+			"page_id": "page-a", "title": "Page A", "route": "/a", "renderer": "collections",
+		}),
+	}
+	if err := h.Reconcile(ctx, config.Config{Components: components}); err != nil {
+		t.Fatal(err)
+	}
+	var ui *uiplugin.UIComponent
+	var exp *explorerplugin.ExplorerComponent
+	for _, o := range h.Owned() {
+		switch o.ID {
+		case "ui":
+			if c, ok := o.Fiber.Component().(*uiplugin.UIComponent); ok {
+				ui = c
+			}
+		case "plugin-explorer":
+			if c, ok := o.Fiber.Component().(*explorerplugin.ExplorerComponent); ok {
+				exp = c
+			}
+		}
+	}
+	if ui == nil || exp == nil || exp.HostAdapter() == nil {
+		t.Fatalf("ui=%v explorer=%v adapter=%v", ui != nil, exp != nil, exp != nil && exp.HostAdapter() != nil)
+	}
+	srv := New(ui.HostAdapter(), fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("ok")}})
+	srv.SetExplorer(exp.HostAdapter())
+
+	rows := webGetPlugins(t, srv, "/api/plugins")
+	if len(rows) != 4 {
+		t.Fatalf("http plugins = %#v", rows)
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range rows {
+		byID[row["id"].(string)] = row
+	}
+	if byID["plugin-a"]["state"] != "Active" || byID["ui"]["controllable"] != false {
+		t.Fatalf("http plugin rows = %#v", rows)
+	}
+
+	rr := webDo(srv, http.MethodPost, "/api/plugins/control", strings.NewReader(`{"pluginId":"plugin-a","enable":false}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("control status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var res struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Data["accepted"] != true || res.Data["state"] != "Gone" {
+		t.Fatalf("control result = %#v", res.Data)
+	}
+	pages := webGetPages(t, srv, "/api/ui/pages")
+	if len(pages) != 1 || pages[0]["id"] != "plugins" {
+		t.Fatalf("pages after runtime off = %#v", pages)
+	}
+	rows = webGetPlugins(t, srv, "/api/plugins")
+	for _, row := range rows {
+		if row["id"] == "plugin-a" && row["state"] != "Gone" {
+			t.Fatalf("plugin-a state after OFF = %#v", row)
+		}
+	}
+
+	rr = webDo(srv, http.MethodPost, "/api/plugins/control", strings.NewReader(`{"pluginId":"plugin-a","enable":true}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("control status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Data["accepted"] != true || res.Data["state"] != "Active" {
+		t.Fatalf("control result = %#v", res.Data)
+	}
+	pages = webGetPages(t, srv, "/api/ui/pages")
+	if len(pages) != 2 {
+		t.Fatalf("pages after runtime on = %#v", pages)
+	}
+}
+
 func webDo(srv http.Handler, method, path string, body io.Reader) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, "http://ui"+path, body)
 	rr := httptest.NewRecorder()
@@ -303,4 +398,21 @@ func webGetPanels(t *testing.T, srv http.Handler, path string) []map[string]any 
 		t.Fatal(err)
 	}
 	return body.Data.Panels
+}
+
+func webGetPlugins(t *testing.T, srv http.Handler, path string) []map[string]any {
+	t.Helper()
+	rr := webDo(srv, http.MethodGet, path, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("plugins status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Plugins []map[string]any `json:"plugins"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Data.Plugins
 }

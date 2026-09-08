@@ -6,7 +6,9 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
+	appexplorer "gocordis-csv-collector/app/explorer"
 	collectorplugin "gocordis-csv-collector/plugins/collector"
+	explorerplugin "gocordis-csv-collector/plugins/explorer"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	queryplugin "gocordis-csv-collector/plugins/query"
@@ -26,10 +28,15 @@ func (a *adapterFactory) Create(cc config.ComponentConfig) (runtime.Component, e
 	return a.build(cc)
 }
 
-// RegisterFactories registers every Application Layer component type.
-func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
+// RegisterFactories registers every Application Layer component type. The
+// optional explorer service powers plugin-explorer Console components.
+func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorerServices ...*appexplorer.Service) error {
 	register := func(typ string, build func(config.ComponentConfig) (runtime.Component, error)) error {
 		return reg.Register(typ, &adapterFactory{build: build})
+	}
+	var explorerSvc *appexplorer.Service
+	if len(explorerServices) > 0 {
+		explorerSvc = explorerServices[0]
 	}
 	if err := register("local-file-source", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return sourceplugin.NewSource(cc)
@@ -101,6 +108,11 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger) error {
 	}
 	if err := register("ui-contribution", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return uicontrib.NewContribution(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return explorerplugin.NewPlugin(cc, explorerSvc)
 	}); err != nil {
 		return err
 	}

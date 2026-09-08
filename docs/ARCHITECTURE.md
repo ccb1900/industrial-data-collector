@@ -7,9 +7,9 @@ cmd/csv-collector
 app/host
 plugins/config
 plugins/collector + plugins/scheduler
-plugins/query + plugins/ui + plugins/ui-contrib
+plugins/query + plugins/ui + plugins/ui-contrib + plugins/explorer
 plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
-app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui
+app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui + app/explorer
 app/source + app/parser + app/storage + app/state + app/model
 dynamic-runtime (replace: ../gocordis)
 ```
@@ -45,6 +45,7 @@ Each config component type maps to one Component:
 | `ui` | UI Composition Registry | UI Host: owns one Registry per activation, Query/Observation/Command bridge, isolated `Snapshot()`/DTO transport |
 | `ui-page` / `ui-panel` | none (contributor) | independent components: register one declarative Page/Panel through Effect-owned cleanup |
 | `ui-contribution` | none (contributor) | one component registers multiple Pages/Panels; every registration is a Runtime Effect |
+| `plugin-explorer` | none (Console contributor + transport Host) | Plugin Explorer page; Runtime data/control through `app/explorer.Service` and public Fiber API |
 | `scheduler` | Trigger | daily tick to Runtime Event |
 | `csv-collector` | none | worker + event handler |
 

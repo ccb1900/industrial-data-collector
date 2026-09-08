@@ -49,6 +49,34 @@ export interface UIPanelList {
   panels: UIPanel[];
 }
 
+export interface ExplorerPlugin {
+  id: string;
+  name: string;
+  type: string;
+  state: string;
+  components: string[];
+  capabilities: string[];
+  controllable: boolean;
+}
+
+export interface ExplorerPluginList {
+  plugins: ExplorerPlugin[];
+}
+
+export interface ExplorerControlRequest {
+  pluginId: string;
+  enable: boolean;
+}
+
+export interface ExplorerControlResult {
+  pluginId: string;
+  accepted: boolean;
+  rejected: boolean;
+  failed: boolean;
+  state: string;
+  error: string;
+}
+
 export interface UIObservation {
   type: string;
   sourceId?: string;

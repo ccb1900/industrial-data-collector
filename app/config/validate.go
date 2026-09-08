@@ -16,26 +16,37 @@ import (
 type TypeInfo struct {
 	Kind       string
 	Capability string
+	Name       string
 }
 
 var knownTypes = map[string]TypeInfo{
-	"local-file-source":  {Kind: "source", Capability: "filesource"},
-	"unc-file-source":    {Kind: "source", Capability: "filesource"},
-	"csv-parser":         {Kind: "parser", Capability: "csvparser"},
-	"memory-storage":     {Kind: "storage", Capability: "storage"},
-	"mysql-storage":      {Kind: "storage", Capability: "storage"},
-	"postgresql-storage": {Kind: "storage", Capability: "storage"},
-	"oracle-storage":     {Kind: "storage", Capability: "storage"},
-	"memory-state":       {Kind: "state", Capability: "state"},
-	"file-state":         {Kind: "state", Capability: "state"},
-	"scheduler":          {Kind: "scheduler", Capability: "trigger"},
-	"csv-collector":      {Kind: "collector", Capability: "collector"},
-	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor"},
-	"query-provider":     {Kind: "query", Capability: "query"},
-	"ui":                 {Kind: "ui-host", Capability: "ui"},
-	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page"},
-	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel"},
-	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution"},
+	"local-file-source":  {Kind: "source", Capability: "filesource", Name: "Local File Source"},
+	"unc-file-source":    {Kind: "source", Capability: "filesource", Name: "UNC File Source"},
+	"csv-parser":         {Kind: "parser", Capability: "csvparser", Name: "CSV Parser"},
+	"memory-storage":     {Kind: "storage", Capability: "storage", Name: "Memory Storage"},
+	"mysql-storage":      {Kind: "storage", Capability: "storage", Name: "MySQL Storage"},
+	"postgresql-storage": {Kind: "storage", Capability: "storage", Name: "PostgreSQL Storage"},
+	"oracle-storage":     {Kind: "storage", Capability: "storage", Name: "Oracle Storage"},
+	"memory-state":       {Kind: "state", Capability: "state", Name: "Memory State"},
+	"file-state":         {Kind: "state", Capability: "state", Name: "File State"},
+	"scheduler":          {Kind: "scheduler", Capability: "trigger", Name: "Scheduler"},
+	"csv-collector":      {Kind: "collector", Capability: "collector", Name: "CSV Collector"},
+	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor", Name: "Path Metadata"},
+	"query-provider":     {Kind: "query", Capability: "query", Name: "Query Provider"},
+	"ui":                 {Kind: "ui-host", Capability: "ui", Name: "UI Host"},
+	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page", Name: "UI Page Contribution"},
+	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel", Name: "UI Panel Contribution"},
+	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
+	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
+}
+
+// DisplayName returns the human-facing plugin label for a known component
+// type. Unknown/empty values fall back to the raw type.
+func DisplayName(typ string) string {
+	if ti, ok := knownTypes[typ]; ok && ti.Name != "" {
+		return ti.Name
+	}
+	return typ
 }
 
 // Validate rejects invalid application configuration before Runtime mutation.

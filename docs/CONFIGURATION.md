@@ -177,10 +177,38 @@ the desired contribution components (see `configs/desktop.toml`). Observation
 event name is fixed to `observation`. A browser host is also provided:
 `cmd/web-ui` serves the embedded React build (`go:embed web/dist`) with JSON
 API under `/api/*` (`sources`, `collections`, `collection`, `files`,
-`ui/pages`, `ui/panels`, `trigger`) and SSE `/api/stream` for `observation`
-events. Composition DTOs are fetched from `GET /api/ui/pages` and
-`GET /api/ui/panels`; the React host invalidates on `composition.changed` and
-re-fetches.
+`ui/pages`, `ui/panels`, `plugins`, `plugins/control`, `trigger`) and SSE
+`/api/stream` for `observation` events. Composition DTOs are fetched from
+`GET /api/ui/pages` and `GET /api/ui/panels`; the Plugin Explorer snapshot is
+fetched from `GET /api/plugins` and Runtime ON/OFF is submitted to
+`POST /api/plugins/control`. The React host invalidates on
+`composition.changed` and re-fetches.
+
+## Plugin Explorer
+
+- `type`: `plugin-explorer`. It is an ordinary UI plugin, not a special host:
+  it requires the UI Host and registers its own Console page during Apply.
+  Explorer rows are derived from the desired component set already owned by the
+  Config Controller; state is read from Runtime fibers (`Active`, `Pending`,
+  `Failed`, `Gone`, ...). No plugin list is hard-coded in React.
+- Fields: `page_id`, `title`, `route` (defaults `plugins`, `Plugins`,
+  `/plugins`). The renderer is fixed to `plugin-explorer`.
+- ON/OFF is a Runtime Control request: the Application Service calls public
+  `Fiber.Load`/`Dispose` and returns `Accepted`/`Rejected`/`Failed` plus the
+  current Runtime state. The Console UI refreshes after control instead of
+  assuming success. Explorer, UI Host, and Query Provider components are
+  protected so the open Console cannot remove its own host.
+
+```toml
+[[components]]
+id = "plugin-explorer"
+type = "plugin-explorer"
+
+[components.config]
+page_id = "plugins"
+title = "Plugins"
+route = "/plugins"
+```
 
 ## Collector
 

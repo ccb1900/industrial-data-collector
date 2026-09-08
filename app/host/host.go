@@ -9,6 +9,7 @@ import (
 	"dynamic-runtime/runtime"
 
 	appconfig "gocordis-csv-collector/app/config"
+	appexplorer "gocordis-csv-collector/app/explorer"
 	"gocordis-csv-collector/app/model"
 	configplugin "gocordis-csv-collector/plugins/config"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
@@ -18,7 +19,11 @@ type Host struct {
 	rt   *runtime.Runtime
 	reg  config.FactoryRegistry
 	ctrl *config.Controller
-	log  *slog.Logger
+	// explorer is the Application Plugin Explorer boundary. It stores only the
+	// desired component set after a successful Reconcile; Runtime truth remains
+	// in Controller/Runtime fibers.
+	explorer *appexplorer.Service
+	log      *slog.Logger
 }
 
 func New(log *slog.Logger) (*Host, error) {
@@ -27,12 +32,14 @@ func New(log *slog.Logger) (*Host, error) {
 		return nil, err
 	}
 	reg := config.NewFactoryRegistry()
-	if err := configplugin.RegisterFactories(reg, log); err != nil {
+	explorer := appexplorer.New()
+	if err := configplugin.RegisterFactories(reg, log, explorer); err != nil {
 		_ = rt.Close(context.Background())
 		return nil, err
 	}
 	ctrl := config.NewController(rt, reg)
-	return &Host{rt: rt, reg: reg, ctrl: ctrl, log: log}, nil
+	explorer.SetOwned(ctrl.Owned)
+	return &Host{rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log}, nil
 }
 
 func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
@@ -46,6 +53,9 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 		if err := owned.Fiber.Ready(ctx); err != nil {
 			return fmt.Errorf("component %s not ready: %w", owned.ID, err)
 		}
+	}
+	if h.explorer != nil {
+		h.explorer.SetDesired(cfg)
 	}
 	return nil
 }
