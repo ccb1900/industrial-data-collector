@@ -99,10 +99,16 @@ func toExplorerPlugin(p appexplorer.Plugin) ExplorerPlugin {
 		Name:         p.Name,
 		Type:         p.Type,
 		State:        p.State,
-		Components:   append([]string(nil), p.Components...),
-		Capabilities: append([]string(nil), p.Capabilities...),
+		Components:   cloneStrings(p.Components),
+		Capabilities: cloneStrings(p.Capabilities),
 		Controllable: p.Controllable,
 	}
+}
+
+func cloneStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func toControlResult(r appexplorer.ControlResult) ExplorerControlResult {

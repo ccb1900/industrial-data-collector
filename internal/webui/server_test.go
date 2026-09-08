@@ -284,6 +284,9 @@ func TestWebUIPluginExplorerHTTP(t *testing.T) {
 	if byID["plugin-a"]["state"] != "Active" || byID["ui"]["controllable"] != false {
 		t.Fatalf("http plugin rows = %#v", rows)
 	}
+	if caps, ok := byID["plugin-a"]["capabilities"].([]any); !ok || len(caps) != 0 {
+		t.Fatalf("plugin without capabilities must marshal as an empty array, got %#v", byID["plugin-a"]["capabilities"])
+	}
 
 	rr := webDo(srv, http.MethodPost, "/api/plugins/control", strings.NewReader(`{"pluginId":"plugin-a","enable":false}`))
 	if rr.Code != http.StatusOK {
@@ -306,6 +309,9 @@ func TestWebUIPluginExplorerHTTP(t *testing.T) {
 	for _, row := range rows {
 		if row["id"] == "plugin-a" && row["state"] != "Gone" {
 			t.Fatalf("plugin-a state after OFF = %#v", row)
+		}
+		if row["capabilities"] == nil || row["components"] == nil {
+			t.Fatalf("plugin row must carry arrays after OFF: %#v", row)
 		}
 	}
 

@@ -29,6 +29,8 @@ export function PluginExplorer() {
 
   const selected =
     plugins.find((plugin) => plugin.id === selectedId) ?? plugins[0] ?? null;
+  const selectedComponents = selected?.components ?? [];
+  const selectedCapabilities = selected?.capabilities ?? [];
 
   const toggle = useCallback(
     async (plugin: ExplorerPlugin, enable: boolean) => {
@@ -113,9 +115,9 @@ export function PluginExplorer() {
               <dt>State</dt>
               <dd>{selected.state}</dd>
               <dt>Component</dt>
-              <dd>{selected.components.join(", ")}</dd>
+              <dd>{selectedComponents.join(", ")}</dd>
               <dt>Capabilities</dt>
-              <dd>{selected.capabilities.length ? selected.capabilities.join(", ") : "None"}</dd>
+              <dd>{selectedCapabilities.length ? selectedCapabilities.join(", ") : "None"}</dd>
             </dl>
           </>
         ) : (
