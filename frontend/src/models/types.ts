@@ -115,7 +115,6 @@ export interface UITriggerRequest {
   reason?: string;
 }
 
-<<<<<<< HEAD
 // FleetEntry is one host in the aggregated fleet view: the host's own
 // /api/meta plus reachability as seen from this console.
 export interface FleetEntry {
@@ -136,7 +135,8 @@ export interface FleetEntry {
     queries?: string[];
     commands?: string[];
   };
-=======
+}
+
 // RowsPage is one page of typed table rows from the relational sink.
 export interface RowsPage {
   columns: string[];
@@ -156,5 +156,4 @@ export interface LogEntry {
   level: string;
   msg: string;
   attrs?: Record<string, string>;
->>>>>>> feat/console-platform-roadmap
 }

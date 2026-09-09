@@ -476,19 +476,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	}
 	storageType = strings.ToLower(storageType)
 	switch storageType {
-<<<<<<< HEAD
 	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage", "sqlite", "sqlite-storage":
 	default:
 		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
 	}
 	if storageType != "memory" && storageType != "memory-storage" {
-=======
-	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "sqlite", "sqlite-storage", "oracle", "oracle-storage":
-	default:
-		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
-	}
-	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "sqlite" || storageType == "sqlite-storage" || storageType == "oracle" || storageType == "oracle-storage" {
->>>>>>> feat/console-platform-roadmap
 		if str(cc.Config, "dsn") == "" {
 			return fmt.Errorf("source-unit %q storage requires dsn", cc.ID)
 		}

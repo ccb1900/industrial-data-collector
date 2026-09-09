@@ -320,7 +320,6 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if err != nil {
 		return nil, err
 	}
-<<<<<<< HEAD
 	// collection_mode = "append": change-triggered sources record many
 	// snapshots under one business date, so the succeeded guard stays off
 	// (file-level dedup still protects against duplicates).
@@ -331,10 +330,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		}
 		setter.SetAppendMode()
 	}
-	store, sqlCfg, err := buildStorage(cc.Config)
-=======
 	mem, sqlCfg, tableCfg, err := buildStorage(cc.Config)
->>>>>>> feat/console-platform-roadmap
 	if err != nil {
 		return nil, err
 	}
@@ -452,27 +448,8 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 	typ = normalizeStorageType(typ)
 	switch typ {
 	case "memory-storage":
-<<<<<<< HEAD
-		return storage.NewMemory(storage.MemoryOptions{}), nil, nil
-	case "sqlite-storage":
-		dialect := "sqlite"
-		driver := configutil.OptionalString(cc, "driver", "")
-		if driver == "" {
-			driver = "sqlite"
-		}
-		sqlCfg := &storage.SQLConfig{
-			Driver: driver, DSN: configutil.OptionalString(cc, "dsn", ""),
-			Dialect: dialect, Table: configutil.OptionalString(cc, "table", "gocordis_records"),
-		}
-		if err := sqlCfg.Validate(); err != nil {
-			return nil, nil, err
-		}
-		return nil, sqlCfg, nil
-	case "mysql-storage", "postgresql-storage", "oracle-storage":
-=======
 		return storage.NewMemory(storage.MemoryOptions{}), nil, nil, nil
 	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage":
->>>>>>> feat/console-platform-roadmap
 		driver := configutil.OptionalString(cc, "driver", "")
 		dialect := "mysql"
 		switch typ {
@@ -565,8 +542,6 @@ func normalizeStorageType(typ string) string {
 		return "sqlite-storage"
 	case "oracle", "oracle-storage":
 		return "oracle-storage"
-	case "sqlite", "sqlite-storage":
-		return "sqlite-storage"
 	default:
 		return typ
 	}

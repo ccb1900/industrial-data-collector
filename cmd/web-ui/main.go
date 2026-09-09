@@ -91,29 +91,13 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
-<<<<<<< HEAD
 	// Fleet self-description: identity + peer list come from the ui component
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
-=======
-	// TEMP DIAGNOSTIC: probe fiber states while reconciling.
-	go func() {
-		for i := 0; i < 4; i++ {
-			time.Sleep(2 * time.Second)
-			for _, o := range appHost.Owned() {
-				st := "nil"
-				if o.Fiber != nil {
-					st = o.Fiber.State().String()
-				}
-				slog.Info("fiber probe", "id", o.ID, "state", st)
-			}
-		}
-	}()
 	// Desired-state editing: uninstall persists to <config>.removed.json.
 	appHost.SetOverlayPath(configPath + ".removed.json")
 	srv.SetPluginLifecycle(lifecycleAdapter{h: appHost})
->>>>>>> feat/console-platform-roadmap
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
 
