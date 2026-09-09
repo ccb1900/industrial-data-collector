@@ -20,10 +20,12 @@ type ReadModel struct {
 }
 
 type collectionEntry struct {
-	key    model.CollectionKey
-	status string
-	files  map[string]*fileEntry
-	ended  time.Time
+	key       model.CollectionKey
+	status    string
+	note      string
+	startedAt time.Time
+	files     map[string]*fileEntry
+	ended     time.Time
 }
 
 type fileEntry struct {
@@ -32,6 +34,8 @@ type fileEntry struct {
 	records  int64
 	status   string
 	err      string
+	attempts int
+	failedAt time.Time
 }
 
 type sourceEntry struct {
@@ -98,12 +102,31 @@ func (m *ReadModel) OnFileCompleted(key model.CollectionKey, file model.FileIden
 	e.files[file.Identity()] = &fileEntry{file: file, metadata: md.Clone(), records: records, status: StatusSucceeded}
 }
 
+// OnCollectionPending marks a business date whose data is not available yet
+// (typically the date directory has not appeared).
+func (m *ReadModel) OnCollectionPending(key model.CollectionKey, note string, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entry(key)
+	e.status = StatusPending
+	e.note = note
+	e.ended = at
+}
+
 // OnFileFailed records one failed file.
 func (m *ReadModel) OnFileFailed(key model.CollectionKey, file model.FileIdentity, md model.Metadata, records int64, errMsg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e := m.entry(key)
-	e.files[file.Identity()] = &fileEntry{file: file, metadata: md.Clone(), records: records, status: StatusFailed, err: errMsg}
+	prev, existed := e.files[file.Identity()]
+	attempts := 1
+	if existed && prev.status == StatusFailed {
+		attempts = prev.attempts + 1
+	}
+	e.files[file.Identity()] = &fileEntry{
+		file: file, metadata: md.Clone(), records: records, status: StatusFailed,
+		err: errMsg, attempts: attempts, failedAt: time.Now(),
+	}
 }
 
 // OnCollectionCompleted marks the collection succeeded.
@@ -163,9 +186,11 @@ func (m *ReadModel) GetCollection(ctx context.Context, key model.CollectionKey) 
 func (m *ReadModel) collectionViewLocked(key model.CollectionKey) CollectionView {
 	e := m.collections[key]
 	v := CollectionView{
-		SourceID: string(key.SourceID),
-		Date:     key.Date.String(),
-		Status:   e.status,
+		SourceID:  string(key.SourceID),
+		Date:      key.Date.String(),
+		Status:    e.status,
+		Note:      e.note,
+		StartedAt: e.startedAt,
 	}
 	if e.status == "" {
 		v.Status = StatusRunning
@@ -222,6 +247,93 @@ func sourceViewLocked(e *sourceEntry) SourceView {
 		v.Status = "Active"
 	}
 	return v
+}
+
+// ListFailures implements FailureQuery: the merged file-failure view of one
+// source — live failures observed in this process plus the failures attached
+// from the persisted ledger — oldest first.
+func (m *ReadModel) ListFailures(ctx context.Context, sourceID model.SourceID) ([]model.FileFailure, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]model.FileFailure, 0, 4)
+	for _, e := range m.collections {
+		if sourceID != "" && e.key.SourceID != sourceID {
+			continue
+		}
+		for _, f := range e.files {
+			if f.status != StatusFailed {
+				continue
+			}
+			attempts := f.attempts
+			if attempts <= 0 {
+				attempts = 1
+			}
+			out = append(out, model.FileFailure{
+				Key: e.key, File: f.file, Error: f.err, FailedAt: f.failedAt, Attempts: attempts,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FailedAt.Equal(out[j].FailedAt) {
+			return out[i].File.Path < out[j].File.Path
+		}
+		return out[i].FailedAt.Before(out[j].FailedAt)
+	})
+	return out, nil
+}
+
+// AttachUnits projects durable unit state into the read model: sources,
+// collection records (including Pending and post-restart history), completed
+// files, and the failure ledger. It is idempotent — a later attach replaces
+// the projected fields — and live events keep updating on top of it.
+func (m *ReadModel) AttachUnits(units []UnitState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range units {
+		if u.SourceID == "" {
+			continue // a projection without a source identity is nothing
+		}
+		id := model.SourceID(u.SourceID)
+		src, ok := m.sources[id]
+		if !ok {
+			src = &sourceEntry{id: id, status: "Active"}
+			m.sources[id] = src
+		}
+		if u.Path != "" {
+			src.path = u.Path
+		}
+		for _, rec := range u.Collections {
+			e := m.entry(rec.Key)
+			if rec.Status != "" {
+				e.status = string(rec.Status)
+			}
+			e.note = rec.Note
+			if !rec.StartedAt.IsZero() {
+				e.startedAt = rec.StartedAt
+			}
+			if !rec.EndedAt.IsZero() {
+				e.ended = rec.EndedAt
+			}
+		}
+		for _, f := range u.CompletedFiles {
+			e := m.entry(f.Key)
+			if cur, exists := e.files[f.File.Identity()]; !exists || cur.status != StatusFailed {
+				e.files[f.File.Identity()] = &fileEntry{
+					file: f.File, records: f.Records, status: StatusSucceeded,
+				}
+			}
+		}
+		for _, f := range u.Failures {
+			e := m.entry(f.Key)
+			e.files[f.File.Identity()] = &fileEntry{
+				file: f.File, status: StatusFailed, err: f.Error,
+				attempts: f.Attempts, failedAt: f.FailedAt,
+			}
+		}
+	}
 }
 
 // ListFiles implements FileQuery.

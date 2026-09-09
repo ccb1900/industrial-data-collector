@@ -9,7 +9,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	uiplugin "dynamic-runtime/console/host"
 )
 
 func TestP33_07ApplyRollback(t *testing.T) {

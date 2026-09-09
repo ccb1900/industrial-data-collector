@@ -9,6 +9,7 @@ import (
 
 	"gocordis-csv-collector/plugins/internal/configutil"
 
+	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/source"
@@ -50,6 +51,16 @@ func NewSource(cc config.ComponentConfig) (*SourceComponent, error) {
 	if window < 0 {
 		return nil, fmt.Errorf("%w: file_stable_window_seconds must be >= 0", errs.ErrInvalidConfig)
 	}
+	detectContent := configutil.OptionalBool(cc, "detect_content", false)
+	if detectContent {
+		pattern = ""
+	}
+	encoding, err := appencoding.Normalize(configutil.OptionalString(cc, "encoding", "utf8"))
+	if err != nil {
+		return nil, err
+	}
 	src := source.New(cc.ID, root, pattern, time.Duration(window)*time.Second)
+	src.ContentDetect = detectContent
+	src.Encoding = encoding
 	return &SourceComponent{cfg: src}, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	extconfig "dynamic-runtime/extensions/config"
 
+	appencoding "gocordis-csv-collector/app/encoding"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	appparser "gocordis-csv-collector/app/parser"
 )
@@ -40,6 +41,7 @@ var knownTypes = map[string]TypeInfo{
 	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
 	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
 	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
+	"console-bridge":     {Kind: "console-bridge", Capability: "console-bridge", Name: "Console Bridge"},
 }
 
 // DisplayName returns the human-facing plugin label for a known component
@@ -151,7 +153,16 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 				return fmt.Errorf("source %q file_stable_window_seconds must be >= 0", cc.ID)
 			}
 		}
+		if err := validateDetectContent(cc, "source"); err != nil {
+			return err
+		}
+		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
+			return fmt.Errorf("source %q: %v", cc.ID, err)
+		}
 	case "parser":
+		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
+			return fmt.Errorf("parser %q: %v", cc.ID, err)
+		}
 		skip := 0
 		if raw, ok := cc.Config["skip_lines"]; ok {
 			n, valid := intCfgValue(raw)
@@ -255,10 +266,18 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 				return fmt.Errorf("collector %q batch_size must be positive", cc.ID)
 			}
 		}
+		if raw, ok := cc.Config["catchup_days"]; ok {
+			d, valid := intCfgValue(raw)
+			if !valid || d < 0 {
+				return fmt.Errorf("collector %q catchup_days must be a non-negative integer", cc.ID)
+			}
+		}
 	case "source-unit":
 		if err := validateSourceUnit(cc); err != nil {
 			return err
 		}
+	case "console-bridge":
+		// no config keys in v0.2
 	}
 	_ = ti.Capability
 	return nil
@@ -323,6 +342,12 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 		if !valid || w < 0 {
 			return fmt.Errorf("source-unit %q file_stable_window_seconds must be a non-negative integer", cc.ID)
 		}
+	}
+	if err := validateDetectContent(cc, "source-unit"); err != nil {
+		return err
+	}
+	if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
+		return fmt.Errorf("source-unit %q: %v", cc.ID, err)
 	}
 	kind := str(cc.Config, "parser")
 	if kind == "" {
@@ -419,8 +444,34 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 			return fmt.Errorf("source-unit %q batch_size must be a positive integer", cc.ID)
 		}
 	}
+	if raw, ok := cc.Config["catchup_days"]; ok {
+		d, valid := intCfgValue(raw)
+		if !valid || d < 0 {
+			return fmt.Errorf("source-unit %q catchup_days must be a non-negative integer", cc.ID)
+		}
+	}
+	if raw, ok := cc.Config["lazy_connect"]; ok {
+		if _, valid := boolCfgValue(raw); !valid {
+			return fmt.Errorf("source-unit %q lazy_connect must be a boolean", cc.ID)
+		}
+	}
 	if _, err := appmetadata.ParseRules(cc.Config["path_metadata"]); err != nil {
 		return fmt.Errorf("source-unit %q path_metadata: %w", cc.ID, err)
+	}
+	return nil
+}
+
+// validateDetectContent rejects ambiguous discovery configuration: content
+// detection judges every file by its bytes, so a name glob alongside it has
+// no defined meaning.
+func validateDetectContent(cc extconfig.ComponentConfig, kind string) error {
+	if raw, ok := cc.Config["detect_content"]; ok {
+		if _, valid := boolCfgValue(raw); !valid {
+			return fmt.Errorf("%s %q detect_content must be a boolean", kind, cc.ID)
+		}
+		if valid, _ := boolCfgValue(raw); valid && str(cc.Config, "pattern") != "" {
+			return fmt.Errorf("%s %q pattern must be empty when detect_content is true", kind, cc.ID)
+		}
 	}
 	return nil
 }

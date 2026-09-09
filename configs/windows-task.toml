@@ -1,0 +1,74 @@
+# Industrial deployment shape: run-to-completion via Windows Task Scheduler
+# (or cron), collecting yesterday's data from UNC shares into a remote
+# PostgreSQL database.
+#
+#   csv-collector.exe -config windows-task.toml -once
+#
+# The -once process reconciles this configuration, runs one recovery +
+# collection pass (missed-day catch-up and failed-file replay included) and
+# exits with code 0 on success / non-zero on failure. See
+# docs/OPERATIONS.md for the scheduler registration and the failure-mode
+# checklist.
+#
+# Notes:
+#   - detect_content = true: discovery judges file content, not the
+#     extension, so ".dat"/".txt" exports with CSV content are collected.
+#   - encoding: uncomment in a profile for legacy exports, e.g.
+#     encoding = "gbk" (also gb18030/big5/latin1/windows1252/utf16le/be/auto;
+#     a byte-order mark always wins over the configured value).
+#   - catchup_days = 7: after a shutdown/holiday stretch, the first trigger
+#     reaches back at most 7 days; later triggers close older gaps from the
+#     succeeded chain.
+#   - lazy_connect = true: the process starts even while the remote database
+#     is unreachable; failed files wait in the local failure ledger and are
+#     replayed by the next scheduled trigger.
+#   - Either this -once mode or the resident built-in scheduler owns a given
+#     machine; do not overlap runs for the same source.
+
+[profiles.csv_machine]
+parser = "csv"
+header = true
+detect_content = true
+file_stable_window_seconds = 30
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 5000
+
+[profiles.pg_sink]
+storage = "postgresql-storage"
+driver = "pgx"
+dsn = "postgres://user:password@db-host:5432/gocordis"
+table = "gocordis_records"
+lazy_connect = true
+
+[profiles.file_state]
+state_type = "file-state"
+state_dir = "./state"
+
+[[sources]]
+id = "machine001"
+path = "\\\\machine001\\production\\data"
+profiles = ["csv_machine", "pg_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "01"
+machine = "001"
+
+[[sources]]
+id = "machine002"
+path = "\\\\machine002\\production\\data"
+profiles = ["csv_machine", "pg_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "02"
+machine = "002"
+
+[[components]]
+id = "trigger"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "01:30"

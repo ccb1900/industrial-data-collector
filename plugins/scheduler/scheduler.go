@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/event"
 	rtscheduler "dynamic-runtime/extensions/scheduler"
 	"dynamic-runtime/runtime"
 
@@ -76,7 +77,7 @@ func (c *SchedulerComponent) Trigger(ctx context.Context, req model.CollectionRe
 	if c.emitCtx == nil {
 		return fmt.Errorf("%w: scheduler not active", errs.ErrDependency)
 	}
-	return runtime.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
+	return event.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
 }
 
 // NewScheduler creates the scheduler Component from configuration.

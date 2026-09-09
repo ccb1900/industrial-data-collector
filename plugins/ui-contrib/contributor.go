@@ -15,8 +15,8 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	appui "gocordis-csv-collector/app/ui"
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	uiplugin "dynamic-runtime/console/host"
+	appui "dynamic-runtime/console/registry"
 )
 
 // PageComponent registers one Page during each activation.

@@ -13,6 +13,13 @@ import (
 type Planner struct {
 	State model.CollectionState
 	Now   func() time.Time
+	// CatchupDays bounds the synthesized calendar gap when the state chain has
+	// no succeeded business date inside the window (first deployment, deleted
+	// state, or a source that never succeeded). Zero synthesizes gaps only
+	// from the last succeeded date, as before. Known incomplete rows are
+	// always attempted regardless of this window: they are recorded evidence,
+	// not synthesized guesses.
+	CatchupDays int
 }
 
 func (p *Planner) Plan(ctx context.Context, sourceID model.SourceID, target model.CollectionDate) ([]model.CollectionKey, error) {
@@ -50,8 +57,25 @@ func (p *Planner) Plan(ctx context.Context, sourceID model.SourceID, target mode
 	if err != nil {
 		return nil, fmt.Errorf("last completed: %w", err)
 	}
+	// Synthesize the gap (last success, target]. With CatchupDays > 0 the
+	// window start is clamped to at most CatchupDays calendar days before the
+	// target, so a first deployment or a lost state cannot reach back
+	// indefinitely.
+	start := target
+	planGap := false
 	if ok {
-		for d := last.AddDate(0, 0, 1); !d.After(target); d = d.AddDate(0, 0, 1) {
+		start = last.AddDate(0, 0, 1)
+		planGap = !start.After(target)
+	}
+	if p.CatchupDays > 0 {
+		earliest := target.AddDate(0, 0, -(p.CatchupDays - 1))
+		if !ok || start.Before(earliest) {
+			start = earliest
+		}
+		planGap = !start.After(target)
+	}
+	if planGap {
+		for d := start; !d.After(target); d = d.AddDate(0, 0, 1) {
 			add(model.CollectionKey{SourceID: sourceID, Date: d})
 		}
 	}

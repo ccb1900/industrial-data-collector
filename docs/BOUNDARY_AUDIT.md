@@ -41,3 +41,16 @@ Explorer transport. Components, including Explorer itself, never mutate Fiber
 lifecycle; the Console therefore gets Runtime-backed inspection/control without
 Registry internals, Provider Registry access, the Orchestrator, or the
 Dependency Graph.
+
+## Console layer (added v0.2)
+
+`dynamic-runtime/console/*` (in go-cordis) hosts the reusable console:
+registry, hub, host, explorer, webui. Invariants:
+
+- `runtime/` never imports `console/` — one-way dependency, kernel stays
+  domain- and UI-free (U-13).
+- The console knows no domain vocabulary: applications register named
+  queries/commands into the hub via `console-bridge` components; the
+  registration is an Effect owned by the bridge activation.
+- Domain wire DTOs (sources/collections/files/failures) live application-side
+  (`plugins/consolebridge/dto.go`).

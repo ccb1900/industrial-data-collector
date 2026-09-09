@@ -22,19 +22,34 @@ async function httpCall<T>(name: string, args: unknown[]): Promise<T> {
 
 function httpRoute(name: string, args: unknown[]): { url: string; init: RequestInit } {
   const q = (v: unknown) => encodeURIComponent(String(v ?? ""));
+  const post = (route: string, body: unknown) => ({
+    url: route,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    },
+  });
+  // Named console queries: the hub serves application-registered handlers at
+  // /api/query/<name>; params pass through as query parameters.
+  const named: Record<string, { query: string; pick?: string[] }> = {
+    ListSources: { query: "sources" },
+    ListCollections: { query: "collections" },
+    GetCollection: { query: "collection", pick: ["sourceId", "date"] },
+    ListFiles: { query: "files", pick: ["sourceId", "date"] },
+    ListFileFailures: { query: "failures", pick: ["sourceId"] },
+  };
+  if (named[name]) {
+    const { query, pick } = named[name];
+    const src = (args[0] ?? {}) as Record<string, unknown>;
+    const keys = pick ?? Object.keys(src);
+    const qs = keys
+      .filter((k) => src[k] !== undefined && src[k] !== "")
+      .map((k) => `${k}=${q(src[k])}`)
+      .join("&");
+    return { url: `${API_BASE}/query/${query}${qs ? `?${qs}` : ""}`, init: {} };
+  }
   switch (name) {
-    case "ListSources":
-      return { url: `${API_BASE}/sources`, init: {} };
-    case "ListCollections":
-      return { url: `${API_BASE}/collections`, init: {} };
-    case "GetCollection": {
-      const r = args[0] as { sourceId: string; date: string };
-      return { url: `${API_BASE}/collection?sourceId=${q(r.sourceId)}&date=${q(r.date)}`, init: {} };
-    }
-    case "ListFiles": {
-      const r = args[0] as { sourceId: string; date: string };
-      return { url: `${API_BASE}/files?sourceId=${q(r.sourceId)}&date=${q(r.date)}`, init: {} };
-    }
     case "ListPages":
       return { url: `${API_BASE}/ui/pages`, init: {} };
     case "ListPanels":
@@ -42,23 +57,9 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
     case "ListPlugins":
       return { url: `${API_BASE}/plugins`, init: {} };
     case "TriggerCollection":
-      return {
-        url: `${API_BASE}/trigger`,
-        init: {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args[0] ?? {}),
-        },
-      };
+      return post(`${API_BASE}/command/trigger`, args[0] ?? {});
     case "ControlPlugin":
-      return {
-        url: `${API_BASE}/plugins/control`,
-        init: {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args[0] ?? {}),
-        },
-      };
+      return post(`${API_BASE}/plugins/control`, args[0] ?? {});
     default:
       throw new Error(`unsupported api method: ${name}`);
   }

@@ -10,6 +10,7 @@ package query
 
 import (
 	"context"
+	"time"
 
 	"gocordis-csv-collector/app/model"
 )
@@ -27,6 +28,8 @@ type CollectionView struct {
 	SourceID       string
 	Date           string
 	Status         string
+	Note           string
+	StartedAt      time.Time
 	FilesTotal     int
 	FilesCompleted int
 	FilesFailed    int

@@ -8,7 +8,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	uiplugin "dynamic-runtime/console/host"
 )
 
 // testSink is the test-side ObservationSink standing in for the real Wails
@@ -60,9 +60,7 @@ func TestP21ProductionSinkAndAsyncCommand(t *testing.T) {
 	adapter := ui.HostAdapter()
 
 	// Command is accepted; completion arrives asynchronously via Observation.
-	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-06", Reason: "p21"}); ue != nil {
-		t.Fatalf("trigger: %#v", ue)
-	}
+	hubCommand(t, adapter, "trigger", map[string]string{"date": "2026-09-06", "reason": "p21"})
 	waitFor(t, "collection + observation via production sink", func() bool {
 		return rows(h, "store") == 2 && sink.count() >= 1
 	})
@@ -76,10 +74,10 @@ func TestP21ProductionSinkAndAsyncCommand(t *testing.T) {
 		t.Fatalf("UIObservation = %#v", ev)
 	}
 
-	// P2.1-12 dynamic metadata via Query.
-	files, ue := adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "2026-09-06"})
-	if ue != nil || len(files) != 1 || files[0].Metadata["product"] != "product-A" {
-		t.Fatalf("files = %#v err = %#v", files, ue)
+	// P2.1-12 dynamic metadata via the named console query.
+	files := queryFiles(t, adapter, "src", "2026-09-06")
+	if len(files) != 1 || files[0].Metadata["product"] != "product-A" {
+		t.Fatalf("files = %#v", files)
 	}
 
 	// P2.1-09/10/11: unloading UI releases the sink (no listener leak) and the

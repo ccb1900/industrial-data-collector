@@ -30,6 +30,11 @@ func (c *StateComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	return c.svc.Close, nil
 }
 
+// State returns the CollectionState this component provides. The application
+// host uses it for the read-only UI projection; collection code keeps going
+// through the capability.
+func (c *StateComponent) State() model.CollectionState { return c.svc }
+
 // NewState creates the CollectionState Component from configuration.
 func NewState(cc config.ComponentConfig) (*StateComponent, error) {
 	switch cc.Type {

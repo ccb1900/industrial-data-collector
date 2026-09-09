@@ -27,6 +27,25 @@ source, path, size, and modification time. A retry checks each discovered file:
 If the file changes after a failed attempt, its identity changes and it is
 retried as a new file.
 
+## Local failure ledger
+
+Every failed file attempt is persisted (`MarkFileFailed`): file identity,
+last error, timestamp, and an attempt counter. The ledger is part of the
+atomic state snapshot, so it survives restarts and answers "what failed and
+why" locally, without querying the target database. A file that later
+completes retires its record, so the ledger holds exactly the files still
+worth worrying about. Retries stay trigger-driven: the next
+`CollectionRequested` replays ledger files; no polling loop exists.
+
+## Catch-up window
+
+Gaps are synthesized from the last succeeded business date through the
+target date, which recovers days missed while the machine was off.
+`catchup_days` bounds that window when no succeeded date exists (first
+deployment, lost state file): at most N calendar days ending at the target
+are attempted. Known incomplete rows are always attempted regardless of the
+window.
+
 ## Gap planner
 
 On startup/manual recovery the planner:

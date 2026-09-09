@@ -16,6 +16,7 @@ app/sourcecomp/    Profile/Source Composition Resolver (config before Runtime)
 app/metadata/      Pure path/filename metadata extraction engine
 app/parser/        Streaming CSV parser + structured CSV Document metadata
 app/query/         UI Query/Observation/Command capability contracts + read model
+plugins/consolebridge/  registers collector vocabulary into the console hub
 app/ui/            UI Composition contract + owner-aware composition Registry
 app/explorer/      Plugin Explorer inspection/control boundary (Application layer)
 app/source/        Local and UNC file source (recursive below <root>/<date>)
@@ -34,8 +35,9 @@ plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
 plugins/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
 plugins/ui-contrib/Independent UI Contribution GOCORDIS Components (single or multi Page/Panel)
-plugins/explorer/  Plugin Explorer GOCORDIS Component + transport Host
-frontend/          React host (api layer + host verification page; npm build/test pass)
+console/ (go-cordis)  reusable console platform (Go): registry, hub, host, explorer, webui
+frontend/          React host: app views + assembly (shell extraction to a shared
+                   client package is the next mechanical step)
 cmd/collector-ui/   Real Wails Desktop Host (separate Go module; needs Wails toolchain)
 cmd/web-ui/         Embedded HTTP Web UI (go:embed + net/http + SSE)
 web/                Embedded frontend build (web.Dist)
@@ -59,7 +61,11 @@ Composition, runtime lifecycle conformance, and the Plugin Explorer Console).
 ## Run
 
 ```bash
+# Resident mode: config watch + built-in daily scheduler.
 go run ./cmd/csv-collector -config configs/example.toml
+# Run-to-completion mode: one recovery + collection pass, then exit
+# (Windows Task Scheduler / cron). Exit code reports the pass outcome.
+go run ./cmd/csv-collector -config configs/windows-task.toml -once
 # Web UI (embedded React build over HTTP; SSE for observation):
 go run ./cmd/web-ui -config configs/desktop.toml -addr :8080
 # then open http://localhost:8080
@@ -69,7 +75,11 @@ go run ./cmd/web-ui -config configs/desktop.toml -addr :8080
 examples are in `configs/mysql.toml`, `configs/unc-postgres.toml`, and
 `configs/oracle.toml`. `configs/source-composition.toml` shows several similar
 machine roots sharing one CSV profile and one sink profile while keeping
-independent Source state namespaces. The `database/sql` driver packages must
+independent Source state namespaces. `configs/windows-task.toml` is the
+industrial deployment shape: UNC roots, extension-independent content
+detection, catch-up for missed days, lazy database connection, and the local
+failure ledger — see [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the
+runbook and failure-mode checklist. The `database/sql` driver packages must
 be registered in the binary; this application keeps database target selection
 in the Storage plugin and does not embed vendor-specific Collector logic.
 

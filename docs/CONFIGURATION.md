@@ -35,6 +35,17 @@ See `Source Composition` below.
   whose base name matches the glob are found at any depth below `<root>/<date>`,
   so nested business directories (`<root>/<date>/line-A/station-03/...`) are
   supported.
+- `detect_content`: bool, default `false`. When set, discovery ignores file
+  names entirely (`pattern` must be empty) and selects files whose leading
+  bytes look like delimited text under the configured `encoding`, so exports
+  without the expected extension (`20260908.dat`) are collected while binary
+  content is skipped. See `docs/OPERATIONS.md`.
+- `encoding`: character encoding of the file content. Supported: `utf8`
+  (default, strict), `gbk`, `gb18030`, `big5`, `latin1`, `windows1252`,
+  `utf16le`, `utf16be`, and `auto`. A byte-order mark always wins over the
+  configured value. Legacy multi-byte decoding replaces undecodable bytes
+  with U+FFFD; `auto` resolves BOM-less files as UTF-8 when valid, else
+  GB18030 (best-effort — prefer an explicit value in production).
 - `file_stable_window_seconds`: minimum mtime age for discovery (default 30).
 
 ## Metadata
@@ -99,6 +110,7 @@ identity, so rule changes do not cause re-collection. See
 ## Parser
 
 - `type`: `csv-parser`.
+- `encoding`: character encoding (see Source above; default `utf8`).
 - `header`: bool, default true.
 - `skip_lines`: number of leading physical lines to drop before the table
   (default 0). Use it when an exported CSV starts with metadata/comment lines
@@ -240,6 +252,9 @@ plugin happened to activate first.
 - `date_policy`: `yesterday` or `specific`.
 - `specific_date`: `YYYY-MM-DD` when policy is `specific`.
 - `batch_size`: rows per Storage batch (default 1000).
+- `catchup_days`: non-negative int (default 0). Bounds how many calendar days
+  one trigger synthesizes as catch-up when no succeeded date exists inside
+  the window (first deployment or lost state). See `docs/OPERATIONS.md`.
 
 ## Source Composition
 

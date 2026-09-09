@@ -202,3 +202,64 @@ func TestCollectorMetadataErrorIsFileLevelFailure(t *testing.T) {
 		t.Fatalf("retry duplicated rows: total=%d", mem.Total())
 	}
 }
+
+func TestCollectorFailureLedgerRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n2,b\n")
+	st := state.NewMemory()
+	// The sink fails on the first pass and recovers for the retry, mimicking a
+	// remote database outage between two scheduler triggers.
+	mem := storage.NewMemory(storage.MemoryOptions{OnWrite: func(context.Context, model.Batch, int64) error {
+		return errors.New("remote database down")
+	}})
+	e := newExecutor(t, root, st, mem)
+	if _, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "pass1", Date: ptr(date(t, "2026-09-06"))}); err == nil {
+		t.Fatal("first pass must fail")
+	}
+	failures, err := st.ListFileFailures(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].File.Name != "a.csv" {
+		t.Fatalf("ledger = %#v, want a.csv", failures)
+	}
+	if failures[0].Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (both rows share one batch)", failures[0].Attempts)
+	}
+
+	// The database is back: the retry completes and retires the ledger entry.
+	mem2 := storage.NewMemory(storage.MemoryOptions{})
+	e2 := newExecutor(t, root, st, mem2)
+	if _, err := e2.Handle(context.Background(), model.CollectionRequested{Reason: "pass2", Date: ptr(date(t, "2026-09-06"))}); err != nil {
+		t.Fatal(err)
+	}
+	if mem2.Total() != 2 {
+		t.Fatalf("rows after retry = %d, want 2", mem2.Total())
+	}
+	gone, err := st.ListFileFailures(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 0 {
+		t.Fatalf("ledger after successful retry = %#v, want empty", gone)
+	}
+}
+
+func TestCollectorParseFailureIsRecordedInLedger(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
+	writeDateCSV(t, root, "2026-09-06", "broken.csv", "id,name\n\"bad,2\n")
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	if _, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))}); err == nil {
+		t.Fatal("malformed file must fail the run")
+	}
+	failures, err := st.ListFileFailures(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].File.Name != "broken.csv" {
+		t.Fatalf("ledger = %#v, want broken.csv only", failures)
+	}
+}

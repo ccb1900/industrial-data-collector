@@ -7,15 +7,15 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
+	uiplugin "dynamic-runtime/console/host"
 	"gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/app/model"
-	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
 func withUI(cs []config.ComponentConfig) []config.ComponentConfig {
 	out := append([]config.ComponentConfig{}, cs...)
 	out = append(out,
 		config.ComponentConfig{ID: "query-provider", Type: "query-provider"},
+		config.ComponentConfig{ID: "console-bridge", Type: "console-bridge"},
 		config.ComponentConfig{ID: "ui", Type: "ui"},
 		uiPageComponent("ui-page-dashboard", "dashboard", "Dashboard", "/", "dashboard"),
 		uiPageComponent("ui-page-collections", "collections", "Collections", "/collections", "collections"),
@@ -80,26 +80,29 @@ func TestUIE2EQueryObservationCommandLoop(t *testing.T) {
 	}
 
 	// UI -> Application Command (U-10/U-18). This is what a React button would
-	// call; it never touches the Executor. The command is accepted asynchronously.
-	if err := ui.TriggerCollection(ctx, model.CollectionRequested{Reason: "ui", Date: ptrD(cfgDate(t, "2026-09-06"))}); err != nil {
-		t.Fatalf("UI command: %v", err)
+	// call through the hub; it never touches the Executor. The command is
+	// accepted asynchronously.
+	adapter := ui.HostAdapter()
+	if adapter == nil {
+		t.Fatal("host adapter not initialized")
 	}
-	waitFor(t, "collection converged in UI snapshot", func() bool {
-		s := ui.Snapshot()
+	hubCommand(t, adapter, "trigger", map[string]string{"date": "2026-09-06", "reason": "ui"})
+	waitFor(t, "collection converged in the hub projection", func() bool {
+		s := queryCollections(t, adapter)
 		return rows(h, "store") == 2 && ui.Invalidations() >= 1 &&
-			len(s.Collections) == 1 && s.Collections[0].Status == "Succeeded"
+			len(s) == 1 && s[0].Status == "Succeeded"
 	})
-	snap := ui.Snapshot()
-	if len(snap.Collections) != 1 {
-		t.Fatalf("UI collections = %d, want 1 (U-05 query)", len(snap.Collections))
+	cols := queryCollections(t, adapter)
+	if len(cols) != 1 {
+		t.Fatalf("UI collections = %d, want 1 (U-05 query)", len(cols))
 	}
-	col := snap.Collections[0]
+	col := cols[0]
 	if col.Status != "Succeeded" || col.FilesTotal != 1 || col.Records != 2 {
 		t.Fatalf("UI collection view = %#v", col)
 	}
 	found := false
-	for _, f := range snap.Files {
-		if f.Identity.Name != "product-A.csv" {
+	for _, f := range queryFiles(t, adapter, "src", "2026-09-06") {
+		if f.Name != "product-A.csv" {
 			continue
 		}
 		found = true
@@ -108,14 +111,15 @@ func TestUIE2EQueryObservationCommandLoop(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("file product-A.csv missing from UI files view: %#v", snap.Files)
+		t.Fatalf("file product-A.csv missing from UI files view")
 	}
+	// U-07: the observation history retains the canonical event types.
 	types := map[string]bool{}
-	for _, ev := range snap.EventFeed {
+	for _, ev := range ui.Observations() {
 		types[ev.Type] = true
 	}
 	if !types["FileCompleted"] || !types["CollectionCompleted"] {
-		t.Fatalf("event feed = %#v, want FileCompleted+CollectionCompleted (U-07)", snap.EventFeed)
+		t.Fatalf("event feed types = %#v, want FileCompleted+CollectionCompleted", types)
 	}
 }
 

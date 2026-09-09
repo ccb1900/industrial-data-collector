@@ -16,12 +16,18 @@ import (
 
 // Source is one local or UNC file source. UNC and local are treated as the
 // same kind of ordinary path value; no Collector-level path sniffing exists.
+// When ContentDetect is set, discovery ignores file names entirely and selects
+// files whose leading bytes look like delimited text under the configured
+// Encoding (see app/encoding), so GBK or UTF-16 exports without the expected
+// extension are still found.
 type Source struct {
-	SourceID     model.SourceID
-	root         string
-	Pattern      string
-	StableWindow time.Duration
-	Now          func() time.Time
+	SourceID      model.SourceID
+	root          string
+	Pattern       string
+	ContentDetect bool
+	Encoding      string
+	StableWindow  time.Duration
+	Now           func() time.Time
 }
 
 // Local is an alias kept so application code reads clearly.
@@ -55,13 +61,15 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if s.Pattern == "" {
+	if !s.ContentDetect && s.Pattern == "" {
 		s.Pattern = "*.csv"
 	}
 	dir := filepath.Join(s.root, req.Date.String())
 	// Discovery is recursive below the date directory so nested business
-	// layouts (line-A/station-03/... under <root>/<date>) are found. The
-	// pattern remains a file-name glob applied to each file's base name.
+	// layouts (line-A/station-03/... under <root>/<date>) are found. With a
+	// pattern the glob applies to each file's base name; with content
+	// detection every regular file is a candidate and its leading bytes
+	// decide, so exports without the expected extension are still collected.
 	now := s.now()
 	var out []model.FileIdentity
 	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -71,9 +79,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 		if path == dir || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
 			return nil // descend into real directories; skip symlinks
 		}
-		matched, _ := filepath.Match(s.Pattern, d.Name())
-		if !matched {
-			return nil
+		if !s.ContentDetect {
+			matched, _ := filepath.Match(s.Pattern, d.Name())
+			if !matched {
+				return nil
+			}
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -95,6 +105,9 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 			return errs.ClassifySourceError(path, err)
 		}
 		if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
+			return nil
+		}
+		if s.ContentDetect && !s.looksLikeCSV(path) {
 			return nil
 		}
 		out = append(out, model.FileIdentity{

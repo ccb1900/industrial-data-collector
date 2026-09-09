@@ -2,18 +2,20 @@ package tests
 
 import (
 	"context"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	uiplugin "dynamic-runtime/console/host"
 )
 
 // TestUIP2HostBridgeFullLoop exercises the P2 Wails/React bridge surface in
-// process: Host methods (Query DTOs, Command) plus an Observation listener
-// standing in for the React listener that re-queries after Wails Events.
+// process: named console queries and commands through the hub, plus an
+// Observation listener standing in for the React listener that re-queries
+// after events.
 func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	root := t.TempDir()
 	if err := writeDay(root, "2026-09-06", "product-A.csv", "id,name\n1,a\n2,b\n"); err != nil {
@@ -54,13 +56,11 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// UI-P2-08: trigger through Application Command via Host.
-	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-06", Reason: "p2"}); ue != nil {
-		t.Fatalf("trigger: %#v", ue)
-	}
+	// UI-P2-08: trigger through the hub's named command.
+	hubCommand(t, adapter, "trigger", map[string]string{"date": "2026-09-06", "reason": "p2"})
 	waitFor(t, "first collection converged", func() bool {
-		cols, e := adapter.ListCollections()
-		return e == nil && len(cols) == 1 && cols[0].Status == "Succeeded" && rows(h, "store") == 2
+		cols := queryCollections(t, adapter)
+		return len(cols) == 1 && cols[0].Status == "Succeeded" && rows(h, "store") == 2
 	})
 	if observed.Load() < 1 {
 		t.Fatalf("react listener saw %d observations, want >= 1", observed.Load())
@@ -70,66 +70,54 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	}
 
 	// UI-P2-02: Source Query.
-	sources, ue := adapter.ListSources()
-	if ue != nil || len(sources) != 1 || sources[0].ID != "src" {
-		t.Fatalf("sources = %#v err = %#v", sources, ue)
+	sources := querySources(t, adapter)
+	if len(sources) != 1 || sources[0].ID != "src" {
+		t.Fatalf("sources = %#v", sources)
 	}
 
 	// UI-P2-03: Collection Query.
-	cols, ue := adapter.ListCollections()
-	if ue != nil || len(cols) != 1 {
-		t.Fatalf("collections = %#v err = %#v", cols, ue)
+	cols := queryCollections(t, adapter)
+	if len(cols) != 1 {
+		t.Fatalf("collections = %#v", cols)
 	}
 	if cols[0].Status != "Succeeded" || cols[0].FilesTotal != 1 || cols[0].Records != 2 {
 		t.Fatalf("collection dto = %#v", cols[0])
 	}
-	one, ue := adapter.GetCollection(uiplugin.UIGetCollectionRequest{SourceID: "src", Date: "2026-09-06"})
-	if ue != nil || one.SourceID != "src" {
-		t.Fatalf("get collection = %#v err = %#v", one, ue)
-	}
 
 	// UI-P2-04: File Query + UI-P2-05 dynamic metadata.
-	files, ue := adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "2026-09-06"})
-	if ue != nil || len(files) != 1 {
-		t.Fatalf("files = %#v err = %#v", files, ue)
+	files := queryFiles(t, adapter, "src", "2026-09-06")
+	if len(files) != 1 {
+		t.Fatalf("files = %#v", files)
 	}
 	if files[0].Name != "product-A.csv" || files[0].Metadata["product"] != "product-A" {
 		t.Fatalf("file dto = %#v", files[0])
-	}
-	meta, ue := adapter.GetFileMetadata(uiplugin.UIFileRequest{SourceID: "src", Path: files[0].Path, Name: files[0].Name})
-	if ue != nil || meta["product"] != "product-A" {
-		t.Fatalf("metadata = %#v err = %#v", meta, ue)
 	}
 
 	// UI-P2-07: after the next observation the listener re-queries and sees
 	// the newly collected collection.
 	before := observed.Load()
-	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-07", Reason: "p2"}); ue != nil {
-		t.Fatalf("trigger2: %#v", ue)
-	}
+	hubCommand(t, adapter, "trigger", map[string]string{"date": "2026-09-07", "reason": "p2"})
 	waitFor(t, "second collection observed and queryable", func() bool {
-		cs, e := adapter.ListCollections()
-		fs, fe := adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "2026-09-07"})
-		return observed.Load() > before && e == nil && len(cs) == 2 && fe == nil && len(fs) == 1 && fs[0].Metadata["product"] == "product-B"
+		cs := queryCollections(t, adapter)
+		fs := queryFiles(t, adapter, "src", "2026-09-07")
+		return observed.Load() > before && len(cs) == 2 && len(fs) == 1 && fs[0].Metadata["product"] == "product-B"
 	})
 	if observed.Load() <= before {
 		t.Fatalf("listener did not observe the second run (before=%d after=%d)", before, observed.Load())
 	}
-	cols, ue = adapter.ListCollections()
-	if ue != nil || len(cols) != 2 {
-		t.Fatalf("collections after second run = %#v err = %#v", cols, ue)
+	cols = queryCollections(t, adapter)
+	if len(cols) != 2 {
+		t.Fatalf("collections after second run = %#v", cols)
 	}
-	files, ue = adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "2026-09-07"})
-	if ue != nil || len(files) != 1 || files[0].Metadata["product"] != "product-B" {
-		t.Fatalf("files 09-07 = %#v err = %#v", files, ue)
+	files = queryFiles(t, adapter, "src", "2026-09-07")
+	if len(files) != 1 || files[0].Metadata["product"] != "product-B" {
+		t.Fatalf("files 09-07 = %#v", files)
 	}
 
 	// UI-P2-10: unsubscribing releases this listener.
 	_ = unsub()
 	after := observed.Load()
-	if ue := adapter.TriggerCollection(uiplugin.UITriggerRequest{Date: "2026-09-08", Reason: "p2"}); ue != nil {
-		t.Fatalf("trigger3: %#v", ue)
-	}
+	hubCommand(t, adapter, "trigger", map[string]string{"date": "2026-09-08", "reason": "p2"})
 	waitFor(t, "third collection stored", func() bool { return rows(h, "store") == 5 })
 	if observed.Load() != after {
 		t.Fatalf("listener still called after unsubscribe")
@@ -139,7 +127,7 @@ func TestUIP2HostBridgeFullLoop(t *testing.T) {
 	}
 }
 
-// TestUIP2ErrorBoundary verifies Go errors become UIError DTOs.
+// TestUIP2ErrorBoundary verifies hub handler errors become UIError DTOs.
 func TestUIP2ErrorBoundary(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -152,12 +140,10 @@ func TestUIP2ErrorBoundary(t *testing.T) {
 		t.Fatal("ui component not active")
 	}
 	adapter := ui.HostAdapter()
-	_, ue := adapter.GetCollection(uiplugin.UIGetCollectionRequest{SourceID: "src", Date: "2026-09-06"})
-	if ue == nil || ue.Code != "not_found" {
+	if _, ue := adapter.Query("collection", url.Values{"sourceId": []string{"src"}, "date": []string{"2026-09-06"}}); ue == nil || ue.Code != "not_found" {
 		t.Fatalf("expected not_found UIError, got %#v", ue)
 	}
-	_, ue = adapter.ListFiles(uiplugin.UIListFilesRequest{SourceID: "src", Date: "bad-date"})
-	if ue == nil || ue.Code != "invalid_request" {
+	if _, ue := adapter.Query("files", url.Values{"sourceId": []string{"src"}, "date": []string{"bad-date"}}); ue == nil || ue.Code != "invalid_request" {
 		t.Fatalf("expected invalid_request UIError, got %#v", ue)
 	}
 }

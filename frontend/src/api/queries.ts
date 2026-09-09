@@ -1,5 +1,6 @@
 import {
   ExplorerPluginList,
+  UIFileFailure,
   UICollection,
   UIFile,
   UIListFilesRequest,
@@ -19,4 +20,5 @@ export const queries = {
   listPages: () => invoke<UIPageList>("ListPages"),
   listPanels: () => invoke<UIPanelList>("ListPanels"),
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
+  listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
 };

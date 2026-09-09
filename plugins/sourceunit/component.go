@@ -18,11 +18,13 @@ import (
 
 	"gocordis-csv-collector/app/collector"
 	"gocordis-csv-collector/app/date"
+	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	appparser "gocordis-csv-collector/app/parser"
+	"gocordis-csv-collector/app/query"
 	"gocordis-csv-collector/app/recovery"
 	"gocordis-csv-collector/app/source"
 	"gocordis-csv-collector/app/state"
@@ -49,8 +51,10 @@ type SourceUnitComponent struct {
 	memState          bool
 	mem               *storage.MemoryStore
 	sqlCfg            *storage.SQLConfig
+	lazyConnect       bool
 	policy            date.Policy
 	batchSize         int
+	catchupDays       int
 	logger            *slog.Logger
 
 	emitCtx *runtime.Context
@@ -74,17 +78,51 @@ func (c *SourceUnitComponent) SourceID() string { return string(c.sourceID) }
 // memory-storage (nil for SQL-backed components).
 func (c *SourceUnitComponent) MemoryStore() *storage.MemoryStore { return c.mem }
 
+// Projection builds the durable UI projection of this unit: collection
+// records, completed files, and the failure ledger as they exist in the
+// unit's CollectionState right now. It is read-only; the unit keeps no
+// reference to any observer.
+func (c *SourceUnitComponent) Projection() query.UnitState {
+	ctx := context.Background()
+	u := query.UnitState{SourceID: string(c.sourceID), Path: c.path}
+	if recs, err := c.stateSvc.CollectionRecords(ctx, c.sourceID); err == nil {
+		u.Collections = recs
+		for _, rec := range recs {
+			if files, err := c.stateSvc.FileRecords(ctx, rec.Key); err == nil {
+				u.CompletedFiles = append(u.CompletedFiles, files...)
+			}
+		}
+	}
+	if failures, err := c.stateSvc.ListFileFailures(ctx, c.sourceID); err == nil {
+		u.Failures = failures
+	}
+	return u
+}
+
 // Apply starts one worker/event-handler activation for this Source.
 func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	store := model.Storage(c.mem)
 	var closeStore func() error
 	if c.sqlCfg != nil {
-		opened, err := storage.OpenSQL(ctx.Context(), *c.sqlCfg)
-		if err != nil {
-			return nil, err
+		if c.lazyConnect {
+			// The remote database may be down at activation time; the lazy
+			// store defers the connection to the first write and re-connects
+			// after outages, so failed files stay in the local ledger and are
+			// replayed by a later trigger.
+			opened, err := storage.OpenLazySQL(*c.sqlCfg)
+			if err != nil {
+				return nil, err
+			}
+			store = opened
+			closeStore = opened.Close
+		} else {
+			opened, err := storage.OpenSQL(ctx.Context(), *c.sqlCfg)
+			if err != nil {
+				return nil, err
+			}
+			store = opened
+			closeStore = opened.Close
 		}
-		store = opened
-		closeStore = opened.Close
 	}
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {
@@ -104,11 +142,12 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		State:             c.stateSvc,
 		MetadataExtractor: c.metadataExtractor,
 		SourceMetadata:    c.staticMetadata,
-		Recovery:          recovery.Planner{State: c.stateSvc},
+		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:  c.batchSize,
-			DatePolicy: c.policy,
-			Logger:     c.logger,
+			BatchSize:   c.batchSize,
+			DatePolicy:  c.policy,
+			CatchupDays: c.catchupDays,
+			Logger:      c.logger,
 		},
 	}
 	c.emitCtx = ctx
@@ -195,9 +234,20 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if root == "" {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q missing path", cc.ID)
 	}
-	src := source.New(sourceID, root,
-		configutil.OptionalString(cc, "pattern", "*.csv"),
+	detectContent := configutil.OptionalBool(cc, "detect_content", false)
+	pattern := "*.csv"
+	if detectContent {
+		// Discovery judges by content, not by name; the glob is unused.
+		pattern = ""
+	}
+	encoding, err := appencoding.Normalize(configutil.OptionalString(cc, "encoding", "utf8"))
+	if err != nil {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: %v", cc.ID, err)
+	}
+	src := source.New(sourceID, root, pattern,
 		time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
+	src.ContentDetect = detectContent
+	src.Encoding = encoding
 
 	parserModel, err := buildParser(cc.Config)
 	if err != nil {
@@ -240,6 +290,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if batch <= 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
+	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
+	if catchup < 0 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -254,8 +308,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		memState:          isMemory,
 		mem:               store,
 		sqlCfg:            sqlCfg,
+		lazyConnect:       configutil.OptionalBool(cc, "lazy_connect", false),
 		policy:            policy,
 		batchSize:         batch,
+		catchupDays:       catchup,
 		logger:            logger,
 	}, nil
 }
@@ -269,6 +325,11 @@ func buildParser(cfg map[string]any) (*appparser.Parser, error) {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "unsupported parser %q", kind)
 	}
 	p := appparser.New()
+	encName, encErr := appencoding.Normalize(configutil.OptionalString(cc, "encoding", "utf8"))
+	if encErr != nil {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser: %v", encErr)
+	}
+	p.Encoding = encName
 	p.Header = configutil.OptionalBool(cc, "header", true)
 	p.SkipLines = configutil.OptionalInt(cc, "skip_lines", 0)
 	if p.SkipLines < 0 {

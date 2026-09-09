@@ -415,3 +415,28 @@ Acceptance checklist:
 [x] Kernel Lifecycle Semantics unchanged
 [x] no Runtime Persistence added
 ```
+
+## Batch 4 — Operations Console Projection (P4)
+
+The console now projects the durable truth of the CollectionState, closing
+the observability gap between the in-memory read model and the persisted
+state files.
+
+- `app/query.UnitState` — the per-source durable projection (collection
+  records, completed files, failure ledger). `app/host` builds it after each
+  reconciliation from `sourceunit.SourceUnitComponent.Projection()` (or from
+  legacy shared state components) and calls `QueryComponent.AttachUnits`.
+- Read model: sources, collection records (Succeeded/Failed/**Pending**,
+  post-restart history included), completed files with record counts, and
+  the failure ledger are projected idempotently; live events keep updating
+  on top.
+- `CollectionPending` Runtime Event: a date whose directory does not exist
+  yet is published as Pending and rendered as a warning chip with its note,
+  so "missed day, waiting for data" is observable.
+- New `FailureQuery` capability + `GET /api/failures`: the merged file
+  failure view (persisted ledger + live failures). Rendered by the
+  contributed `failures` panel (see `configs/desktop.toml`).
+- `ExplorerPlugin.Config`: the Console shows each desired component's scalar
+  configuration (`catchup_days`, `encoding`, `lazy_connect`, ...).
+- UI trigger accepts an explicit collection date (dated catch-up from the
+  console).

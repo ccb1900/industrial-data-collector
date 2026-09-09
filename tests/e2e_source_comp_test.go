@@ -13,7 +13,6 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
 	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
-	uiplugin "gocordis-csv-collector/plugins/ui"
 )
 
 type compTestSource struct {
@@ -84,6 +83,10 @@ time = "02:00"
 [[components]]
 id = "query-provider"
 type = "query-provider"
+
+[[components]]
+id = "console-bridge"
+type = "console-bridge"
 
 [[components]]
 id = "ui"
@@ -191,7 +194,7 @@ func TestSourceCompositionUISourcesAndSingleTrigger(t *testing.T) {
 	if ui == nil {
 		t.Fatal("ui component not active")
 	}
-	views := ui.Snapshot().Sources
+	views := querySources(t, ui.HostAdapter())
 	if len(views) != 2 {
 		t.Fatalf("UI sources = %d, want 2", len(views))
 	}
@@ -209,19 +212,17 @@ func TestSourceCompositionUISourcesAndSingleTrigger(t *testing.T) {
 	if u1 == nil || u2 == nil {
 		t.Fatal("source units not active")
 	}
-	if ue := ui.HostAdapter().TriggerCollection(uiplugin.UITriggerRequest{
-		SourceID: "machine001",
-		Date:     "2026-09-06",
-		Reason:   "ui-source",
-	}); ue != nil {
-		t.Fatalf("UI single-source trigger: %#v", ue)
-	}
+	hubCommand(t, ui.HostAdapter(), "trigger", map[string]string{
+		"sourceId": "machine001",
+		"date":     "2026-09-06",
+		"reason":   "ui-source",
+	})
 	waitFor(t, "machine001 collection only", func() bool {
 		return sourceUnitRows(u1) == 1 && sourceUnitRows(u2) == 0 &&
-			len(ui.Snapshot().Collections) == 1
+			len(queryCollections(t, ui.HostAdapter())) == 1
 	})
-	if len(ui.Snapshot().Collections) != 1 || ui.Snapshot().Collections[0].SourceID != "machine001" {
-		t.Fatalf("UI collections = %#v", ui.Snapshot().Collections)
+	if cols := queryCollections(t, ui.HostAdapter()); len(cols) != 1 || cols[0].SourceID != "machine001" {
+		t.Fatalf("UI collections = %#v", cols)
 	}
 }
 

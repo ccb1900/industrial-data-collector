@@ -6,9 +6,10 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	appexplorer "gocordis-csv-collector/app/explorer"
+	explorerplugin "dynamic-runtime/console/explorer"
+	uiplugin "dynamic-runtime/console/host"
 	collectorplugin "gocordis-csv-collector/plugins/collector"
-	explorerplugin "gocordis-csv-collector/plugins/explorer"
+	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	queryplugin "gocordis-csv-collector/plugins/query"
@@ -17,7 +18,6 @@ import (
 	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
-	uiplugin "gocordis-csv-collector/plugins/ui"
 	uicontrib "gocordis-csv-collector/plugins/ui-contrib"
 )
 
@@ -31,11 +31,11 @@ func (a *adapterFactory) Create(cc config.ComponentConfig) (runtime.Component, e
 
 // RegisterFactories registers every Application Layer component type. The
 // optional explorer service powers plugin-explorer Console components.
-func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorerServices ...*appexplorer.Service) error {
+func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorerServices ...*explorerplugin.Service) error {
 	register := func(typ string, build func(config.ComponentConfig) (runtime.Component, error)) error {
 		return reg.Register(typ, &adapterFactory{build: build})
 	}
-	var explorerSvc *appexplorer.Service
+	var explorerSvc *explorerplugin.Service
 	if len(explorerServices) > 0 {
 		explorerSvc = explorerServices[0]
 	}
@@ -98,7 +98,7 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 		return err
 	}
 	if err := register("ui", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return uiplugin.NewUI(cc)
+		return uiplugin.NewConsole(cc)
 	}); err != nil {
 		return err
 	}
@@ -119,6 +119,11 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}
 	if err := register("plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return explorerplugin.NewPlugin(cc, explorerSvc)
+	}); err != nil {
+		return err
+	}
+	if err := register("console-bridge", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return bridgeplugin.NewConsoleBridge(cc)
 	}); err != nil {
 		return err
 	}

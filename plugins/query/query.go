@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/event"
 	"dynamic-runtime/runtime"
 
 	"gocordis-csv-collector/app/errs"
@@ -21,6 +22,7 @@ var (
 	SourceQueryKey     = runtime.NewKey[query.SourceQuery]("csv.query.sources")
 	FileQueryKey       = runtime.NewKey[query.FileQuery]("csv.query.files")
 	MetadataQueryKey   = runtime.NewKey[query.MetadataQuery]("csv.query.metadata")
+	FailureQueryKey    = runtime.NewKey[query.FailureQuery]("csv.query.failures")
 	ObservationKey     = runtime.NewKey[query.Observation]("csv.query.observation")
 	CommandKey         = runtime.NewKey[query.CollectionCommand]("csv.query.command")
 )
@@ -43,6 +45,7 @@ func (c *QueryComponent) Provide() []runtime.Capability {
 		SourceQueryKey.Capability(),
 		FileQueryKey.Capability(),
 		MetadataQueryKey.Capability(),
+		FailureQueryKey.Capability(),
 		ObservationKey.Capability(),
 		CommandKey.Capability(),
 	}
@@ -86,6 +89,13 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := runtime.On(ctx, events.CollectionPending, func(dctx context.Context, p events.CollectionPendingPayload) error {
+		c.model.OnCollectionPending(p.Key, p.Note, p.At)
+		c.obs.Publish(query.ObservationEvent{Type: "CollectionPending", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	cmd := &command{emit: ctx}
 	if err := runtime.Provide(ctx, CollectionQueryKey, query.CollectionQuery(c.model)); err != nil {
@@ -100,6 +110,9 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err := runtime.Provide(ctx, MetadataQueryKey, query.MetadataQuery(c.model)); err != nil {
 		return nil, err
 	}
+	if err := runtime.Provide(ctx, FailureQueryKey, query.FailureQuery(c.model)); err != nil {
+		return nil, err
+	}
 	if err := runtime.Provide(ctx, ObservationKey, query.Observation(c.obs)); err != nil {
 		return nil, err
 	}
@@ -107,6 +120,19 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	return nil, nil
+}
+
+// AttachUnits projects durable unit state (collection records, completed
+// files, failure ledger) into the read model. The application host calls it
+// after reconciliation so the UI reflects persisted truth — including
+// history that predates this process — without a second lifecycle or a
+// UI-owned state store.
+func (c *QueryComponent) AttachUnits(units []query.UnitState) error {
+	if c.model == nil {
+		return fmt.Errorf("%w: query provider not active", errs.ErrDependency)
+	}
+	c.model.AttachUnits(units)
+	return nil
 }
 
 // command turns an Application Command into the CollectionRequested Runtime
@@ -119,7 +145,7 @@ func (c *command) TriggerCollection(ctx context.Context, req query.CollectionReq
 	if c.emit == nil {
 		return errs.Sourcef(errs.ErrDependency, "collection command not active")
 	}
-	return runtime.Serial(ctx, c.emit, events.CollectionRequested, req)
+	return event.Serial(ctx, c.emit, events.CollectionRequested, req)
 }
 
 // NewQuery creates the Application Query Component.

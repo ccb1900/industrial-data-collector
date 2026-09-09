@@ -54,6 +54,10 @@ id = "query-provider"
 type = "query-provider"
 
 [[components]]
+id = "console-bridge"
+type = "console-bridge"
+
+[[components]]
 id = "ui"
 type = "ui"
 
@@ -112,3 +116,14 @@ title = "Latest Events"
 position = "bottom"
 renderer = "event-feed"
 order = 20
+
+[[components]]
+id = "ui-panel-failures"
+type = "ui-panel"
+
+[components.config]
+panel_id = "failures"
+title = "Failure Ledger"
+position = "bottom"
+renderer = "failures"
+order = 30

@@ -17,7 +17,18 @@ var (
 	FileFailed          = runtime.NewEventKey[FileFailedPayload]("file.failed")
 	CollectionCompleted = runtime.NewEventKey[CollectionCompletedPayload]("collection.completed")
 	CollectionFailed    = runtime.NewEventKey[CollectionFailedPayload]("collection.failed")
+	// CollectionPending reports a business date that could not be collected
+	// yet (typically the date directory does not exist so far). Publishing it
+	// keeps the "missed day, waiting for data" state visible to observers
+	// instead of leaving it invisible between Pending and Failed.
+	CollectionPending = runtime.NewEventKey[CollectionPendingPayload]("collection.pending")
 )
+
+type CollectionPendingPayload struct {
+	Key  model.CollectionKey
+	Note string
+	At   time.Time
+}
 
 type CollectionStartedPayload struct {
 	Key       model.CollectionKey

@@ -27,11 +27,11 @@ import (
 	"syscall"
 	"time"
 
+	consoleexplorer "dynamic-runtime/console/explorer"
+	consolehost "dynamic-runtime/console/host"
+	consolewebui "dynamic-runtime/console/webui"
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/sourcecomp"
-	"gocordis-csv-collector/internal/webui"
-	explorerplugin "gocordis-csv-collector/plugins/explorer"
-	uiplugin "gocordis-csv-collector/plugins/ui"
 	"gocordis-csv-collector/web"
 )
 
@@ -81,12 +81,12 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	if err != nil {
 		return fmt.Errorf("embedded ui assets: %w", err)
 	}
-	srv := webui.New(ui.HostAdapter(), fs.FS(sub))
+	srv := consolewebui.New(ui.HostAdapter(), fs.FS(sub))
 	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
 	// Production Observation -> SSE subscribers.
-	ui.SetObservationSink(observationSink(srv))
+	ui.SetObservationSink(observationSinkFunc(srv.Publish))
 
 	httpServer := &http.Server{Addr: addr, Handler: srv}
 	go func() {
@@ -102,18 +102,14 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	return nil
 }
 
-type observationSinkFunc func(uiplugin.UIObservation)
+type observationSinkFunc func(consolehost.UIObservation)
 
-func (f observationSinkFunc) NotifyObservation(ev uiplugin.UIObservation) { f(ev) }
+func (f observationSinkFunc) NotifyObservation(ev consolehost.UIObservation) { f(ev) }
 
-func observationSink(srv *webui.Server) uiplugin.ObservationSink {
-	return observationSinkFunc(func(ev uiplugin.UIObservation) { srv.Publish(ev) })
-}
-
-func findUIComponent(h *apphost.Host) *uiplugin.UIComponent {
+func findUIComponent(h *apphost.Host) *consolehost.UIComponent {
 	for _, o := range h.Owned() {
 		if o.ID == "ui" {
-			if c, ok := o.Fiber.Component().(*uiplugin.UIComponent); ok {
+			if c, ok := o.Fiber.Component().(*consolehost.UIComponent); ok {
 				return c
 			}
 		}
@@ -121,12 +117,12 @@ func findUIComponent(h *apphost.Host) *uiplugin.UIComponent {
 	return nil
 }
 
-func findExplorerComponent(h *apphost.Host) *explorerplugin.ExplorerComponent {
+func findExplorerComponent(h *apphost.Host) *consoleexplorer.ExplorerComponent {
 	for _, o := range h.Owned() {
 		if o.Type != "plugin-explorer" {
 			continue
 		}
-		if c, ok := o.Fiber.Component().(*explorerplugin.ExplorerComponent); ok {
+		if c, ok := o.Fiber.Component().(*consoleexplorer.ExplorerComponent); ok {
 			return c
 		}
 	}

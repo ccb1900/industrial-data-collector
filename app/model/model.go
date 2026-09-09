@@ -20,10 +20,14 @@ type CollectionDate struct {
 	date time.Time
 }
 
-// NewCollectionDate truncates t to its calendar date in t's own location.
+// NewCollectionDate truncates t to its calendar date in t's own location and
+// normalizes the stored instant to UTC. CollectionDate means a calendar date,
+// not an instant; normalizing keeps equal calendar dates equal under ==, so
+// CollectionKey stays usable as a map key across zones (policy code builds
+// dates from local time, DTO parsing produces UTC).
 func NewCollectionDate(t time.Time) CollectionDate {
 	y, m, d := t.Date()
-	return CollectionDate{date: time.Date(y, m, d, 0, 0, 0, 0, t.Location())}
+	return CollectionDate{date: time.Date(y, m, d, 0, 0, 0, 0, time.UTC)}
 }
 
 func (d CollectionDate) IsZero() bool { return d.date.IsZero() }
@@ -229,8 +233,54 @@ type CollectionState interface {
 	Begin(ctx context.Context, key CollectionKey, lease time.Duration) (bool, error)
 	End(ctx context.Context, key CollectionKey, status Status, note string) error
 	FileCompleted(ctx context.Context, key CollectionKey, file FileIdentity) (bool, error)
-	MarkFileCompleted(ctx context.Context, key CollectionKey, file FileIdentity) error
+	MarkFileCompleted(ctx context.Context, key CollectionKey, file FileIdentity, records int64) error
+	// MarkFileFailed records one locally persisted file failure. The record is
+	// the durable retry evidence: it survives process restarts, is reported by
+	// ListFileFailures, and is cleared when the file later completes.
+	MarkFileFailed(ctx context.Context, key CollectionKey, file FileIdentity, errMsg string) error
+	// ListFileFailures returns the locally persisted failure records for one
+	// source, oldest first. It is a diagnostics view; the retry decision stays
+	// with the recovery planner.
+	ListFileFailures(ctx context.Context, sourceID SourceID) ([]FileFailure, error)
+	// CollectionRecords returns every persisted collection record of one
+	// source (Succeeded, Failed, Pending, stale Running included), oldest
+	// first. It is the durable truth the UI projection reads after restart.
+	CollectionRecords(ctx context.Context, sourceID SourceID) ([]CollectionRecord, error)
+	// FileRecords returns the persisted completed-file records of one
+	// collection, ordered by path.
+	FileRecords(ctx context.Context, key CollectionKey) ([]FileRecordView, error)
+	// RecordSources lists the sources that have persisted records. It lets a
+	// projection enumerate a legacy shared state without duplicating the
+	// configured source list.
+	RecordSources(ctx context.Context) ([]SourceID, error)
 	LastCompleted(ctx context.Context, sourceID SourceID, before CollectionDate) (CollectionDate, bool, error)
 	ListIncomplete(ctx context.Context, sourceID SourceID, until CollectionDate, staleAfter time.Duration) ([]CollectionKey, error)
 	Close() error
+}
+
+// CollectionRecord is one persisted collection execution record.
+type CollectionRecord struct {
+	Key       CollectionKey
+	Status    Status
+	StartedAt time.Time
+	EndedAt   time.Time
+	Note      string
+}
+
+// FileRecordView is one persisted completed-file record. Records carries the
+// row count when the state implementation tracks it.
+type FileRecordView struct {
+	Key         CollectionKey
+	File        FileIdentity
+	Records     int64
+	CompletedAt time.Time
+}
+
+// FileFailure is one locally persisted failed-file record.
+type FileFailure struct {
+	Key      CollectionKey
+	File     FileIdentity
+	Error    string
+	FailedAt time.Time
+	Attempts int
 }

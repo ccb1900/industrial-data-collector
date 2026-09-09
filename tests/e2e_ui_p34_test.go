@@ -9,8 +9,8 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	appui "gocordis-csv-collector/app/ui"
-	explorerplugin "gocordis-csv-collector/plugins/explorer"
+	explorerplugin "dynamic-runtime/console/explorer"
+	appui "dynamic-runtime/console/registry"
 )
 
 // PE-01/PE-02: Explorer discovers every configured plugin and renders the

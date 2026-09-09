@@ -9,8 +9,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
+	"golang.org/x/text/transform"
 )
 
 // Parser is a streaming, standard-encoding/csv-backed parser. It owns no file
@@ -19,11 +21,17 @@ import (
 // Some exported CSV files begin with a few metadata lines (device, export
 // time, comments) before the actual table. SkipLines drops that many leading
 // physical lines so the table can start at a later line.
+//
+// Encoding selects the character encoding of the stream (utf8 default; gbk,
+// gb18030, big5, latin1, windows1252, utf16le/be, auto — see app/encoding).
+// A byte-order mark always wins over the configured value: it is stripped
+// for UTF-8 and selects the byte order for UTF-16.
 type Parser struct {
 	Header    bool
 	Comma     rune
 	SkipLines int
 	Document  DocumentConfig
+	Encoding  string
 }
 
 func New() *Parser { return &Parser{} }
@@ -35,15 +43,62 @@ func (p *Parser) Parse(ctx context.Context, r io.Reader) (model.CSVDocument, err
 	if r == nil {
 		return model.CSVDocument{}, errs.Sourcef(errs.ErrInvalidFile, "nil reader")
 	}
+	name, err := appencoding.Normalize(p.Encoding)
+	if err != nil {
+		return model.CSVDocument{}, errs.Sourcef(errs.ErrInvalidConfig, "%v", err)
+	}
 	br := bufio.NewReader(r)
-	if peek, err := br.Peek(3); err == nil && len(peek) == 3 && peek[0] == 0xEF && peek[1] == 0xBB && peek[2] == 0xBF {
-		_, _ = br.Discard(3)
+	src, err := p.decodeStream(br, name)
+	if err != nil {
+		return model.CSVDocument{}, err
 	}
 	if p.Document.Enabled() {
-		return p.parseStructuredDocument(ctx, br)
+		return p.parseStructuredDocument(ctx, bufio.NewReader(src))
 	}
-	stream, err := p.parseFlat(ctx, br)
+	stream, err := p.parseFlat(ctx, bufio.NewReader(src))
 	return model.CSVDocument{Data: stream}, err
+}
+
+// decodeStream resolves the byte-order mark and the configured encoding into
+// a UTF-8 reader. UTF-8 passes through unchanged (strict validation stays
+// downstream); every other encoding is decoded streaming.
+func (p *Parser) decodeStream(br *bufio.Reader, name string) (io.Reader, error) {
+	bom := appencoding.DetectBOM(mustPeek(br))
+	switch bom {
+	case appencoding.BOMUTF8:
+		_, _ = br.Discard(3)
+		return br, nil
+	case appencoding.BOMUTF16LE, appencoding.BOMUTF16BE:
+		_, _ = br.Discard(2)
+		dec, err := appencoding.Decoder(bom.UTF16())
+		if err != nil {
+			return nil, errs.Sourcef(errs.ErrInvalidEncoding, "%v", err)
+		}
+		return transformReader(br, dec), nil
+	default:
+	}
+	if name == appencoding.Auto {
+		name = appencoding.ResolveAuto(mustPeek(br))
+	}
+	dec, err := appencoding.Decoder(name)
+	if err != nil {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "%v", err)
+	}
+	if dec == nil {
+		return br, nil
+	}
+	return transformReader(br, dec), nil
+}
+
+func mustPeek(br *bufio.Reader) []byte {
+	head, _ := br.Peek(4)
+	return head
+}
+
+// transformReader wraps a streaming decoder in its own buffer so the flat
+// and structured readers keep their bufio contract.
+func transformReader(br *bufio.Reader, dec transform.Transformer) *bufio.Reader {
+	return bufio.NewReader(transform.NewReader(br, dec))
 }
 
 func (p *Parser) parseFlat(ctx context.Context, br *bufio.Reader) (*stream, error) {

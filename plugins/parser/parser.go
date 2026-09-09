@@ -4,6 +4,7 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
+	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/parser"
@@ -46,9 +47,14 @@ func NewParser(cc config.ComponentConfig) (*ParserComponent, error) {
 	if docCfg.Enabled() && skipLines != 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode cannot be combined with skip_lines")
 	}
+	encoding, err := appencoding.Normalize(configutil.OptionalString(cc, "encoding", "utf8"))
+	if err != nil {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser: %v", err)
+	}
 	p := parser.New()
 	p.Header = header
 	p.SkipLines = skipLines
 	p.Document = docCfg
+	p.Encoding = encoding
 	return &ParserComponent{cfg: p}, nil
 }

@@ -14,10 +14,23 @@ export interface UICollection {
   sourceId: string;
   date: string;
   status: string;
+  note?: string;
   filesTotal: number;
   filesCompleted: number;
   filesFailed: number;
   records: number;
+}
+
+// UIFileFailure is one entry of the local failure ledger projection: a file
+// that failed and is still waiting for a successful replay.
+export interface UIFileFailure {
+  sourceId: string;
+  date: string;
+  path: string;
+  name: string;
+  error: string;
+  failedAt: string;
+  attempts: number;
 }
 
 export interface UIFile {
@@ -59,6 +72,7 @@ export interface ExplorerPlugin {
   components: string[];
   capabilities: string[];
   controllable: boolean;
+  config?: Record<string, string>;
 }
 
 export interface ExplorerPluginList {

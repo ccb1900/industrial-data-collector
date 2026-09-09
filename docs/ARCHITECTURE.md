@@ -11,8 +11,14 @@ plugins/query + plugins/ui + plugins/ui-contrib + plugins/explorer
 plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
 app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui + app/explorer
 app/source + app/parser + app/storage + app/state + app/model
-dynamic-runtime (replace: ../gocordis)
+dynamic-runtime (github.com/ccb1900/gocordis)
 ```
+
+The console platform layer (composition registry, hub, host, explorer,
+webui transport) lives in go-cordis under `console/` and is domain-free:
+applications inject their vocabulary by registering named queries/commands
+through `console-bridge` components. `runtime/` never imports `console/`
+(one-way dependency; see BOUNDARY_AUDIT.md).
 
 All Runtime-facing work uses public `runtime` and `extensions/config` APIs:
 Component, Fiber (observed only), Activation Context, Capability, Dependency,

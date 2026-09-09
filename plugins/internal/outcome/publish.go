@@ -7,6 +7,7 @@ package outcome
 import (
 	"context"
 
+	"dynamic-runtime/extensions/event"
 	"dynamic-runtime/runtime"
 
 	"gocordis-csv-collector/app/events"
@@ -24,23 +25,27 @@ func Publish(ctx context.Context, emitCtx *runtime.Context, res *model.Collectio
 		fr := &res.Files[i]
 		switch fr.Status {
 		case model.StatusSucceeded:
-			_ = runtime.Serial(ctx, emitCtx, events.FileCompleted, events.FileCompletedPayload{
+			_ = event.Serial(ctx, emitCtx, events.FileCompleted, events.FileCompletedPayload{
 				Key: res.Key, File: fr.File, Metadata: fr.Metadata, Records: fr.Records,
 			})
 		case model.StatusFailed:
-			_ = runtime.Serial(ctx, emitCtx, events.FileFailed, events.FileFailedPayload{
+			_ = event.Serial(ctx, emitCtx, events.FileFailed, events.FileFailedPayload{
 				Key: res.Key, File: fr.File, Metadata: fr.Metadata, Records: fr.Records, Error: fr.Error,
 			})
 		}
 	}
 	switch res.Status {
 	case model.StatusSucceeded:
-		_ = runtime.Serial(ctx, emitCtx, events.CollectionCompleted, events.CollectionCompletedPayload{
+		_ = event.Serial(ctx, emitCtx, events.CollectionCompleted, events.CollectionCompletedPayload{
 			Key: res.Key, Files: len(res.Files), Records: res.Records, Duration: res.Duration, EndedAt: res.EndedAt,
 		})
 	case model.StatusFailed:
-		_ = runtime.Serial(ctx, emitCtx, events.CollectionFailed, events.CollectionFailedPayload{
+		_ = event.Serial(ctx, emitCtx, events.CollectionFailed, events.CollectionFailedPayload{
 			Key: res.Key, Error: res.Error, Duration: res.Duration,
+		})
+	case model.StatusPending:
+		_ = event.Serial(ctx, emitCtx, events.CollectionPending, events.CollectionPendingPayload{
+			Key: res.Key, Note: res.Error, At: res.EndedAt,
 		})
 	}
 }

@@ -18,8 +18,13 @@ import (
 type Config struct {
 	BatchSize  int
 	DatePolicy datepolicy.Policy
-	Now        func() time.Time
-	Logger     *slog.Logger
+	// CatchupDays bounds how many calendar days one trigger reaches back when
+	// the state chain has no recent success (first deployment or lost state).
+	// Zero keeps the previous behavior: gaps are synthesized only from the
+	// last succeeded business date.
+	CatchupDays int
+	Now         func() time.Time
+	Logger      *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -181,11 +186,19 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, file *model.FileIdentity) model.FileResult {
 	cfg := e.Config.withDefaults()
 	fr := model.FileResult{File: *file, Status: model.StatusPending}
+	// recordFail persists the local failure ledger entry. It is best effort: a
+	// state write failure must not mask the original failure being reported.
+	recordFail := func() {
+		if err := e.State.MarkFileFailed(ctx, key, *file, fr.Error); err != nil {
+			cfg.Logger.Warn("record file failure failed", "key", key.String(), "file", file.Name, "error", err.Error())
+		}
+	}
 	cfg.Logger.Info("file discovered", "key", key.String(), "file", file.Name)
 	done, err := e.State.FileCompleted(ctx, key, *file)
 	if err != nil {
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
+		recordFail()
 		return fr
 	}
 	if done {
@@ -202,6 +215,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			fr.Status = model.StatusFailed
 			fr.Error = err.Error()
 			cfg.Logger.Error("file metadata extraction failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+			recordFail()
 			return fr
 		}
 	}
@@ -212,6 +226,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("file read open failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+		recordFail()
 		return fr
 	}
 	defer rc.Close()
@@ -220,6 +235,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 		cfg.Logger.Error("file parse failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+		recordFail()
 		return fr
 	}
 	md = appmetadata.MergeDocument(md, doc)
@@ -252,6 +268,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			fr.Status = model.StatusFailed
 			fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 			cfg.Logger.Error("file parse row failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+			recordFail()
 			return fr
 		}
 		records = append(records, rec)
@@ -260,6 +277,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 				fr.Status = model.StatusFailed
 				fr.Error = err.Error()
 				cfg.Logger.Error("storage write failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+				recordFail()
 				return fr
 			}
 		}
@@ -268,12 +286,14 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("storage write failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+		recordFail()
 		return fr
 	}
-	if err := e.State.MarkFileCompleted(ctx, key, *file); err != nil {
+	if err := e.State.MarkFileCompleted(ctx, key, *file, fr.Records); err != nil {
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("mark file completed failed", "key", key.String(), "file", file.Name, "error", fr.Error)
+		recordFail()
 		return fr
 	}
 	fr.Status = model.StatusSucceeded

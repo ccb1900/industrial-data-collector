@@ -18,6 +18,30 @@ func TestCollectionDateIgnoresTimeZoneForCalendarComparison(t *testing.T) {
 	}
 }
 
+// CollectionKey is used as a read model map key, so struct equality — not the
+// zone-tolerant Equal — is the comparison that matters. A key built from
+// local-time policy resolution and a key parsed from a DTO "YYYY-MM-DD" must
+// hit the same entry (regression: ListFiles missed under TZ != UTC).
+func TestCollectionKeyEqualAcrossZonesAsMapKey(t *testing.T) {
+	sh := time.FixedZone("CST", 8*3600)
+	fromPolicy := CollectionKey{
+		SourceID: "prod",
+		Date:     NewCollectionDate(time.Date(2026, 9, 8, 1, 0, 0, 0, sh)),
+	}
+	var fromDTO CollectionKey
+	if err := fromDTO.Date.UnmarshalText([]byte("2026-09-08")); err != nil {
+		t.Fatal(err)
+	}
+	fromDTO.SourceID = "prod"
+	if fromPolicy != fromDTO {
+		t.Fatalf("keys must be equal as map keys: %s vs %s", fromPolicy.Date.Time(), fromDTO.Date.Time())
+	}
+	m := map[CollectionKey]string{fromPolicy: "hit"}
+	if m[fromDTO] != "hit" {
+		t.Fatal("map lookup across zone representations failed")
+	}
+}
+
 func TestCollectionKeyAndFileIdentityStable(t *testing.T) {
 	k := CollectionKey{SourceID: "prod", Date: NewCollectionDate(time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC))}
 	want := "prod/2026-09-06"

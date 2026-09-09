@@ -43,8 +43,16 @@ func (c SQLConfig) Validate() error {
 // SQLStore stores generic CSV records in a target database. The row key is
 // source_id + collection_date + file_id + row_number, which makes repeated
 // writes idempotent.
+//
+// Two construction modes exist. OpenSQL connects eagerly: an unreachable
+// target fails the component activation. OpenLazySQL defers every connection
+// to the first Write and re-connects after connection loss, so a deployment
+// whose remote database is temporarily down still starts; files fail, stay in
+// the local failure ledger, and the next trigger replays them.
 type SQLStore struct {
 	db      *sql.DB
+	lazy    bool
+	cfg     SQLConfig
 	dialect string
 	table   string
 	closeMe func() error
@@ -62,12 +70,53 @@ func OpenSQL(ctx context.Context, cfg SQLConfig) (*SQLStore, error) {
 		_ = db.Close()
 		return nil, errs.ClassifyStorageError("ping", err)
 	}
-	s := &SQLStore{db: db, dialect: strings.ToLower(cfg.Dialect), table: cfg.Table, closeMe: db.Close}
+	s := &SQLStore{db: db, cfg: cfg, dialect: strings.ToLower(cfg.Dialect), table: cfg.Table, closeMe: db.Close}
 	if err := s.ensureSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenLazySQL creates a lazily connecting store. No network I/O happens here,
+// so an unreachable remote database cannot prevent component activation.
+func OpenLazySQL(cfg SQLConfig) (*SQLStore, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &SQLStore{lazy: true, cfg: cfg, dialect: strings.ToLower(cfg.Dialect), table: cfg.Table}, nil
+}
+
+// connect opens one eager connection attempt for a lazy store: open, ping,
+// and schema ensure. The schema statements are idempotent, so reconnecting
+// after an outage re-checks it safely.
+func (s *SQLStore) connect(ctx context.Context) error {
+	db, err := sql.Open(s.cfg.Driver, s.cfg.DSN)
+	if err != nil {
+		return errs.ClassifyStorageError("open", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return errs.ClassifyStorageError("ping", err)
+	}
+	s.db = db
+	s.closeMe = db.Close
+	if err := s.ensureSchema(ctx); err != nil {
+		_ = db.Close()
+		s.db = nil
+		s.closeMe = nil
+		return err
+	}
+	return nil
+}
+
+// reset discards a broken pooled connection so the next Write reconnects.
+func (s *SQLStore) reset() {
+	if s.closeMe != nil {
+		_ = s.closeMe()
+	}
+	s.db = nil
+	s.closeMe = nil
 }
 
 func (s *SQLStore) Write(ctx context.Context, batch model.Batch) error {
@@ -77,8 +126,29 @@ func (s *SQLStore) Write(ctx context.Context, batch model.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if s.db == nil {
+		if !s.lazy {
+			return errs.ClassifyStorageError("closed", sql.ErrConnDone)
+		}
+		if err := s.connect(ctx); err != nil {
+			return err
+		}
+	}
+	// A ping keeps the outage story simple: when the remote database went
+	// away since the last write, the file fails here with a classified
+	// retriable error and stays in the local failure ledger.
+	if err := s.db.PingContext(ctx); err != nil {
+		s.reset()
+		if !s.lazy {
+			return errs.ClassifyStorageError("ping", err)
+		}
+		if err := s.connect(ctx); err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		s.reset()
 		return errs.ClassifyStorageError("begin", err)
 	}
 	defer tx.Rollback()
@@ -156,7 +226,10 @@ func (s *SQLStore) Close() error {
 	if s.closeMe == nil {
 		return nil
 	}
-	return s.closeMe()
+	err := s.closeMe()
+	s.db = nil
+	s.closeMe = nil
+	return err
 }
 
 func quoteIdent(dialect, name string) string {

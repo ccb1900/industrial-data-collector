@@ -7,8 +7,8 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	appui "gocordis-csv-collector/app/ui"
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	uiplugin "dynamic-runtime/console/host"
+	appui "dynamic-runtime/console/registry"
 )
 
 func TestP32_15SinglePluginDispose(t *testing.T) {

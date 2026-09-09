@@ -24,10 +24,11 @@ import (
 )
 
 type CollectorComponent struct {
-	batchSize int
-	policy    date.Policy
-	logger    *slog.Logger
-	emitCtx   *runtime.Context
+	batchSize   int
+	policy      date.Policy
+	catchupDays int
+	logger      *slog.Logger
+	emitCtx     *runtime.Context
 }
 
 func (c *CollectorComponent) Name() string { return "collector:csv" }
@@ -75,11 +76,12 @@ func (c *CollectorComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 		Storage:           st,
 		State:             collectionState,
 		MetadataExtractor: metadataExtractor,
-		Recovery:          recovery.Planner{State: collectionState},
+		Recovery:          recovery.Planner{State: collectionState, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:  c.batchSize,
-			DatePolicy: c.policy,
-			Logger:     c.logger,
+			BatchSize:   c.batchSize,
+			DatePolicy:  c.policy,
+			CatchupDays: c.catchupDays,
+			Logger:      c.logger,
 		},
 	}
 	sourceID := src.ID()
@@ -175,8 +177,12 @@ func NewCollector(cc config.ComponentConfig, logger *slog.Logger) (*CollectorCom
 	if batch <= 0 {
 		return nil, fmt.Errorf("%w: batch_size must be positive", errs.ErrInvalidConfig)
 	}
+	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
+	if catchup < 0 {
+		return nil, fmt.Errorf("%w: catchup_days must be >= 0", errs.ErrInvalidConfig)
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &CollectorComponent{batchSize: batch, policy: policy, logger: logger}, nil
+	return &CollectorComponent{batchSize: batch, policy: policy, catchupDays: catchup, logger: logger}, nil
 }
