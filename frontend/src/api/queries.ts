@@ -1,6 +1,12 @@
 import {
   ExplorerPluginList,
+<<<<<<< HEAD
   FleetEntry,
+=======
+  LogEntry,
+  RemovedPlugin,
+  RowsPage,
+>>>>>>> feat/console-platform-roadmap
   UIFileFailure,
   UICollection,
   UIFile,
@@ -22,6 +28,14 @@ export const queries = {
   listPanels: () => invoke<UIPanelList>("ListPanels"),
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
   listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
+<<<<<<< HEAD
   fleet: () =>
     invoke<{ peers: import("../models/types").FleetEntry[]; checkedAt: string }>("Fleet"),
+=======
+  listRows: (params: Record<string, string | number>) => invoke<RowsPage>("ListRows", params),
+  listLogs: (params: Record<string, string | number>) => invoke<LogEntry[]>("ListLogs", params),
+  listRemoved: () => invoke<RemovedPlugin[]>("ListRemoved"),
+  uninstallPlugin: (id: string) => invoke<void>("UninstallPlugin", { pluginId: id }),
+  installPlugin: (id: string) => invoke<void>("InstallPlugin", { pluginId: id }),
+>>>>>>> feat/console-platform-roadmap
 };

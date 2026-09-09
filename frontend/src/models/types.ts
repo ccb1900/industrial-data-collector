@@ -115,6 +115,7 @@ export interface UITriggerRequest {
   reason?: string;
 }
 
+<<<<<<< HEAD
 // FleetEntry is one host in the aggregated fleet view: the host's own
 // /api/meta plus reachability as seen from this console.
 export interface FleetEntry {
@@ -135,4 +136,25 @@ export interface FleetEntry {
     queries?: string[];
     commands?: string[];
   };
+=======
+// RowsPage is one page of typed table rows from the relational sink.
+export interface RowsPage {
+  columns: string[];
+  rows: unknown[][];
+  total: number;
+}
+
+// RemovedPlugin is one uninstalled component offering install-back.
+export interface RemovedPlugin {
+  id: string;
+  name: string;
+}
+
+// LogEntry is one structured application log line (console Logs panel).
+export interface LogEntry {
+  time: string;
+  level: string;
+  msg: string;
+  attrs?: Record<string, string>;
+>>>>>>> feat/console-platform-roadmap
 }

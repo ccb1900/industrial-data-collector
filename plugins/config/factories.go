@@ -55,6 +55,7 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}); err != nil {
 		return err
 	}
+<<<<<<< HEAD
 	if err := register("text-parser", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return parserplugin.NewParser(cc)
 	}); err != nil {
@@ -71,6 +72,9 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 		return err
 	}
 	for _, typ := range []string{"memory-storage", "mysql-storage", "postgresql-storage", "oracle-storage", "sqlite-storage"} {
+=======
+	for _, typ := range []string{"memory-storage", "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage"} {
+>>>>>>> feat/console-platform-roadmap
 		typ := typ
 		if err := register(typ, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return storageplugin.NewStorage(cc)
@@ -140,6 +144,11 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}
 	if err := register("console-bridge", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return bridgeplugin.NewConsoleBridge(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("console-rows", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return bridgeplugin.NewConsoleRows(cc)
 	}); err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"gocordis-csv-collector/app/events"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
+	"gocordis-csv-collector/internal/logstore"
 	queryplugin "gocordis-csv-collector/plugins/query"
 )
 
@@ -184,6 +186,19 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 				}
 			}
 			return event.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	// Named query "logs": the structured application log ring.
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("logs", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
+			limit, _ := strconv.Atoi(params.Get("limit"))
+			if limit <= 0 {
+				limit = 200
+			}
+			return logstore.Default().Latest(limit, params.Get("level"), params.Get("contains")), nil
 		})
 	}); err != nil {
 		return nil, err

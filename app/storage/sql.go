@@ -31,6 +31,7 @@ func (c SQLConfig) Validate() error {
 	if c.Dialect == "" {
 		c.Dialect = "mysql"
 	}
+	c.Dialect = strings.ToLower(c.Dialect)
 	if c.Table == "" {
 		c.Table = "gocordis_records"
 	}
@@ -193,6 +194,8 @@ func (s *SQLStore) ensureSchema(ctx context.Context) error {
 		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id TEXT NOT NULL, collection_date TEXT NOT NULL, file_id TEXT NOT NULL, row_number BIGINT NOT NULL, row_values JSONB NOT NULL, payload TEXT NOT NULL, created_at TIMESTAMPTZ, PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
 	case "oracle":
 		stmt = fmt.Sprintf("BEGIN EXECUTE IMMEDIATE 'CREATE TABLE %s (source_id VARCHAR2(255) NOT NULL, collection_date VARCHAR2(32) NOT NULL, file_id VARCHAR2(1024) NOT NULL, row_number NUMBER(38) NOT NULL, row_values CLOB NOT NULL, payload CLOB NOT NULL, created_at TIMESTAMP, CONSTRAINT pk_%s PRIMARY KEY (source_id, collection_date, file_id, row_number))'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END", t, safeConstraintName(s.table))
+	case "sqlite":
+		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id TEXT NOT NULL, collection_date TEXT NOT NULL, file_id TEXT NOT NULL, row_number INTEGER NOT NULL, row_values TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT, PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
 	default:
 		return fmt.Errorf("%w: unsupported sql dialect %q", errs.ErrInvalidConfig, s.dialect)
 	}
@@ -211,6 +214,8 @@ func (s *SQLStore) upsertSQL(argCount int) (string, error) {
 	case "mysql":
 		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", t, joined, placeholders), nil
 	case "postgres", "sqlite":
+		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
+	case "sqlite":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
 	case "oracle":
 		columns := []string{"source_id", "collection_date", "file_id", "row_number", "row_values", "payload", "created_at"}

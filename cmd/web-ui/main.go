@@ -19,17 +19,21 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gocordis-csv-collector/internal/logstore"
 	"io/fs"
 	"log/slog"
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	consoleexplorer "dynamic-runtime/console/explorer"
 	consolehost "dynamic-runtime/console/host"
 	consolewebui "dynamic-runtime/console/webui"
+	appconfig "gocordis-csv-collector/app/config"
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/sourcecomp"
 	"gocordis-csv-collector/web"
@@ -40,7 +44,9 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logStore := logstore.Default()
+	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
+	logger := slog.New(logStore.NewHandler(os.Stderr))
 	if err := run(logger, *configPath, *addr); err != nil {
 		logger.Error("web-ui failed", "error", err.Error())
 		os.Exit(1)
@@ -85,10 +91,29 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
+<<<<<<< HEAD
 	// Fleet self-description: identity + peer list come from the ui component
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
+=======
+	// TEMP DIAGNOSTIC: probe fiber states while reconciling.
+	go func() {
+		for i := 0; i < 4; i++ {
+			time.Sleep(2 * time.Second)
+			for _, o := range appHost.Owned() {
+				st := "nil"
+				if o.Fiber != nil {
+					st = o.Fiber.State().String()
+				}
+				slog.Info("fiber probe", "id", o.ID, "state", st)
+			}
+		}
+	}()
+	// Desired-state editing: uninstall persists to <config>.removed.json.
+	appHost.SetOverlayPath(configPath + ".removed.json")
+	srv.SetPluginLifecycle(lifecycleAdapter{h: appHost})
+>>>>>>> feat/console-platform-roadmap
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
 
@@ -109,6 +134,26 @@ func run(logger *slog.Logger, configPath, addr string) error {
 type observationSinkFunc func(consolehost.UIObservation)
 
 func (f observationSinkFunc) NotifyObservation(ev consolehost.UIObservation) { f(ev) }
+
+// lifecycleAdapter forwards console uninstall/install actions to the host's
+// desired-state overlay.
+type lifecycleAdapter struct{ h *apphost.Host }
+
+func (a lifecycleAdapter) Uninstall(ctx context.Context, id string) error {
+	return a.h.UninstallComponent(ctx, id)
+}
+
+func (a lifecycleAdapter) Install(ctx context.Context, id string) error {
+	return a.h.InstallComponent(ctx, id)
+}
+
+func (a lifecycleAdapter) Removed(ctx context.Context) ([]consolewebui.RemovedPlugin, error) {
+	out := []consolewebui.RemovedPlugin{}
+	for _, cc := range a.h.RemovedComponents() {
+		out = append(out, consolewebui.RemovedPlugin{ID: cc.ID, Name: appconfig.DisplayName(cc.Type)})
+	}
+	return out, nil
+}
 
 func findUIComponent(h *apphost.Host) *consolehost.UIComponent {
 	for _, o := range h.Owned() {

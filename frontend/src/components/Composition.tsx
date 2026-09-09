@@ -1,6 +1,8 @@
 import React, { ComponentType, useCallback, useEffect, useState } from "react";
 import { onObservation, queries } from "../api/client";
+import { DataExplorer } from "./DataExplorer";
 import { CollectionData } from "../hooks/useCollectionData";
+import { LogEntry } from "../models/types";
 import { UICollection, UIFile, UIFileFailure, UIObservation, UIPanel, UIPage } from "../models/types";
 import { relativeTime } from "../lib/observations";
 import { PluginExplorer } from "./Explorer";
@@ -375,11 +377,17 @@ function PluginExplorerPage(_props: ViewProps) {
   return <PluginExplorer />;
 }
 
+// DataExplorerPage frames the antd-based table explorer.
+function DataExplorerPage(_props: ViewProps) {
+  return <DataExplorer />;
+}
+
 const pageRenderers: Record<string, ComponentType<ViewProps>> = {
   dashboard: DashboardPage,
   collections: CollectionsPage,
   files: FilesPage,
   sources: SourcesPage,
+  "data-explorer": DataExplorerPage,
   "plugin-explorer": PluginExplorerPage,
   fleet: FleetPage,
 };
@@ -515,10 +523,40 @@ function FailureLedgerPanel(_props: PanelProps) {
   );
 }
 
+// LogsPanel renders the structured application log ring (hub query "logs").
+function LogsPanel(_props: PanelProps) {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const refresh = useCallback(() => {
+    queries.listLogs({ limit: 100 }).then(setLogs).catch(() => setLogs([]));
+  }, []);
+  useEffect(() => {
+    refresh();
+    const un = onObservation(() => refresh());
+    return un;
+  }, [refresh]);
+  if (logs.length === 0) {
+    return <EmptyState>No log entries.</EmptyState>;
+  }
+  return (
+    <ul className="event-list" aria-label="Logs">
+      {logs.map((l, i) => (
+        <li className="event-row" key={i}>
+          <Chip tone={l.level === "ERROR" ? "danger" : l.level === "WARN" ? "warn" : "muted"}>
+            {l.level}
+          </Chip>
+          <span className="event-src">{l.msg}</span>
+          <time>{new Date(l.time).toLocaleTimeString()}</time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const panelRenderers: Record<string, ComponentType<PanelProps>> = {
   metadata: MetadataPanel,
   "event-feed": EventFeedPanel,
   failures: FailureLedgerPanel,
+  logs: LogsPanel,
 };
 
 export function PanelHost({
