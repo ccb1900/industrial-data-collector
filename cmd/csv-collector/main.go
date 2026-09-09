@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"os"
 	"os/signal"
 	"syscall"
