@@ -53,6 +53,12 @@ profiles = ["csv_machine", "typed_sqlite"]
 [sources.metadata]
 plant = "demo"
 
+[[sources.path_metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.csv"
+required = true
+
 [[components]]
 id = "scheduler"
 type = "scheduler"
