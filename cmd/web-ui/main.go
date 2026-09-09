@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"net/http"
 	"os"
 	"os/signal"

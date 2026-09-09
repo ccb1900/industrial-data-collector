@@ -31,6 +31,7 @@ import (
 	"gocordis-csv-collector/app/storage"
 	"gocordis-csv-collector/plugins/internal/configutil"
 	"gocordis-csv-collector/plugins/internal/outcome"
+	storageplugin "gocordis-csv-collector/plugins/storage"
 )
 
 // Type is the Config Component type registered for one Source unit.
@@ -51,6 +52,7 @@ type SourceUnitComponent struct {
 	memState          bool
 	mem               *storage.MemoryStore
 	sqlCfg            *storage.SQLConfig
+	tableCfg          *storage.TableConfig
 	lazyConnect       bool
 	policy            date.Policy
 	batchSize         int
@@ -66,9 +68,15 @@ type job struct {
 	done chan error
 }
 
-func (c *SourceUnitComponent) Name() string                  { return "source-unit:" + string(c.sourceID) }
-func (c *SourceUnitComponent) Inject() []runtime.Dependency  { return nil }
-func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
+func (c *SourceUnitComponent) Name() string                 { return "source-unit:" + string(c.sourceID) }
+func (c *SourceUnitComponent) Inject() []runtime.Dependency { return nil }
+func (c *SourceUnitComponent) Provide() []runtime.Capability {
+	if c.tableCfg != nil && c.tableCfg.Exposer {
+		// The typed relational sink serves the console's "rows" query.
+		return []runtime.Capability{storageplugin.TableRowsQueryKey.Capability()}
+	}
+	return nil
+}
 
 // SourceID returns the logical Source identity. It is independent from path
 // and Runtime Component identity.
@@ -103,7 +111,26 @@ func (c *SourceUnitComponent) Projection() query.UnitState {
 func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	store := model.Storage(c.mem)
 	var closeStore func() error
-	if c.sqlCfg != nil {
+	switch {
+	case c.tableCfg != nil:
+		opened, err := func() (*storage.TableStorage, error) {
+			if c.lazyConnect {
+				return storage.OpenTableLazy(*c.tableCfg)
+			}
+			return storage.OpenTable(ctx.Context(), *c.tableCfg)
+		}()
+		if err != nil {
+			return nil, err
+		}
+		store = opened
+		closeStore = opened.Close
+		if c.tableCfg.Exposer {
+			if err := runtime.Provide(ctx, storageplugin.TableRowsQueryKey, storage.RowsQuery(opened)); err != nil {
+				_ = opened.Close()
+				return nil, err
+			}
+		}
+	case c.sqlCfg != nil:
 		if c.lazyConnect {
 			// The remote database may be down at activation time; the lazy
 			// store defers the connection to the first write and re-connects
@@ -278,7 +305,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if err != nil {
 		return nil, err
 	}
-	store, sqlCfg, err := buildStorage(cc.Config)
+	mem, sqlCfg, tableCfg, err := buildStorage(cc.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -306,8 +333,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		metadataExtractor: extractor,
 		stateSvc:          stateSvc,
 		memState:          isMemory,
-		mem:               store,
+		mem:               mem,
 		sqlCfg:            sqlCfg,
+		tableCfg:          tableCfg,
 		lazyConnect:       configutil.OptionalBool(cc, "lazy_connect", false),
 		policy:            policy,
 		batchSize:         batch,
@@ -381,7 +409,7 @@ func buildState(cfg map[string]any, sourceID string) (model.CollectionState, boo
 	}
 }
 
-func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig, error) {
+func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig, *storage.TableConfig, error) {
 	cc := config.ComponentConfig{Config: cfg}
 	typ := configutil.OptionalString(cc, "storage", "")
 	if typ == "" {
@@ -390,8 +418,8 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 	typ = normalizeStorageType(typ)
 	switch typ {
 	case "memory-storage":
-		return storage.NewMemory(storage.MemoryOptions{}), nil, nil
-	case "mysql-storage", "postgresql-storage", "oracle-storage":
+		return storage.NewMemory(storage.MemoryOptions{}), nil, nil, nil
+	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage":
 		driver := configutil.OptionalString(cc, "driver", "")
 		dialect := "mysql"
 		switch typ {
@@ -400,15 +428,38 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 			if driver == "" {
 				driver = "pgx"
 			}
+		case "sqlite-storage":
+			dialect = "sqlite"
+			if driver == "" {
+				driver = "sqlite"
+			}
 		case "oracle-storage":
 			dialect = "oracle"
 			if driver == "" {
 				driver = "godror"
 			}
-		default:
-			if driver == "" {
-				driver = "mysql"
+		}
+		// Typed relational mode: declared columns become real database
+		// columns and the CSV header lands in the file registry table.
+		if rawColumns, present := cfg["columns"]; present {
+			columns, cerr := parseTableColumns(rawColumns)
+			if cerr != nil {
+				return nil, nil, nil, cerr
 			}
+			tableCfg := &storage.TableConfig{
+				Driver:    driver,
+				DSN:       configutil.OptionalString(cc, "dsn", ""),
+				Dialect:   dialect,
+				Table:     configutil.OptionalString(cc, "table", "records"),
+				FileTable: configutil.OptionalString(cc, "file_table", ""),
+				Columns:   columns,
+				ExtraRows: configutil.OptionalBool(cc, "extra_rows", false),
+				Exposer:   configutil.OptionalBool(cc, "expose_console", false),
+			}
+			if err := tableCfg.Validate(); err != nil {
+				return nil, nil, nil, err
+			}
+			return nil, nil, tableCfg, nil
 		}
 		sqlCfg := &storage.SQLConfig{
 			Driver:  driver,
@@ -417,12 +468,36 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 			Table:   configutil.OptionalString(cc, "table", "gocordis_records"),
 		}
 		if err := sqlCfg.Validate(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return nil, sqlCfg, nil
+		return nil, sqlCfg, nil, nil
 	default:
-		return nil, nil, errs.Sourcef(errs.ErrInvalidConfig, "unknown storage type %q", typ)
+		return nil, nil, nil, errs.Sourcef(errs.ErrInvalidConfig, "unknown storage type %q", typ)
 	}
+}
+
+// parseTableColumns decodes the declarative column mapping tables.
+func parseTableColumns(raw any) ([]storage.ColumnMapping, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "columns must be an array of tables")
+	}
+	out := make([]storage.ColumnMapping, 0, len(list))
+	for i, entry := range list {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "columns #%d must be a table", i)
+		}
+		cc := config.ComponentConfig{Config: m}
+		out = append(out, storage.ColumnMapping{
+			From:     storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
+			Name:     configutil.OptionalString(cc, "name", ""),
+			Column:   configutil.OptionalString(cc, "column", ""),
+			Type:     configutil.OptionalString(cc, "type", "text"),
+			Required: configutil.OptionalBool(cc, "required", false),
+		})
+	}
+	return out, nil
 }
 
 func normalizeStorageType(typ string) string {
@@ -433,6 +508,8 @@ func normalizeStorageType(typ string) string {
 		return "mysql-storage"
 	case "postgres", "postgresql", "postgresql-storage":
 		return "postgresql-storage"
+	case "sqlite", "sqlite-storage":
+		return "sqlite-storage"
 	case "oracle", "oracle-storage":
 		return "oracle-storage"
 	default:

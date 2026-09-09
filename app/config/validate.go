@@ -29,6 +29,7 @@ var knownTypes = map[string]TypeInfo{
 	"mysql-storage":      {Kind: "storage", Capability: "storage", Name: "MySQL Storage"},
 	"postgresql-storage": {Kind: "storage", Capability: "storage", Name: "PostgreSQL Storage"},
 	"oracle-storage":     {Kind: "storage", Capability: "storage", Name: "Oracle Storage"},
+	"sqlite-storage":     {Kind: "storage", Capability: "storage", Name: "SQLite Storage"},
 	"memory-state":       {Kind: "state", Capability: "state", Name: "Memory State"},
 	"file-state":         {Kind: "state", Capability: "state", Name: "File State"},
 	"scheduler":          {Kind: "scheduler", Capability: "trigger", Name: "Scheduler"},
@@ -42,6 +43,7 @@ var knownTypes = map[string]TypeInfo{
 	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
 	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
 	"console-bridge":     {Kind: "console-bridge", Capability: "console-bridge", Name: "Console Bridge"},
+	"console-rows":       {Kind: "console-bridge", Capability: "console-rows", Name: "Console Rows"},
 }
 
 // DisplayName returns the human-facing plugin label for a known component
@@ -276,7 +278,7 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		if err := validateSourceUnit(cc); err != nil {
 			return err
 		}
-	case "console-bridge":
+	case "console-bridge", "console-rows":
 		// no config keys in v0.2
 	}
 	_ = ti.Capability
@@ -409,11 +411,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	}
 	storageType = strings.ToLower(storageType)
 	switch storageType {
-	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage":
+	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "sqlite", "sqlite-storage", "oracle", "oracle-storage":
 	default:
 		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
 	}
-	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "oracle" || storageType == "oracle-storage" {
+	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "sqlite" || storageType == "sqlite-storage" || storageType == "oracle" || storageType == "oracle-storage" {
 		if str(cc.Config, "dsn") == "" {
 			return fmt.Errorf("source-unit %q storage requires dsn", cc.ID)
 		}
