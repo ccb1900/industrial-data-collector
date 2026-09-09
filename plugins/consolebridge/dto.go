@@ -16,7 +16,11 @@ type uiSource struct {
 }
 
 func toUISource(v query.SourceView) uiSource {
-	return uiSource{ID: v.ID, Name: v.ID, Path: v.Path, Profiles: v.Profiles, Status: v.Status}
+	profiles := v.Profiles
+	if profiles == nil {
+		profiles = []string{}
+	}
+	return uiSource{ID: v.ID, Name: v.ID, Path: v.Path, Profiles: profiles, Status: v.Status}
 }
 
 type uiCollection struct {

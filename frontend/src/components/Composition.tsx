@@ -341,14 +341,16 @@ function SourcesPage({ data, onTrigger, busy }: ViewProps) {
                   <strong>{s.name}</strong>
                   <StatusChip value={s.status} />
                 </div>
-                <div className="row-meta">{s.path}</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                  {s.profiles.map((p) => (
-                    <Chip key={p} tone="accent">
-                      {p}
-                    </Chip>
-                  ))}
-                </div>
+                {s.path && <div className="row-meta">{s.path}</div>}
+                {(s.profiles ?? []).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                    {s.profiles.map((p) => (
+                      <Chip key={p} tone="accent">
+                        {p}
+                      </Chip>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="row-side">
                 <button
