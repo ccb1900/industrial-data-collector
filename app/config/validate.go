@@ -25,10 +25,14 @@ var knownTypes = map[string]TypeInfo{
 	"local-file-source":  {Kind: "source", Capability: "filesource", Name: "Local File Source"},
 	"unc-file-source":    {Kind: "source", Capability: "filesource", Name: "UNC File Source"},
 	"csv-parser":         {Kind: "parser", Capability: "csvparser", Name: "CSV Parser"},
+	"text-parser":        {Kind: "parser", Capability: "csvparser", Name: "Text Parser"},
+	"single-file-source": {Kind: "source", Capability: "filesource", Name: "Single File Source"},
+	"watch-file-trigger": {Kind: "watch-trigger", Capability: "watch-trigger", Name: "File Watch Trigger"},
 	"memory-storage":     {Kind: "storage", Capability: "storage", Name: "Memory Storage"},
 	"mysql-storage":      {Kind: "storage", Capability: "storage", Name: "MySQL Storage"},
 	"postgresql-storage": {Kind: "storage", Capability: "storage", Name: "PostgreSQL Storage"},
 	"oracle-storage":     {Kind: "storage", Capability: "storage", Name: "Oracle Storage"},
+	"sqlite-storage":     {Kind: "storage", Capability: "storage", Name: "SQLite Storage"},
 	"memory-state":       {Kind: "state", Capability: "state", Name: "Memory State"},
 	"file-state":         {Kind: "state", Capability: "state", Name: "File State"},
 	"scheduler":          {Kind: "scheduler", Capability: "trigger", Name: "Scheduler"},
@@ -141,6 +145,17 @@ func Validate(cfg extconfig.Config) error {
 func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 	switch ti.Kind {
 	case "source":
+		if cc.Type == "single-file-source" {
+			if str(cc.Config, "path") == "" {
+				return fmt.Errorf("single-file-source %q missing path", cc.ID)
+			}
+			if raw, ok := cc.Config["dedupe_content_hash"]; ok {
+				if _, valid := boolCfgValue(raw); !valid {
+					return fmt.Errorf("single-file-source %q dedupe_content_hash must be a boolean", cc.ID)
+				}
+			}
+			break
+		}
 		if str(cc.Config, "root") == "" {
 			return fmt.Errorf("source %q missing root", cc.ID)
 		}
@@ -162,6 +177,21 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 	case "parser":
 		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
 			return fmt.Errorf("parser %q: %v", cc.ID, err)
+		}
+		if cc.Type == "text-parser" {
+			format := str(cc.Config, "text_format")
+			if format == "" {
+				format = "single-value"
+			}
+			switch format {
+			case "single-value", "line-regex", "key-value":
+			default:
+				return fmt.Errorf("text-parser %q unknown text_format %q", cc.ID, format)
+			}
+			if format == "line-regex" && str(cc.Config, "pattern") == "" {
+				return fmt.Errorf("text-parser %q line-regex requires pattern", cc.ID)
+			}
+			break
 		}
 		skip := 0
 		if raw, ok := cc.Config["skip_lines"]; ok {
@@ -248,7 +278,7 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		if policy == "" {
 			policy = "yesterday"
 		}
-		if policy != "yesterday" && policy != "specific" {
+		if policy != "yesterday" && policy != "specific" && policy != "today" {
 			return fmt.Errorf("collector %q invalid date_policy %q", cc.ID, policy)
 		}
 		if policy == "specific" {
@@ -278,6 +308,18 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		}
 	case "console-bridge":
 		// no config keys in v0.2
+	case "watch-trigger":
+		if str(cc.Config, "path") == "" {
+			return fmt.Errorf("watch-file-trigger %q missing path", cc.ID)
+		}
+		if str(cc.Config, "source") == "" {
+			return fmt.Errorf("watch-file-trigger %q missing source", cc.ID)
+		}
+		if raw := str(cc.Config, "debounce"); raw != "" {
+			if _, err := time.ParseDuration(raw); err != nil {
+				return fmt.Errorf("watch-file-trigger %q debounce invalid: %v", cc.ID, err)
+			}
+		}
 	}
 	_ = ti.Capability
 	return nil
@@ -353,8 +395,32 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	if kind == "" {
 		kind = "csv"
 	}
-	if kind != "csv" && kind != "csv-parser" {
+	if kind == "text" || kind == "text-parser" {
+		format := str(cc.Config, "text_format")
+		if format == "" {
+			format = "single-value"
+		}
+		switch format {
+		case "single-value", "line-regex", "key-value":
+		default:
+			return fmt.Errorf("source-unit %q unknown text_format %q", cc.ID, format)
+		}
+		if format == "line-regex" && str(cc.Config, "pattern") == "" {
+			return fmt.Errorf("source-unit %q line-regex requires pattern", cc.ID)
+		}
+	} else if kind != "csv" && kind != "csv-parser" {
 		return fmt.Errorf("source-unit %q unsupported parser %q", cc.ID, kind)
+	}
+	if l := str(cc.Config, "layout"); l != "" && l != "dated" && l != "flat" {
+		return fmt.Errorf("source-unit %q layout must be dated or flat", cc.ID)
+	}
+	if raw, ok := cc.Config["dedupe_content_hash"]; ok {
+		if _, valid := boolCfgValue(raw); !valid {
+			return fmt.Errorf("source-unit %q dedupe_content_hash must be a boolean", cc.ID)
+		}
+	}
+	if mode := str(cc.Config, "collection_mode"); mode != "" && mode != "batch" && mode != "append" {
+		return fmt.Errorf("source-unit %q collection_mode must be batch or append", cc.ID)
 	}
 	header := true
 	if raw, ok := cc.Config["header"]; ok {
@@ -409,11 +475,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	}
 	storageType = strings.ToLower(storageType)
 	switch storageType {
-	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage":
+	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage", "sqlite", "sqlite-storage":
 	default:
 		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
 	}
-	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "oracle" || storageType == "oracle-storage" {
+	if storageType != "memory" && storageType != "memory-storage" {
 		if str(cc.Config, "dsn") == "" {
 			return fmt.Errorf("source-unit %q storage requires dsn", cc.ID)
 		}
@@ -430,7 +496,7 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	if policy == "" {
 		policy = "yesterday"
 	}
-	if policy != "yesterday" && policy != "specific" {
+	if policy != "yesterday" && policy != "specific" && policy != "today" {
 		return fmt.Errorf("source-unit %q invalid date_policy %q", cc.ID, policy)
 	}
 	if policy == "specific" {

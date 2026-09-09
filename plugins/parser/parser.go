@@ -15,7 +15,7 @@ import (
 var Key = runtime.NewKey[model.CSVParser]("csv.parser")
 
 type ParserComponent struct {
-	cfg *parser.Parser
+	cfg model.CSVParser
 }
 
 func (c *ParserComponent) Name() string                 { return "csv-parser" }
@@ -24,14 +24,23 @@ func (c *ParserComponent) Provide() []runtime.Capability {
 	return []runtime.Capability{Key.Capability()}
 }
 func (c *ParserComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	if err := runtime.Provide(ctx, Key, model.CSVParser(c.cfg)); err != nil {
+	if err := runtime.Provide(ctx, Key, c.cfg); err != nil {
 		return nil, err
 	}
 	return nil, nil
 }
 
-// NewParser creates the CSV parser Component from configuration.
+// NewParser creates the parser Component from configuration. The csv-parser
+// type builds the streaming CSV parser; the text-parser type builds one of
+// the plain-text variants (single-value / line-regex / key-value).
 func NewParser(cc config.ComponentConfig) (*ParserComponent, error) {
+	if cc.Type == "text-parser" {
+		tp, err := parser.NewTextParserFromConfigValues(cc.Config)
+		if err != nil {
+			return nil, err
+		}
+		return &ParserComponent{cfg: tp}, nil
+	}
 	header := configutil.OptionalBool(cc, "header", true)
 	skipLines := configutil.OptionalInt(cc, "skip_lines", 0)
 	if skipLines < 0 {

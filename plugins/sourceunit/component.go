@@ -44,7 +44,7 @@ type SourceUnitComponent struct {
 	path     string
 
 	src               *source.Source
-	parser            *appparser.Parser
+	parser            model.CSVParser
 	staticMetadata    model.Metadata
 	metadataExtractor model.MetadataExtractor
 	stateSvc          model.CollectionState
@@ -244,9 +244,24 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if err != nil {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: %v", cc.ID, err)
 	}
-	src := source.New(sourceID, root, pattern,
-		time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
-	src.ContentDetect = detectContent
+	var src *source.Source
+	if configutil.OptionalString(cc, "layout", "dated") == "flat" {
+		// The path IS one single file (e.g. a watch-triggered instrument
+		// export): no date directory, no pattern; content-hash dedup decides
+		// whether a rewrite is actually new data.
+		// layout=flat: root IS the file itself — no date directory, no pattern.
+		src = source.New(sourceID, root, "",
+			time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
+		src.Flat = true
+		src.Hash = configutil.OptionalBool(cc, "dedupe_content_hash", true)
+	} else {
+		if l := configutil.OptionalString(cc, "layout", "dated"); l != "dated" {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q layout must be dated or flat", cc.ID)
+		}
+		src = source.New(sourceID, root, pattern,
+			time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
+		src.ContentDetect = detectContent
+	}
 	src.Encoding = encoding
 
 	parserModel, err := buildParser(cc.Config)
@@ -277,6 +292,16 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	stateSvc, isMemory, err := buildState(cc.Config, sourceID)
 	if err != nil {
 		return nil, err
+	}
+	// collection_mode = "append": change-triggered sources record many
+	// snapshots under one business date, so the succeeded guard stays off
+	// (file-level dedup still protects against duplicates).
+	if configutil.OptionalString(cc, "collection_mode", "batch") == "append" {
+		setter, ok := stateSvc.(interface{ SetAppendMode() })
+		if !ok {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q collection_mode=append requires a state supporting it", cc.ID)
+		}
+		setter.SetAppendMode()
 	}
 	store, sqlCfg, err := buildStorage(cc.Config)
 	if err != nil {
@@ -316,9 +341,14 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}, nil
 }
 
-func buildParser(cfg map[string]any) (*appparser.Parser, error) {
+func buildParser(cfg map[string]any) (model.CSVParser, error) {
 	cc := config.ComponentConfig{Config: cfg}
 	kind := configutil.OptionalString(cc, "parser", "csv")
+	if kind == "text" || kind == "text-parser" {
+		// Plain-text formats (single-value / line-regex / key-value) for
+		// non-CSV exports such as watched instrument files.
+		return appparser.NewTextParserFromConfigValues(cfg)
+	}
 	switch kind {
 	case "csv", "csv-parser":
 	default:
@@ -391,6 +421,20 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 	switch typ {
 	case "memory-storage":
 		return storage.NewMemory(storage.MemoryOptions{}), nil, nil
+	case "sqlite-storage":
+		dialect := "sqlite"
+		driver := configutil.OptionalString(cc, "driver", "")
+		if driver == "" {
+			driver = "sqlite"
+		}
+		sqlCfg := &storage.SQLConfig{
+			Driver: driver, DSN: configutil.OptionalString(cc, "dsn", ""),
+			Dialect: dialect, Table: configutil.OptionalString(cc, "table", "gocordis_records"),
+		}
+		if err := sqlCfg.Validate(); err != nil {
+			return nil, nil, err
+		}
+		return nil, sqlCfg, nil
 	case "mysql-storage", "postgresql-storage", "oracle-storage":
 		driver := configutil.OptionalString(cc, "driver", "")
 		dialect := "mysql"
@@ -435,6 +479,8 @@ func normalizeStorageType(typ string) string {
 		return "postgresql-storage"
 	case "oracle", "oracle-storage":
 		return "oracle-storage"
+	case "sqlite", "sqlite-storage":
+		return "sqlite-storage"
 	default:
 		return typ
 	}

@@ -19,6 +19,7 @@ import (
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
 	uicontrib "gocordis-csv-collector/plugins/ui-contrib"
+	watchtrigger "gocordis-csv-collector/plugins/watchtrigger"
 )
 
 type adapterFactory struct {
@@ -54,7 +55,22 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}); err != nil {
 		return err
 	}
-	for _, typ := range []string{"memory-storage", "mysql-storage", "postgresql-storage", "oracle-storage"} {
+	if err := register("text-parser", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return parserplugin.NewParser(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("single-file-source", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return sourceplugin.NewSingleFileSource(cc)
+	}); err != nil {
+		return err
+	}
+	if err := register("watch-file-trigger", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return watchtrigger.NewTrigger(cc)
+	}); err != nil {
+		return err
+	}
+	for _, typ := range []string{"memory-storage", "mysql-storage", "postgresql-storage", "oracle-storage", "sqlite-storage"} {
 		typ := typ
 		if err := register(typ, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return storageplugin.NewStorage(cc)

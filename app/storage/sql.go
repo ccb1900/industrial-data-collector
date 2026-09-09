@@ -185,6 +185,8 @@ func (s *SQLStore) ensureSchema(ctx context.Context) error {
 	t := quoteIdent(s.dialect, s.table)
 	var stmt string
 	switch s.dialect {
+	case "sqlite":
+		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id TEXT NOT NULL, collection_date TEXT NOT NULL, file_id TEXT NOT NULL, row_number INTEGER NOT NULL, row_values TEXT NOT NULL, payload TEXT NOT NULL, created_at TIMESTAMP, PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
 	case "mysql":
 		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id VARCHAR(255) NOT NULL, collection_date VARCHAR(32) NOT NULL, file_id VARCHAR(1024) NOT NULL, row_number BIGINT NOT NULL, row_values TEXT NOT NULL, payload TEXT NOT NULL, created_at TIMESTAMP(6), PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
 	case "postgres":
@@ -208,7 +210,7 @@ func (s *SQLStore) upsertSQL(argCount int) (string, error) {
 	switch s.dialect {
 	case "mysql":
 		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", t, joined, placeholders), nil
-	case "postgres":
+	case "postgres", "sqlite":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
 	case "oracle":
 		columns := []string{"source_id", "collection_date", "file_id", "row_number", "row_values", "payload", "created_at"}
