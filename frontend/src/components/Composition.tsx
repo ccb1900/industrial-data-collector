@@ -4,6 +4,7 @@ import { CollectionData } from "../hooks/useCollectionData";
 import { UICollection, UIFile, UIFileFailure, UIObservation, UIPanel, UIPage } from "../models/types";
 import { relativeTime } from "../lib/observations";
 import { PluginExplorer } from "./Explorer";
+import { FleetPage } from "./Fleet";
 import {
   Chip,
   EmptyState,
@@ -380,6 +381,7 @@ const pageRenderers: Record<string, ComponentType<ViewProps>> = {
   files: FilesPage,
   sources: SourcesPage,
   "plugin-explorer": PluginExplorerPage,
+  fleet: FleetPage,
 };
 
 export function PageHost({

@@ -50,6 +50,10 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
     return { url: `${API_BASE}/query/${query}${qs ? `?${qs}` : ""}`, init: {} };
   }
   switch (name) {
+    case "Fleet":
+      return { url: `${API_BASE}/fleet`, init: {} };
+    case "Meta":
+      return { url: `${API_BASE}/meta`, init: {} };
     case "ListPages":
       return { url: `${API_BASE}/ui/pages`, init: {} };
     case "ListPanels":

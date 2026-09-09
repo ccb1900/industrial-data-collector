@@ -1,5 +1,6 @@
 import {
   ExplorerPluginList,
+  FleetEntry,
   UIFileFailure,
   UICollection,
   UIFile,
@@ -21,4 +22,6 @@ export const queries = {
   listPanels: () => invoke<UIPanelList>("ListPanels"),
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
   listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
+  fleet: () =>
+    invoke<{ peers: import("../models/types").FleetEntry[]; checkedAt: string }>("Fleet"),
 };

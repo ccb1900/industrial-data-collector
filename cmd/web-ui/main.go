@@ -85,6 +85,10 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
+	// Fleet self-description: identity + peer list come from the ui component
+	// configuration (host_id / fleet_peers).
+	srv.SetIdentity(ui.HostID())
+	srv.SetFleetPeers(ui.FleetPeers())
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
 

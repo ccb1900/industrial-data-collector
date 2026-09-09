@@ -1,0 +1,35 @@
+# Host gauge-l1 — measurement station: watch a software-written reading file
+# and record every content change as a new snapshot.
+#
+# Components planned for this host (watch-file-trigger and single-file-source
+# are the pending vocabulary; this file tracks the desired composition):
+#   watch-file-trigger  — fsnotify + debounce on the reading file
+#   single-file-source  — flat layout, content-hash dedupe, date_policy today
+#   line-regex-parser   — x.txt format mapping
+#   table-storage       — sqlite (pure Go) or central PostgreSQL, typed columns
+
+[[components]]
+id = "daily"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "06:00"
+
+[[components]]
+id = "query-provider"
+type = "query-provider"
+
+[[components]]
+id = "console-bridge"
+type = "console-bridge"
+
+[[components]]
+id = "ui"
+type = "ui"
+
+[components.config]
+host_id = "gauge-l1"
+
+[components.config.fleet]
+peers = ["http://csv-line-a:8080", "http://csv-line-b:8080"]

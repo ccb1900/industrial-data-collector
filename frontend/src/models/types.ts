@@ -114,3 +114,25 @@ export interface UITriggerRequest {
   date?: string;
   reason?: string;
 }
+
+// FleetEntry is one host in the aggregated fleet view: the host's own
+// /api/meta plus reachability as seen from this console.
+export interface FleetEntry {
+  url: string;
+  online: boolean;
+  error?: string;
+  checkedAt: string;
+  meta?: {
+    hostId: string;
+    version: string;
+    goVersion?: string;
+    startedAt?: string;
+    uptimeSeconds?: number;
+    pages?: number;
+    panels?: number;
+    plugins?: number;
+    pluginsActive?: number;
+    queries?: string[];
+    commands?: string[];
+  };
+}

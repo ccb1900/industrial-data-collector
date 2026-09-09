@@ -1,0 +1,56 @@
+# Host csv-line-b — same shape as csv-line-a, different machines.
+
+[profiles.csv_line]
+parser = "csv"
+header = true
+detect_content = true
+file_stable_window_seconds = 30
+date_policy = "yesterday"
+catchup_days = 3
+batch_size = 5000
+
+[profiles.pg_sink]
+storage = "postgresql-storage"
+driver = "pgx"
+dsn = "postgres://user:pass@db-host:5432/industrial"
+table = "line_b_records"
+lazy_connect = true
+
+[profiles.file_state]
+state_type = "file-state"
+state_dir = "./state"
+
+[[sources]]
+id = "csv-line-b-press"
+path = "//line-b-host/production"
+profiles = ["csv_line", "pg_sink", "file_state"]
+
+[sources.metadata]
+plant = "A"
+line = "02"
+
+[[components]]
+id = "daily"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "01:30"
+
+[[components]]
+id = "query-provider"
+type = "query-provider"
+
+[[components]]
+id = "console-bridge"
+type = "console-bridge"
+
+[[components]]
+id = "ui"
+type = "ui"
+
+[components.config]
+host_id = "csv-line-b"
+
+[components.config.fleet]
+peers = ["http://gauge-l1:8080", "http://csv-line-a:8080"]
