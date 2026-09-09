@@ -31,5 +31,4 @@ type = "ui"
 [components.config]
 host_id = "gauge-l1"
 
-[components.config.fleet]
-peers = ["http://csv-line-a:8080", "http://csv-line-b:8080"]
+fleet_peers = ["http://csv-line-a:8080", "http://csv-line-b:8080"]

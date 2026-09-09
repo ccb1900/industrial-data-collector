@@ -14,7 +14,7 @@ Conventions:
   rows converging in a shared database never collide.
 - The `ui` component's `host_id` must match the file name — it is what the
   console reports at `/api/meta` and what the Fleet page displays.
-- `fleet_peers` lists sibling consoles; when set, the console contributes a
+- `fleet_peers` (flat key in the ui component config) lists sibling consoles; when set, the console contributes a
   Fleet page aggregating every peer's meta (observation-only).
 
 Deployment states visible in the console: Active (installed + running),
