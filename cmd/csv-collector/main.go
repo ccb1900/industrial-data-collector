@@ -4,10 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gocordis-csv-collector/internal/logstore"
 	"log/slog"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"gocordis-csv-collector/app/host"
@@ -19,7 +21,9 @@ func main() {
 	configPath := flag.String("config", "configs/example.toml", "TOML configuration file")
 	once := flag.Bool("once", false, "run one collection pass (configuration reconciliation, startup recovery, target date) and exit; for external schedulers such as Windows Task Scheduler")
 	flag.Parse()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logStore := logstore.Default()
+	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
+	logger := slog.New(logStore.NewHandler(os.Stderr))
 	var err error
 	if *once {
 		err = runOnce(logger, *configPath)

@@ -38,6 +38,8 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
     GetCollection: { query: "collection", pick: ["sourceId", "date"] },
     ListFiles: { query: "files", pick: ["sourceId", "date"] },
     ListFileFailures: { query: "failures", pick: ["sourceId"] },
+    ListRows: { query: "rows" },
+    ListLogs: { query: "logs" },
   };
   if (named[name]) {
     const { query, pick } = named[name];
@@ -60,6 +62,12 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
       return post(`${API_BASE}/command/trigger`, args[0] ?? {});
     case "ControlPlugin":
       return post(`${API_BASE}/plugins/control`, args[0] ?? {});
+    case "UninstallPlugin":
+      return post(`${API_BASE}/plugins/uninstall`, args[0] ?? {});
+    case "InstallPlugin":
+      return post(`${API_BASE}/plugins/install`, args[0] ?? {});
+    case "ListRemoved":
+      return { url: `${API_BASE}/plugins/removed`, init: {} };
     default:
       throw new Error(`unsupported api method: ${name}`);
   }

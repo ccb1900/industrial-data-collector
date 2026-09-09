@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,6 +143,7 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	ensureSQLiteDir(cfg)
 	db, err := sql.Open(cfg.Driver, cfg.DSN)
 	if err != nil {
 		return nil, errs.ClassifyStorageError("open", err)
@@ -162,6 +165,7 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 	if t.db != nil {
 		return nil
 	}
+	ensureSQLiteDir(t.cfg)
 	db, err := sql.Open(t.cfg.Driver, t.cfg.DSN)
 	if err != nil {
 		return errs.ClassifyStorageError("open", err)
@@ -537,3 +541,14 @@ var _ RowsQuery = (*TableStorage)(nil)
 // side and expose it as the "rows" console query. Absent when no typed sink
 // is active — the bridge skips registration in that case.
 var TableRowsQueryKey = runtime.NewKey[RowsQuery]("console.rows.query")
+
+// ensureSQLiteDir creates the parent directory of a sqlite file DSN, so a
+// fresh deployment does not fail on a missing state directory.
+func ensureSQLiteDir(cfg TableConfig) {
+	if cfg.Dialect != "sqlite" {
+		return
+	}
+	if dir := filepath.Dir(cfg.DSN); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+}

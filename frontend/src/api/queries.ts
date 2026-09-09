@@ -1,5 +1,8 @@
 import {
   ExplorerPluginList,
+  LogEntry,
+  RemovedPlugin,
+  RowsPage,
   UIFileFailure,
   UICollection,
   UIFile,
@@ -21,4 +24,9 @@ export const queries = {
   listPanels: () => invoke<UIPanelList>("ListPanels"),
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
   listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
+  listRows: (params: Record<string, string | number>) => invoke<RowsPage>("ListRows", params),
+  listLogs: (params: Record<string, string | number>) => invoke<LogEntry[]>("ListLogs", params),
+  listRemoved: () => invoke<RemovedPlugin[]>("ListRemoved"),
+  uninstallPlugin: (id: string) => invoke<void>("UninstallPlugin", { pluginId: id }),
+  installPlugin: (id: string) => invoke<void>("InstallPlugin", { pluginId: id }),
 };

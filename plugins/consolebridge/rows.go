@@ -32,14 +32,19 @@ func (c *RowsComponent) Inject() []runtime.Dependency {
 func (c *RowsComponent) Provide() []runtime.Capability { return nil }
 
 func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	println("[console-rows] apply enter")
 	hubRegistry, err := runtime.Require(ctx, consolehost.HubKey)
 	if err != nil {
+		println("[console-rows] hub require error:", err.Error())
 		return nil, err
 	}
+	println("[console-rows] hub ok")
 	rows, err := runtime.Require(ctx, storageplugin.TableRowsQueryKey)
 	if err != nil {
+		println("[console-rows] rows require error:", err.Error())
 		return nil, err
 	}
+	println("[console-rows] rows capability ok")
 	un, err := hubRegistry.RegisterQuery("rows", "console-rows", func(ctx context.Context, params url.Values) (any, *hub.Error) {
 		limit, _ := strconv.Atoi(params.Get("limit"))
 		offset, _ := strconv.Atoi(params.Get("offset"))

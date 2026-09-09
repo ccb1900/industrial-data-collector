@@ -1,73 +1,82 @@
-# Desktop (Wails) configuration for cmd/collector-ui.
-# UI commands (TriggerCollection) drive the Collector through the
-# CollectionRequested Runtime Event; a Scheduler component is optional.
+# Desktop configuration: composition-shape demo (profiles + sources).
+# Single-machine demo with typed relational sink (pure-Go SQLite) and the
+# full console (pages/panels contributed by independent components).
 
-[[components]]
-id = "production-source"
-type = "local-file-source"
-
-[components.config]
-root = "./data/production"
+[profiles.csv_machine]
+parser = "csv"
+header = true
 pattern = "*.csv"
 file_stable_window_seconds = 0
-
-[[components]]
-id = "csv-parser"
-type = "csv-parser"
-
-[components.config]
-header = true
-
-[[components]]
-id = "memory-storage"
-type = "memory-storage"
-
-[[components]]
-id = "collection-state"
-type = "memory-state"
-
-[[components]]
-id = "production-metadata"
-type = "path-metadata"
-
-[components.config]
-
-[[components.config.sources]]
-source = "production-source"
-root = "./data/production"
-
-[[components.config.sources.metadata]]
-name = "product"
-from = "filename"
-pattern = "{product}.csv"
-required = true
-
-[[components]]
-id = "production-collector"
-type = "csv-collector"
-
-[components.config]
-source = "production-source"
-parser = "csv-parser"
-storage = "memory-storage"
-state = "collection-state"
-date_policy = "yesterday"
+date_policy = "specific"
+specific_date = "2026-09-08"
 batch_size = 1000
 
+[profiles.typed_sqlite]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/collect.db"
+table = "readings"
+file_table = "source_files"
+expose_console = true
+lazy_connect = true
+
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "ts"
+column = "ts"
+type = "timestamp"
+required = true
+
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "temperature"
+column = "temperature"
+type = "float"
+
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "unit"
+column = "unit"
+type = "text"
+
+[[profiles.typed_sqlite.columns]]
+from = "metadata"
+name = "product"
+column = "product"
+type = "text"
+
+[[sources]]
+id = "production-source"
+path = "./data/production"
+profiles = ["csv_machine", "typed_sqlite"]
+
+[sources.metadata]
+plant = "demo"
+
 [[components]]
-id = "query-provider"
-type = "query-provider"
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+schedule = "daily"
+time = "02:00"
 
 [[components]]
 id = "console-bridge"
 type = "console-bridge"
 
 [[components]]
+id = "console-rows"
+type = "console-rows"
+
+[[components]]
+id = "query-provider"
+type = "query-provider"
+
+[[components]]
 id = "ui"
 type = "ui"
 
-# UI Composition: pages and panels are contributed by independent components.
-# The UI Host does not know which business plugin contributed them.
 [[components]]
 id = "ui-page-collections"
 type = "ui-page"
@@ -100,6 +109,28 @@ title = "Sources"
 route = "/sources"
 renderer = "sources"
 order = 30
+
+[[components]]
+id = "ui-page-data"
+type = "ui-page"
+
+[components.config]
+page_id = "data"
+title = "Data Explorer"
+route = "/data"
+renderer = "data-explorer"
+order = 35
+
+[[components]]
+id = "ui-panel-logs"
+type = "ui-panel"
+
+[components.config]
+panel_id = "logs"
+title = "Logs"
+position = "bottom"
+renderer = "logs"
+order = 25
 
 [[components]]
 id = "ui-panel-metadata"

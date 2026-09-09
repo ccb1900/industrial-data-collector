@@ -114,3 +114,24 @@ export interface UITriggerRequest {
   date?: string;
   reason?: string;
 }
+
+// RowsPage is one page of typed table rows from the relational sink.
+export interface RowsPage {
+  columns: string[];
+  rows: unknown[][];
+  total: number;
+}
+
+// RemovedPlugin is one uninstalled component offering install-back.
+export interface RemovedPlugin {
+  id: string;
+  name: string;
+}
+
+// LogEntry is one structured application log line (console Logs panel).
+export interface LogEntry {
+  time: string;
+  level: string;
+  msg: string;
+  attrs?: Record<string, string>;
+}

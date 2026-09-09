@@ -9,6 +9,7 @@ import { PulseIcon } from "./Icons";
 // and the view re-reads Runtime afterwards instead of flipping a boolean.
 export function PluginExplorer() {
   const [plugins, setPlugins] = useState<ExplorerPlugin[]>([]);
+  const [removed, setRemoved] = useState<{ id: string; name: string }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -19,6 +20,10 @@ export function PluginExplorer() {
     try {
       const list = await queries.listPlugins();
       setPlugins(list.plugins);
+      queries
+        .listRemoved()
+        .then(setRemoved)
+        .catch(() => setRemoved([]));
       setError(null);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -35,6 +40,38 @@ export function PluginExplorer() {
 
   const selected =
     plugins.find((plugin) => plugin.id === selectedId) ?? plugins[0] ?? null;
+
+  const uninstall = useCallback(
+    async (plugin: ExplorerPlugin) => {
+      setBusyId(plugin.id);
+      setError(null);
+      try {
+        await queries.uninstallPlugin(plugin.id);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [refresh]
+  );
+
+  const install = useCallback(
+    async (id: string) => {
+      setBusyId(id);
+      setError(null);
+      try {
+        await queries.installPlugin(id);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [refresh]
+  );
 
   const toggle = useCallback(
     async (plugin: ExplorerPlugin, enable: boolean) => {
@@ -137,24 +174,36 @@ export function PluginExplorer() {
                   <h3>{selected.name}</h3>
                   <p className="plugin-id">{selected.id}</p>
                 </div>
-                {selected.controllable &&
-                (selected.state === "Active" ||
-                  selected.state === "Gone" ||
-                  selected.state === "Failed") ? (
-                  <button
-                    className={
-                      selected.state === "Active" ? "btn danger" : "btn activate"
-                    }
-                    disabled={busyId === selected.id}
-                    onClick={() => void toggle(selected, selected.state !== "Active")}
-                  >
-                    {busyId === selected.id
-                      ? "Working"
-                      : selected.state === "Active"
-                      ? "Deactivate"
-                      : "Activate"}
-                  </button>
-                ) : null}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {selected.controllable &&
+                  (selected.state === "Active" ||
+                    selected.state === "Gone" ||
+                    selected.state === "Failed") ? (
+                    <button
+                      className={
+                        selected.state === "Active" ? "btn danger" : "btn activate"
+                      }
+                      disabled={busyId === selected.id}
+                      onClick={() => void toggle(selected, selected.state !== "Active")}
+                    >
+                      {busyId === selected.id
+                        ? "Working"
+                        : selected.state === "Active"
+                        ? "Deactivate"
+                        : "Activate"}
+                    </button>
+                  ) : null}
+                  {selected.controllable && selected.state === "Active" ? (
+                    <button
+                      className="btn danger"
+                      disabled={busyId === selected.id}
+                      title="Remove from the desired configuration and revert its effects"
+                      onClick={() => void uninstall(selected)}
+                    >
+                      Uninstall
+                    </button>
+                  ) : null}
+                </div>
               </div>
               {outcome && outcome.accepted && !error && (
                 <p className="card-sub" style={{ marginTop: 0 }}>
@@ -210,6 +259,34 @@ export function PluginExplorer() {
                   </div>
                 )}
               </dl>
+              {removed.length > 0 && (
+                <>
+                  <p className="nav-label" style={{ marginTop: 18 }}>
+                    Uninstalled — install to restore
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {removed.map((r) => (
+                      <button
+                        key={r.id}
+                        className="btn activate"
+                        disabled={busyId === r.id}
+                        onClick={() => {
+                          setBusyId(r.id);
+                          queries
+                            .installPlugin(r.id)
+                            .then(refresh)
+                            .catch((e) =>
+                              setError(e instanceof Error ? e.message : String(e))
+                            )
+                            .finally(() => setBusyId(null));
+                        }}
+                      >
+                        Install {r.name || r.id}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <LoadingState label="No plugins discovered" />

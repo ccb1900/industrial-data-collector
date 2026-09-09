@@ -2,8 +2,11 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"sync"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -29,6 +32,15 @@ type Host struct {
 	// in Controller/Runtime fibers.
 	explorer *explorerplugin.Service
 	log      *slog.Logger
+
+	// desired-state overlay: components removed from (or re-added to) the
+	// desired configuration by the console. The config file stays the source
+	// of truth; the overlay persists uninstall decisions across restarts.
+	overlayPath string
+	removed     map[string]config.ComponentConfig
+	removedIDs  []string
+	lastDesired config.Config
+	mu          sync.Mutex
 }
 
 func New(log *slog.Logger) (*Host, error) {
@@ -48,6 +60,7 @@ func New(log *slog.Logger) (*Host, error) {
 }
 
 func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
+	h.applyOverlay(&cfg)
 	if err := appconfig.Validate(cfg); err != nil {
 		return fmt.Errorf("application config validation: %w", err)
 	}
@@ -56,14 +69,150 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 	}
 	for _, owned := range h.ctrl.Owned() {
 		if err := owned.Fiber.Ready(ctx); err != nil {
+			for _, o := range h.ctrl.Owned() {
+				st := "nil"
+				if o.Fiber != nil {
+					st = o.Fiber.State().String()
+				}
+				h.log.Error("fiber not ready", "id", o.ID, "state", st)
+			}
 			return fmt.Errorf("component %s not ready: %w", owned.ID, err)
 		}
 	}
 	if h.explorer != nil {
 		h.explorer.SetDesired(cfg)
 	}
+	h.lastDesired = cfg
 	h.attachStateProjection()
 	return nil
+}
+
+// applyOverlay removes uninstalled components from the desired configuration.
+func (h *Host) applyOverlay(cfg *config.Config) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.removed) == 0 {
+		return
+	}
+	out := make([]config.ComponentConfig, 0, len(cfg.Components))
+	for _, cc := range cfg.Components {
+		if _, gone := h.removed[cc.ID]; gone {
+			continue
+		}
+		out = append(out, cc)
+	}
+	cfg.Components = out
+}
+
+// SetOverlayPath loads a persisted uninstall overlay and stores the path for
+// future persistence.
+func (h *Host) SetOverlayPath(path string) {
+	h.overlayPath = path
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var snap struct {
+		Removed []config.ComponentConfig `json:"removed"`
+	}
+	if err := json.Unmarshal(data, &snap); err != nil {
+		h.log.Warn("overlay file unreadable; ignoring", "path", path, "error", err.Error())
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.removed = map[string]config.ComponentConfig{}
+	h.removedIDs = nil
+	for _, cc := range snap.Removed {
+		if cc.ID == "" {
+			continue
+		}
+		h.removed[cc.ID] = cc
+		h.removedIDs = append(h.removedIDs, cc.ID)
+	}
+}
+
+func (h *Host) persistOverlay() error {
+	if h.overlayPath == "" {
+		return nil
+	}
+	h.mu.Lock()
+	removed := make([]config.ComponentConfig, 0, len(h.removedIDs))
+	for _, id := range h.removedIDs {
+		removed = append(removed, h.removed[id])
+	}
+	h.mu.Unlock()
+	data, err := json.MarshalIndent(map[string]any{"removed": removed}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(h.overlayPath, data, 0o644)
+}
+
+// UninstallComponent removes one component from the desired configuration and
+// persists the decision. The component's effects are reverted by the Runtime
+// during reconciliation; the definition is kept so Install can restore it.
+func (h *Host) UninstallComponent(ctx context.Context, id string) error {
+	var def config.ComponentConfig
+	found := false
+	for _, cc := range h.lastDesired.Components {
+		if cc.ID == id {
+			def = cc
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("component %q is not part of the desired configuration", id)
+	}
+	h.mu.Lock()
+	if h.removed == nil {
+		h.removed = map[string]config.ComponentConfig{}
+	}
+	if _, exists := h.removed[id]; !exists {
+		h.removedIDs = append(h.removedIDs, id)
+	}
+	h.removed[id] = def
+	_ = def
+	h.mu.Unlock()
+	if err := h.persistOverlay(); err != nil {
+		return err
+	}
+	return h.Reconcile(ctx, h.lastDesired)
+}
+
+// InstallComponent restores a previously uninstalled component.
+func (h *Host) InstallComponent(ctx context.Context, id string) error {
+	h.mu.Lock()
+	_, ok := h.removed[id]
+	if ok {
+		delete(h.removed, id)
+		for i, rid := range h.removedIDs {
+			if rid == id {
+				h.removedIDs = append(h.removedIDs[:i], h.removedIDs[i+1:]...)
+				break
+			}
+		}
+	}
+	h.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("component %q was not uninstalled", id)
+	}
+	if err := h.persistOverlay(); err != nil {
+		return err
+	}
+	return h.Reconcile(ctx, h.lastDesired)
+}
+
+// RemovedComponents lists uninstalled component definitions (oldest first).
+func (h *Host) RemovedComponents() []config.ComponentConfig {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]config.ComponentConfig, 0, len(h.removedIDs))
+	for _, id := range h.removedIDs {
+		out = append(out, h.removed[id])
+	}
+	return out
 }
 
 // attachStateProjection feeds the durable state of every source unit (and of
