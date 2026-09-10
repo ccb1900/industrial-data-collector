@@ -1,25 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Layout, Menu, Switch, Typography } from "antd";
-import { onObservation, onStreamStatus, type StreamStatus } from "@gocordis/console-client";
+import { Layout, Menu, Switch, Typography, Badge, Tabs } from "antd";
+import { onObservation, onStreamStatus } from "@gocordis/console-client";
 import type { UIObservation, UIPage } from "./models/types";
+import type { StreamStatus } from "@gocordis/console-client";
 import { usePath, navigate } from "./router";
 import { useTheme } from "./theme";
 import { PageHost, PanelHost } from "./components/Composition";
 import { useCollectionData } from "./hooks/useCollectionData";
 import { useComposition } from "./hooks/useComposition";
 
+const { Sider, Content } = Layout;
+
 const MENU_ICONS: Record<string, React.ReactNode> = {
-  "/collections": "🧭",
-  "/files": "📄",
+  "/collections": "📋",
+  "/files": "📁",
   "/sources": "🔌",
   "/data": "🔍",
   "/plugins": "🧩",
-  "/dashboard": "⚡",
 };
 
-const { Sider, Content } = Layout;
-
-// 应用外壳：组合投影驱动导航（空间可组合），观察流只失效不拥有状态。
+// 应用外壳：组合投影驱动导航，观察流只失效不拥有状态。
 export default function App() {
   const data = useCollectionData();
   const composition = useComposition();
@@ -45,7 +45,6 @@ export default function App() {
 
   useEffect(() => onStreamStatus((s: StreamStatus) => setStream(s)), []);
 
-  // 路由：URL 路径 ↔ 组合页面。刷新后按路径恢复当前页。
   const pages = composition.pages;
   const active = useMemo(
     () => pages.find((p) => p.route === path) ?? pages.find((p) => `/${p.id}` === path) ?? pages[0],
@@ -76,53 +75,40 @@ export default function App() {
     [data]
   );
 
-  const menuItems = pages.map((p) => ({
-    key: p.route,
-    icon: MENU_ICONS[p.route],
-    label: p.title,
-  }));
-
   const rightPanels = composition.panels.filter((p) => p.position === "right");
   const bottomPanels = composition.panels.filter((p) => p.position !== "right");
 
-  const streamColor = stream === "live" ? "green" : stream === "connecting" ? "gold" : "red";
+  const streamLabel =
+    stream === "live" ? "观察流在线" : stream === "connecting" ? "重连中" : "离线";
+  const streamStatus = stream === "live" ? "success" : stream === "connecting" ? "warning" : "error";
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Layout.Sider width={220} theme="dark" style={{ position: "sticky", top: 0, height: "100vh", overflow: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px 14px" }}>
-          <div
-            style={{
-              width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center",
-              background: "linear-gradient(135deg, #4d6bfe, #7b5bff)", color: "#fff", fontWeight: 700,
-            }}
-          >
-            采
-          </div>
+          <div style={{
+            width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center",
+            background: "linear-gradient(135deg, #4d6bfe, #7b5bff)", color: "#fff", fontWeight: 700, fontSize: 14,
+          }}>采</div>
           <div>
-            <Typography.Text strong style={{ display: "block", fontSize: 13 }}>
-              工业数据采集
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
-              cordis host console
-            </Typography.Text>
+            <Typography.Text strong style={{ display: "block", fontSize: 13, color: "#e8ebf3" }}>工业数据采集</Typography.Text>
+            <Typography.Text style={{ display: "block", fontSize: 11, fontFamily: "monospace", color: "#626b80" }}>cordis console</Typography.Text>
           </div>
         </div>
         <Menu
-          theme="dark"
-          mode="inline"
+          theme="dark" mode="inline"
           selectedKeys={active ? [active.route] : []}
-          items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route], label: p.title }))}
+          items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route] ?? null, label: p.title }))}
           onClick={({ key }) => navigate(key)}
         />
-        <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <Badge status={stream === "live" ? "success" : stream === "connecting" ? "warning" : "error"} text={<span style={{ fontSize: 12, color: "var(--text-2, #99a2b6)" }}>{stream === "live" ? "观察流在线" : stream === "connecting" ? "重连中" : "离线"}</span>} />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12, color: "var(--text-2, #99a2b6)" }}>
-            <span>亮色主题</span>
-            <Switch size="small" checked={isDark} onChange={toggle} unCheckedChildren="暗" checkedChildren="亮" />
+        <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <Badge status={stream as any} text={<span style={{ fontSize: 12, color: "#99a2b6" }}>{streamLabel}</span>} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "#626b80" }}>暗色主题</span>
+            <Switch size="small" checked={isDark} onChange={toggle} />
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {composition.panels.length} 面板 · {composition.pages.length} 页面
+            {pages.length} 页 · {composition.panels.length} 板
           </Typography.Text>
         </div>
       </Layout.Sider>
@@ -134,15 +120,21 @@ export default function App() {
             <Typography.Text type="secondary">尚未组合任何页面。</Typography.Text>
           )}
           {bottomPanels.length > 0 && (
-            <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", marginTop: 18 }}>
-              {bottomPanels.map((p) => (
-                <PanelHost key={p.id} panel={p} data={data} events={events} />
-              ))}
+            <div style={{ marginTop: 18 }}>
+              <Tabs
+                type="line"
+                size="small"
+                items={bottomPanels.map((p) => ({
+                  key: p.id,
+                  label: p.title,
+                  children: <PanelHost panel={p} data={data} events={events} />,
+                }))}
+              />
             </div>
           )}
         </Content>
         {rightPanels.length > 0 && (
-          <aside style={{ width: 320, padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <aside style={{ width: 320, padding: "20px 0", display: "flex", flexDirection: "column", gap: 14 }}>
             {rightPanels.map((p) => (
               <PanelHost key={p.id} panel={p} data={data} events={events} />
             ))}
