@@ -16,9 +16,9 @@ import (
 	"gocordis-csv-collector/app/sourcecomp"
 )
 
-type validatingParser struct{}
+type validatingParser struct{ host *Host }
 
-func (validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
+func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
 	if err := ctx.Err(); err != nil {
 		return config.Config{}, err
 	}
@@ -26,6 +26,9 @@ func (validatingParser) Parse(ctx context.Context, source configwatch.Source, da
 	if err != nil {
 		return config.Config{}, err
 	}
+	// 期望状态 overlay 在每次热加载时先行应用：控制台的卸载/配置编辑
+	// 决策不被文件内容覆盖。
+	p.host.applyOverlay(&cfg)
 	if err := appconfig.Validate(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
 	}
@@ -62,7 +65,8 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		configwatch.Source{ID: "config", Path: path, Format: configwatch.FormatTOML},
 		h.ctrl,
 		w,
-		configwatch.WithParser(validatingParser{}),
+		configwatch.WithParser(&validatingParser{host: h}),
+		configwatch.WithPostReconcile(h.PostReconcile),
 	)
 	if err != nil {
 		_ = h.Close(context.Background())

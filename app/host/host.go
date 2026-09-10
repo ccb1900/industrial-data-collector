@@ -71,6 +71,13 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 	if err := h.ctrl.Reconcile(ctx, cfg); err != nil {
 		return err
 	}
+	return h.PostReconcile(ctx, cfg)
+}
+
+// PostReconcile 运行每次成功 reconcile 之后的应用层步骤：组件就绪检查、
+// explorer 台账、状态投影。configwatch 的热加载路径与显式 Reconcile
+// 共享同一条收尾路径，避免“双入口、一半忘记”的漂移。
+func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 	for _, owned := range h.ctrl.Owned() {
 		if err := owned.Fiber.Ready(ctx); err != nil {
 			for _, o := range h.ctrl.Owned() {
