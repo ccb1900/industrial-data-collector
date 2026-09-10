@@ -19,7 +19,7 @@
     "baseUrl": ".",
     "paths": {
       "@gocordis/console-client": [
-        "../console-client/src/index.ts"
+        "../../go-cordis/client/src/index.ts"
       ],
       "react": [
         "./node_modules/@types/react"
