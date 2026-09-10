@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Layout, Menu, Switch, Typography, Badge, Tabs } from "antd";
 import { onObservation, onStreamStatus } from "@gocordis/console-client";
-import type { UIObservation, UIPage } from "./models/types";
+import type { UIObservation, UIPage, UIPanel } from "./models/types";
 import type { StreamStatus } from "@gocordis/console-client";
 import { usePath, navigate } from "./router";
 import { useTheme } from "./theme";
@@ -75,8 +75,11 @@ export default function App() {
     [data]
   );
 
-  const rightPanels = composition.panels.filter((p) => p.position === "right");
-  const bottomPanels = composition.panels.filter((p) => p.position !== "right");
+  // 面板按页面绑定过滤：pages 为空表示所有页面都显示。
+  const visibleOn = (panels: UIPanel[]) =>
+    panels.filter((p) => !p.pages?.length || (active && p.pages.includes(active.id)));
+  const rightPanels = visibleOn(composition.panels.filter((p) => p.position === "right"));
+  const bottomPanels = visibleOn(composition.panels.filter((p) => p.position !== "right"));
 
   const streamLabel =
     stream === "live" ? "观察流在线" : stream === "connecting" ? "重连中" : "离线";

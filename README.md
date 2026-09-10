@@ -36,8 +36,10 @@ plugins/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
 plugins/ui-contrib/Independent UI Contribution GOCORDIS Components (single or multi Page/Panel)
 console/ (go-cordis)  reusable console platform (Go): registry, hub, host, explorer, webui
-frontend/          React host: app views + assembly (shell extraction to a shared
-                   client package is the next mechanical step)
+client/ (go-cordis)   reusable console shell (@gordis/console-client): layout, nav,
+                      observation stream, design system — consumed via vite alias
+frontend/          app assembly + domain views (antd): overview, collections, files,
+                   sources, data explorer, plugins, fleet
 cmd/collector-ui/   Real Wails Desktop Host (separate Go module; needs Wails toolchain)
 cmd/web-ui/         Embedded HTTP Web UI (go:embed + net/http + SSE)
 web/                Embedded frontend build (web.Dist)

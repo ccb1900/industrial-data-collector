@@ -260,6 +260,19 @@ func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
 		return appui.PanelDefinition{}, err
 	}
 	def := appui.PanelDefinition{ID: id, Title: title, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
+	if raw, ok := m["pages"]; ok {
+		if arr, isArr := raw.([]any); isArr {
+			for _, item := range arr {
+				page, isStr := item.(string)
+				if !isStr || page == "" {
+					return appui.PanelDefinition{}, fmt.Errorf("panel %q pages must be non-empty strings", id)
+				}
+				def.Pages = append(def.Pages, page)
+			}
+		} else {
+			return appui.PanelDefinition{}, fmt.Errorf("panel %q pages must be an array of page ids", id)
+		}
+	}
 	switch strings.ToLower(position) {
 	case "main":
 		def.Position = appui.PositionMain

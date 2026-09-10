@@ -84,6 +84,17 @@ id = "ui"
 type = "ui"
 
 [[components]]
+id = "ui-page-overview"
+type = "ui-page"
+
+[components.config]
+page_id = "overview"
+title = "概览"
+route = "/overview"
+renderer = "dashboard"
+order = 0
+
+[[components]]
 id = "ui-page-collections"
 type = "ui-page"
 
@@ -133,6 +144,7 @@ type = "ui-panel"
 
 [components.config]
 panel_id = "logs"
+pages = ["overview"]
 title = "日志"
 position = "bottom"
 renderer = "logs"
@@ -144,6 +156,7 @@ type = "ui-panel"
 
 [components.config]
 panel_id = "metadata"
+pages = ["files"]
 title = "元数据"
 position = "right"
 renderer = "metadata"
@@ -155,6 +168,7 @@ type = "ui-panel"
 
 [components.config]
 panel_id = "event-feed"
+pages = ["overview", "collections"]
 title = "事件流"
 position = "bottom"
 renderer = "event-feed"
@@ -166,6 +180,7 @@ type = "ui-panel"
 
 [components.config]
 panel_id = "failures"
+pages = ["overview", "collections"]
 title = "失败账本"
 position = "bottom"
 renderer = "failures"

@@ -7,6 +7,9 @@ import { PulseIcon } from "./Icons";
 // The Plugin Console: Runtime truth, never optimistic. Rows come from
 // Controller-owned fibers; a control action returns Accepted/Rejected/Failed
 // and the view re-reads Runtime afterwards instead of flipping a boolean.
+// 控制台基础设施组件：卸载会导致控制台自身失效，服务端同样拒绝。
+const CONSOLE_CRITICAL = new Set(["ui", "query-provider", "console-bridge", "plugin-explorer"]);
+
 export function PluginExplorer() {
   const [plugins, setPlugins] = useState<ExplorerPlugin[]>([]);
   const [removed, setRemoved] = useState<{ id: string; name: string }[]>([]);
@@ -194,14 +197,18 @@ export function PluginExplorer() {
                     </button>
                   ) : null}
                   {selected.controllable && selected.state === "Active" ? (
-                    <button
-                      className="btn danger"
-                      disabled={busyId === selected.id}
-                      title="Remove from the desired configuration and revert its effects"
-                      onClick={() => void uninstall(selected)}
-                    >
-                      Uninstall
-                    </button>
+                    CONSOLE_CRITICAL.has(selected.type) ? (
+                      <span className="badge-protected" title="控制台基础设施，不能卸载">受保护</span>
+                    ) : (
+                      <button
+                        className="btn danger"
+                        disabled={busyId === selected.id}
+                        title="从期望配置中移除该组件并回滚其全部副作用"
+                        onClick={() => void uninstall(selected)}
+                      >
+                        卸载
+                      </button>
+                    )
                   ) : null}
                 </div>
               </div>
@@ -262,7 +269,7 @@ export function PluginExplorer() {
               {removed.length > 0 && (
                 <>
                   <p className="nav-label" style={{ marginTop: 18 }}>
-                    Uninstalled — install to restore
+                    已卸载 — 安装可恢复
                   </p>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {removed.map((r) => (

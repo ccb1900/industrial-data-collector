@@ -12,17 +12,17 @@ export interface ObservationView {
 export function observationView(type: string): ObservationView {
   switch (type) {
     case "FileCompleted":
-      return { tone: "ok", label: "file completed" };
+      return { tone: "ok", label: "文件完成" };
     case "FileFailed":
-      return { tone: "danger", label: "file failed" };
+      return { tone: "danger", label: "文件失败" };
     case "CollectionCompleted":
-      return { tone: "accent", label: "collection completed" };
+      return { tone: "accent", label: "采集完成" };
     case "CollectionFailed":
-      return { tone: "danger", label: "collection failed" };
+      return { tone: "danger", label: "采集失败" };
     case "CollectionPending":
-      return { tone: "warn", label: "collection pending" };
+      return { tone: "warn", label: "等待数据" };
     case "composition.changed":
-      return { tone: "muted", label: "composition changed" };
+      return { tone: "muted", label: "组合变更" };
     default:
       return { tone: "muted", label: type };
   }

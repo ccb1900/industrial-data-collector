@@ -25,6 +25,7 @@ export const queries = {
   listPanels: () => invoke<UIPanelList>("ListPanels"),
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
   listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
+  listObservations: (limit = 200) => invoke<unknown[]>("ListObservations", { limit }),
   fleet: () =>
     invoke<{ peers: import("../models/types").FleetEntry[]; checkedAt: string }>("Fleet"),
   listRows: (params: Record<string, string | number>) => invoke<RowsPage>("ListRows", params),

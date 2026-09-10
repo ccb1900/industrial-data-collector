@@ -38,6 +38,7 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
     GetCollection: { query: "collection", pick: ["sourceId", "date"] },
     ListFiles: { query: "files", pick: ["sourceId", "date"] },
     ListFileFailures: { query: "failures", pick: ["sourceId"] },
+    ListObservations: { query: "observations", pick: ["limit"] },
     ListRows: { query: "rows" },
     ListLogs: { query: "logs" },
   };

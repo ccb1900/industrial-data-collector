@@ -543,6 +543,18 @@ func validateDetectContent(cc extconfig.ComponentConfig, kind string) error {
 	return nil
 }
 
+// ConsoleCritical reports whether a component type is part of the console
+// infrastructure itself. Uninstalling one would tear down the console the
+// operator is using, so lifecycle requests refuse them (mirrors the
+// protected set of the plugin explorer's Control path).
+func ConsoleCritical(typ string) bool {
+	switch typ {
+	case "ui", "query-provider", "console-bridge", "plugin-explorer":
+		return true
+	}
+	return false
+}
+
 func AllowedSourceType(typ string) bool {
 	return typ == "local-file-source" || typ == "unc-file-source"
 }

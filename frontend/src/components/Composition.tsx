@@ -6,7 +6,7 @@ import { DataExplorer } from "./DataExplorer";
 import { TrendChart } from "./TrendChart";
 import { MetadataTable } from "./MetadataTable";
 import { CollectionData } from "../hooks/useCollectionData";
-import { UIFileFailure, UISource, LogEntry, UICollection, UIFile, UIObservation, UIPanel, UIPage } from "../models/types";
+import { ObservationRecord, UIFileFailure, UISource, LogEntry, UICollection, UIFile, UIObservation, UIPanel, UIPage } from "../models/types";
 import { observationView, relativeTime } from "../lib/observations";
 import { FleetPage } from "./Fleet";
 const PluginExplorer = lazy(() => import("./Explorer").then((m) => ({ default: m.PluginExplorer })));
@@ -439,22 +439,39 @@ function MetadataPanel({ data }: PanelProps) {
   );
 }
 
-// 事件流面板：观察流失效历史的倒序投影视图。
+// 事件流面板：先加载持久化日志（重启不丢），再实时追加观察事件。
 function EventFeedPanel({ events }: PanelProps) {
-  if (events.length === 0) {
+  const [history, setHistory] = useState<ObservationRecord[]>([]);
+  useEffect(() => {
+    consoleQueries
+      .listObservations(200)
+      .then((recs) => setHistory((recs as ObservationRecord[]) ?? []))
+      .catch(() => setHistory([]));
+  }, []);
+
+  // 合并：持久化历史 + 本次会话实时事件（按时间戳去重）。
+  const seen = new Set<string>();
+  const merged: UIObservation[] = [];
+  for (const ev of [...history.map((r) => ({ type: r.type, sourceId: r.sourceId, timestamp: r.timestamp })), ...events]) {
+    const k = `${ev.timestamp}|${ev.type}|${ev.sourceId ?? ""}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push({ type: ev.type, sourceId: ev.sourceId, timestamp: ev.timestamp });
+  }
+  if (merged.length === 0) {
     return <Typography.Text type="secondary">暂无观察事件——运行时变更上下文后自动填充。</Typography.Text>;
   }
   return (
     <List
       size="small"
-      dataSource={[...events].reverse()}
+      dataSource={[...merged].reverse()}
       renderItem={(ev: UIObservation) => {
         const view = observationView(ev.type);
         return (
           <List.Item style={{ padding: "4px 0" }}>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>
               <span>
-                <Tag color={view.tone === "ok" ? "success" : view.tone === "danger" ? "error" : view.tone === "warn" ? "warning" : "default"}>
+                <Tag color={view.tone === "ok" ? "success" : view.tone === "danger" ? "error" : view.tone === "warn" ? "warning" : view.tone === "accent" ? "processing" : "default"}>
                   {view.label}
                 </Tag>
                 {ev.sourceId && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{ev.sourceId}</Typography.Text>}

@@ -23,6 +23,13 @@ export interface UICollection {
 
 // UIFileFailure is one entry of the local failure ledger projection: a file
 // that failed and is still waiting for a successful replay.
+// ObservationRecord 是观察流持久化日志中的一条记录。
+export interface ObservationRecord {
+  type: string;
+  sourceId?: string;
+  timestamp: string;
+}
+
 export interface UIFileFailure {
   sourceId: string;
   date: string;
@@ -54,6 +61,8 @@ export interface UIPanel {
   title: string;
   position: string;
   renderer: string;
+  /** 面板出现的页面 id 列表；为空表示所有页面。 */
+  pages?: string[];
 }
 
 export interface UIPageList {

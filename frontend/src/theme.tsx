@@ -4,14 +4,14 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 export type ThemeMode = "dark" | "light";
 
 const ThemeContext = createContext<{ isDark: boolean; toggle: () => void }>({
-  isDark: true,
+  isDark: false,
   toggle: () => undefined,
 });
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [isDark, setIsDark] = useState<boolean>(() => {
     const saved = localStorage.getItem("console-theme");
-    return saved ? saved === "dark" : true;
+    return saved ? saved === "dark" : false;
   });
 
   useEffect(() => {

@@ -165,6 +165,9 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
+	if appconfig.ConsoleCritical(def.Type) {
+		return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
+	}
 	h.mu.Lock()
 	if h.removed == nil {
 		h.removed = map[string]config.ComponentConfig{}

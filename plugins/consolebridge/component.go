@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 	"gocordis-csv-collector/internal/logstore"
+	"gocordis-csv-collector/internal/obsjournal"
 	queryplugin "gocordis-csv-collector/plugins/query"
 )
 
@@ -82,6 +84,12 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	c.emitCtx = ctx
+
+	// 观察流持久化：状态目录下的 JSONL 日志，双限保留（10MB / 7 天）。
+	journal, err := obsjournal.Open(filepath.Join("state", "observations.jsonl"))
+	if err != nil {
+		return nil, err
+	}
 
 	owner := fmt.Sprintf("console-bridge:%d", nextOwner.Add(1))
 	var cleanups []func() error
@@ -162,6 +170,20 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("observations", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
+			limit := 200
+			if n, perr := strconv.Atoi(params.Get("limit")); perr == nil && n > 0 && n <= 1000 {
+				limit = n
+			}
+			records := journal.Recent(limit)
+			out := make([]obsjournal.Record, len(records))
+			copy(out, records)
+			return out, nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
 		return hubRegistry.RegisterCommand("trigger", owner, func(ctx context.Context, body json.RawMessage) error {
 			var req model.CollectionRequested
 			req.Reason = "ui"
@@ -208,11 +230,13 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	// console hub. The hub drops slow consumers; clients compensate by
 	// re-querying.
 	unsubObs, err := obs.Subscribe(ctx.Context(), func(ev query.ObservationEvent) {
-		hubRegistry.Publish(hub.Observation{
+		record := obsjournal.Record{
 			Type:      ev.Type,
 			SourceID:  string(ev.Key.SourceID),
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		})
+		}
+		_ = journal.Append(record)
+		hubRegistry.Publish(hub.Observation(record))
 	})
 	if err != nil {
 		return nil, err

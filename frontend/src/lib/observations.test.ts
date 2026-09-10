@@ -5,7 +5,7 @@ describe("observationView", () => {
   it("maps canonical runtime outcome events", () => {
     expect(observationView("FileCompleted")).toEqual({
       tone: "ok",
-      label: "file completed",
+      label: "文件完成",
     });
     expect(observationView("FileFailed").tone).toBe("danger");
     expect(observationView("CollectionCompleted").tone).toBe("accent");
@@ -15,7 +15,7 @@ describe("observationView", () => {
   it("keeps composition invalidations muted", () => {
     expect(observationView("composition.changed")).toEqual({
       tone: "muted",
-      label: "composition changed",
+      label: "组合变更",
     });
   });
 

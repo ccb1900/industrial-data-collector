@@ -1027,3 +1027,13 @@ button {
     max-height: 240px;
   }
 }
+
+.badge-protected {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line, #d9dee8);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-3, #8a93a6);
+}
