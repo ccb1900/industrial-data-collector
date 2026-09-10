@@ -211,8 +211,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}
 	if err := register(func() (func() error, error) {
 		return hubRegistry.RegisterQuery("plan", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			c.mu.Lock()
+			units := append([]*sourceunitplugin.SourceUnitComponent(nil), c.units...)
+			c.mu.Unlock()
 			out := []map[string]any{}
-			for _, u := range c.units {
+			for _, u := range units {
 				keys, err := u.PlanKeys(ctx)
 				if err != nil {
 					continue

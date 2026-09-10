@@ -2,9 +2,11 @@ import React, { ComponentType, Suspense, lazy, useCallback, useEffect, useMemo, 
 import { Alert, Button, DatePicker, Empty, Input, Progress, Select, Space, Statistic, Table, Tag, Typography, Descriptions, Row, Col, List } from "antd";
 import dayjs from "dayjs";
 import { onObservation } from "@gocordis/console-client";
-import { queries as consoleQueries } from "../api/queries";
+import { queries as consoleQueries, queries } from "../api/queries";
 import { DataExplorer } from "./DataExplorer";
 import { GenericTableView } from "./GenericTableView";
+import { GenericPage } from "../views/GenericPage";
+        import type { ViewBlock } from "../views/schema";
 import { TrendChart } from "./TrendChart";
 import { MetadataTable } from "./MetadataTable";
 import { CollectionData } from "../hooks/useCollectionData";
@@ -124,6 +126,27 @@ export function PageHost({ page, data, events, onTrigger, busy }: {
   onTrigger: (sourceId?: string, date?: string) => void;
   busy: boolean;
 }) {
+  // 声明式页面：views schema 驱动的通用渲染，零自定义代码。
+  if (page.views && page.views.length > 0) {
+    return (
+      <section className="card" style={{ padding: "20px 22px" }}>
+        <GenericPage
+          title={page.title}
+          views={(page.views ?? []) as unknown as ViewBlock[]}
+          ctx={{
+            hubQuery: queries.hubQuery,
+            hubCommand: async (name: string, body: unknown) => {
+              const b = (body ?? {}) as { date?: string };
+              if (name === "trigger") await onTrigger(undefined, b.date);
+            },
+            focus: data.focus,
+            onFocus: (sourceId, date) => void data.setFocus({ sourceId, date }),
+            busy,
+          }}
+        />
+      </section>
+    );
+  }
   // 声明式视图：页面自带 view schema（表格），宿主通用渲染器执行——
   // 这是 WASM / 进程外插件贡献页面且零前端代码的通道。
   if (page.renderer === "generic-table" && page.view) {

@@ -1,4 +1,21 @@
 {
-  "modified": [],
+  "modified": [
+    {
+      "ID": "ui-panel-failures",
+      "Type": "ui-panel",
+      "Config": {
+        "order": 30,
+        "pages": [
+          "overview",
+          "collections"
+        ],
+        "panel_id": "failures",
+        "position": "bottom",
+        "renderer": "failures",
+        "title": "失败账本1"
+      },
+      "Enabled": null
+    }
+  ],
   "removed": []
 }

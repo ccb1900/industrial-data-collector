@@ -241,8 +241,10 @@ func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
 		return appui.PageDefinition{}, err
 	}
 	view, _ := json.Marshal(m["view"])
+	views, _ := json.Marshal(m["views"])
 	def := appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
 	def.View = view
+	def.Views = views
 	return def, nil
 }
 

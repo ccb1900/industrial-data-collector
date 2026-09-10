@@ -56,6 +56,8 @@ export interface UIPage {
   renderer: string;
   /** 声明式视图 schema（通用渲染器消费）；undefined 表示自定义渲染器。 */
   view?: ViewSchema;
+  /** 声明式视图块列表：页面 = 有序视图块栈。 */
+  views?: Array<Record<string, unknown>>;
 }
 
 /** 视图 schema v1：通用表格。query 为 hub 命名查询，columns 声明列。 */

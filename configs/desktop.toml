@@ -105,6 +105,34 @@ route = "/collections"
 renderer = "collections"
 order = 10
 
+[[components.config.views]]
+kind = "kv"
+query = "schedule"
+fields = [
+  { key = "time", label = "触发时间" },
+  { key = "last", label = "上次触发" },
+  { key = "next", label = "下次触发" },
+]
+
+[[components.config.views]]
+kind = "list"
+query = "plan"
+titleKey = "sourceId"
+rowActions = [{ label = "采集", command = "trigger", args = { sourceId = "$row.sourceId", date = "$row.date" } }]
+
+[[components.config.views]]
+kind = "table"
+query = "collections"
+selectFocus = true
+columns = [
+  { key = "sourceId", title = "数据源" },
+  { key = "date", title = "采集日期" },
+  { key = "filesCompleted", title = "完成" },
+  { key = "filesFailed", title = "失败" },
+  { key = "records", title = "记录数" },
+  { key = "status", title = "状态" },
+]
+
 [[components]]
 id = "ui-page-files"
 type = "ui-page"
@@ -126,6 +154,16 @@ title = "数据源"
 route = "/sources"
 renderer = "sources"
 order = 30
+
+[[components.config.views]]
+kind = "table"
+query = "sources"
+rowActions = [{ label = "采集", command = "trigger", args = { sourceId = "$row.sourceId" } }]
+columns = [
+  { key = "name", title = "数据源" },
+  { key = "path", title = "路径" },
+  { key = "status", title = "状态" },
+]
 
 [[components]]
 id = "ui-page-data"
