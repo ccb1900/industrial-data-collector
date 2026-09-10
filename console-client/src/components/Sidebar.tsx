@@ -1,6 +1,6 @@
 import React from "react";
-import { UIPage } from "../models/types";
-import { StreamStatus } from "../api/events";
+import { UIPage } from "../types";
+import { StreamStatus } from "../api";
 import { LogoMark, RendererIcon } from "./Icons";
 
 // The navigation rail is a pure projection of the composition snapshot:

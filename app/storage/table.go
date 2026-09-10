@@ -123,11 +123,27 @@ type RowsPage struct {
 	Total   int64           `json:"total"`
 }
 
+// TableStat is one table's row count in the typed sink.
+type TableStat struct {
+	Table string `json:"table"`
+	Rows  int64  `json:"rows"`
+}
+
+// StorageStats is the storage insight view: connectivity plus per-table row
+// counts of the typed sink.
+type StorageStats struct {
+	Connected bool        `json:"connected"`
+	Tables    []TableStat `json:"tables"`
+}
+
 // RowsQuery is the console-facing read side of the typed sink.
 type RowsQuery interface {
 	// QueryRows pages collected rows of one source/date. filters are
 	// exact-match column filters (declared columns only).
 	QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error)
+	// Stats reports connectivity and per-table row counts for the storage
+	// insight cards.
+	Stats(ctx context.Context) (StorageStats, error)
 }
 
 // TableStorage is the typed relational sink.
@@ -522,6 +538,35 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		return page, errs.ClassifyStorageError("iterate rows", err)
 	}
 	return page, nil
+}
+
+// Stats implements the storage insight view: connectivity plus per-table row
+// counts. A down database reports connected=false instead of failing.
+func (t *TableStorage) Stats(ctx context.Context) (StorageStats, error) {
+	out := StorageStats{Connected: false}
+	if t.db == nil {
+		if !t.lazy {
+			return out, nil
+		}
+		if err := t.EnsureConnected(ctx); err != nil {
+			return out, nil // down database: honest offline, not an error
+		}
+	}
+	if err := t.db.PingContext(ctx); err != nil {
+		return out, nil
+	}
+	out.Connected = true
+	for _, name := range []string{t.cfg.Table, t.cfg.FileTable} {
+		if name == "" {
+			continue
+		}
+		var n int64
+		if err := t.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM "+quoteIdent(t.cfg.Dialect, name)).Scan(&n); err == nil {
+			out.Tables = append(out.Tables, TableStat{Table: name, Rows: n})
+		}
+	}
+	return out, nil
 }
 
 func (t *TableStorage) Close() error {

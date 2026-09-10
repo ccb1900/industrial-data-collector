@@ -1,39 +1,34 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { commands, onObservation, onStreamStatus } from "./api/client";
-import { PanelHost, PageHost } from "./components/Composition";
-import { Sidebar } from "./components/Sidebar";
-import { EmptyState } from "./components/Lists";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Badge, Layout, Menu, Switch, Typography } from "antd";
+import { onObservation, onStreamStatus, type StreamStatus } from "@gocordis/console-client";
+import type { UIObservation, UIPage } from "./models/types";
+import { usePath, navigate } from "./router";
+import { useTheme } from "./theme";
+import { PageHost, PanelHost } from "./components/Composition";
 import { useCollectionData } from "./hooks/useCollectionData";
 import { useComposition } from "./hooks/useComposition";
-import { StreamStatus } from "./api/events";
-import { UIObservation, UIPage } from "./models/types";
-import "./styles.css";
 
-// The shell owns no business state and no page list. It wires three
-// boundaries: composition (which views exist), observation (when to
-// re-query), and command (how the UI asks the application to act).
+const MENU_ICONS: Record<string, React.ReactNode> = {
+  "/collections": "🧭",
+  "/files": "📄",
+  "/sources": "🔌",
+  "/data": "🔍",
+  "/plugins": "🧩",
+  "/dashboard": "⚡",
+};
 
-const EVENT_BUFFER = 12;
+const { Sider, Content } = Layout;
 
-function detectTransport(): "wails" | "web" {
-  return typeof window !== "undefined" && window.runtime ? "wails" : "web";
-}
-
+// 应用外壳：组合投影驱动导航（空间可组合），观察流只失效不拥有状态。
 export default function App() {
   const data = useCollectionData();
   const composition = useComposition();
   const [events, setEvents] = useState<UIObservation[]>([]);
-  const [route, setRoute] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [stream, setStream] = useState<StreamStatus>("connecting");
-  const transportRef = useRef(detectTransport());
-  // Buffer observation timestamps that arrived while the boundary was down,
-  // so recovery can be explained on the screen.
-  const [recoverNote, setRecoverNote] = useState<string | null>(null);
-  const wasOffline = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const path = usePath();
+  const { isDark, toggle } = useTheme();
 
-  // Observation only invalidates: the shell re-runs its queries and appends
-  // the minimal event to the visible feed. It never mutates business state.
   const refreshHost = useCallback(() => {
     void composition.refresh();
     void data.refresh();
@@ -41,118 +36,119 @@ export default function App() {
 
   useEffect(
     () =>
-      onObservation((ev) => {
-        setEvents((prev) => [...prev.slice(-(EVENT_BUFFER - 1)), ev]);
+      onObservation((ev: UIObservation) => {
+        setEvents((prev) => [...prev.slice(-49), ev]);
         refreshHost();
       }),
     [refreshHost]
   );
 
-  useEffect(
-    () =>
-      onStreamStatus((status) => {
-        setStream((prev) => {
-          if (status === "live" && prev === "offline") {
-            wasOffline.current = true;
-          }
-          return status;
-        });
-      }),
-    []
+  useEffect(() => onStreamStatus((s: StreamStatus) => setStream(s)), []);
+
+  // 路由：URL 路径 ↔ 组合页面。刷新后按路径恢复当前页。
+  const pages = composition.pages;
+  const active = useMemo(
+    () => pages.find((p) => p.route === path) ?? pages.find((p) => `/${p.id}` === path) ?? pages[0],
+    [pages, path]
   );
 
-  // Recovery across the boundary: emissions are not replayed, so a regained
-  // stream is compensated by a full re-query.
   useEffect(() => {
-    if (stream !== "live" || !wasOffline.current) {
-      return;
+    if (active && window.location.pathname !== active.route) {
+      navigate(active.route);
     }
-    wasOffline.current = false;
-    const recoveredAt = new Date().toLocaleTimeString();
-    setRecoverNote(recoveredAt);
-    refreshHost();
-    const timer = window.setTimeout(() => setRecoverNote(null), 6000);
-    return () => window.clearTimeout(timer);
-  }, [stream, refreshHost]);
-
-  // The active page is a projection of the composition snapshot; if the
-  // contributing plugin unloads, the shell falls back without holding a
-  // stale route.
-  const active: UIPage | undefined =
-    composition.pages.find((page) => page.route === route) ?? composition.pages[0];
+  }, [active]);
 
   const trigger = useCallback(
-    async (sourceID?: string, date?: string) => {
+    async (sourceId?: string, date?: string) => {
       setBusy(true);
       try {
-        // Command is asynchronous: accepted here, completed via Observation.
-        await commands.triggerCollection({ sourceId: sourceID, date, reason: "ui" });
+        const res = await fetch("/api/command/trigger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceId, date, reason: "ui" }),
+        });
+        if (!res.ok) throw new Error(`trigger: ${res.status}`);
         await data.refresh();
       } finally {
         setBusy(false);
       }
     },
-    [data.refresh]
+    [data]
   );
 
-  const rightPanels = composition.panels.filter((panel) => panel.position === "right");
-  const bottomPanels = composition.panels.filter((panel) => panel.position !== "right");
+  const menuItems = pages.map((p) => ({
+    key: p.route,
+    icon: MENU_ICONS[p.route],
+    label: p.title,
+  }));
+
+  const rightPanels = composition.panels.filter((p) => p.position === "right");
+  const bottomPanels = composition.panels.filter((p) => p.position !== "right");
+
+  const streamColor = stream === "live" ? "green" : stream === "connecting" ? "gold" : "red";
 
   return (
-    <div className="app-shell">
-      <Sidebar
-        pages={composition.pages}
-        activeId={active?.id ?? null}
-        onSelect={(page) => setRoute(page.route)}
-        pageCount={composition.pages.length}
-        panelCount={composition.panels.length}
-        stream={stream}
-        transport={transportRef.current}
-        working={busy}
-      />
-      <div className="app-main">
-        <div className="center-column">
+    <Layout style={{ minHeight: "100vh" }}>
+      <Layout.Sider width={220} theme="dark" style={{ position: "sticky", top: 0, height: "100vh", overflow: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px 14px" }}>
+          <div
+            style={{
+              width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center",
+              background: "linear-gradient(135deg, #4d6bfe, #7b5bff)", color: "#fff", fontWeight: 700,
+            }}
+          >
+            采
+          </div>
+          <div>
+            <Typography.Text strong style={{ display: "block", fontSize: 13 }}>
+              工业数据采集
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+              cordis host console
+            </Typography.Text>
+          </div>
+        </div>
+        <Menu
+          theme="dark"
+          mode="inline"
+          selectedKeys={active ? [active.route] : []}
+          items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route], label: p.title }))}
+          onClick={({ key }) => navigate(key)}
+        />
+        <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+          <Badge status={stream === "live" ? "success" : stream === "connecting" ? "warning" : "error"} text={<span style={{ fontSize: 12, color: "var(--text-2, #99a2b6)" }}>{stream === "live" ? "观察流在线" : stream === "connecting" ? "重连中" : "离线"}</span>} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12, color: "var(--text-2, #99a2b6)" }}>
+            <span>亮色主题</span>
+            <Switch size="small" checked={isDark} onChange={toggle} unCheckedChildren="暗" checkedChildren="亮" />
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {composition.panels.length} 面板 · {composition.pages.length} 页面
+          </Typography.Text>
+        </div>
+      </Layout.Sider>
+      <Layout>
+        <Content style={{ padding: 20, minWidth: 0 }}>
           {active ? (
-            <PageHost
-              page={active}
-              data={data}
-              events={events}
-              onTrigger={(id, date) => void trigger(id, date)}
-              busy={busy}
-            />
+            <PageHost page={active} data={data} events={events} onTrigger={trigger} busy={busy} />
           ) : (
-            <section className="card">
-              <EmptyState>
-                <h2>Nothing is composed yet</h2>
-                <p>
-                  This console renders only what component activations
-                  contribute. Activate a ui-page or plugin-explorer component to
-                  give it a surface.
-                </p>
-              </EmptyState>
-            </section>
+            <Typography.Text type="secondary">尚未组合任何页面。</Typography.Text>
           )}
           {bottomPanels.length > 0 && (
-            <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
-              {bottomPanels.map((panel) => (
-                <PanelHost key={panel.id} panel={panel} data={data} events={events} />
+            <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", marginTop: 18 }}>
+              {bottomPanels.map((p) => (
+                <PanelHost key={p.id} panel={p} data={data} events={events} />
               ))}
             </div>
           )}
-          {recoverNote && (
-            <p className="card-sub" style={{ margin: 0 }}>
-              Boundary recovered at {recoverNote} — read model re-queried.
-            </p>
-          )}
-        </div>
+        </Content>
         {rightPanels.length > 0 && (
-          <aside className="right-rail" aria-label="Side panels">
-            {rightPanels.map((panel) => (
-              <PanelHost key={panel.id} panel={panel} data={data} events={events} />
+          <aside style={{ width: 320, padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+            {rightPanels.map((p) => (
+              <PanelHost key={p.id} panel={p} data={data} events={events} />
             ))}
           </aside>
         )}
-      </div>
-    </div>
+      </Layout>
+    </Layout>
   );
 }

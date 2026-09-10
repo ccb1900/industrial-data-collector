@@ -45,6 +45,16 @@ func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	println("[console-rows] rows capability ok")
+	unStorage, err := hubRegistry.RegisterQuery("storage", "console-rows", func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+		stats, serr := rows.Stats(ctx)
+		if serr != nil {
+			return nil, &hub.Error{Code: "error", Message: serr.Error()}
+		}
+		return stats, nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	un, err := hubRegistry.RegisterQuery("rows", "console-rows", func(ctx context.Context, params url.Values) (any, *hub.Error) {
 		limit, _ := strconv.Atoi(params.Get("limit"))
 		offset, _ := strconv.Atoi(params.Get("offset"))
@@ -68,9 +78,14 @@ func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := ctx.Effect(func() (func() error, error) {
-		return un, nil
+		return func() error {
+			_ = un()
+			_ = unStorage()
+			return nil
+		}, nil
 	}); err != nil {
 		un()
+		_ = unStorage()
 		return nil, err
 	}
 	return nil, nil

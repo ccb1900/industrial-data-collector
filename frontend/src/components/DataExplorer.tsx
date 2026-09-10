@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Table, Select, Input, Button, Space } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { queries } from "../api/client";
-import { EmptyState, ErrorNote } from "./Lists";
+import { EmptyState, ErrorNote } from "@gocordis/console-client";
 import { UISource } from "../models/types";
 
 // DataExplorer queries the typed relational sink through the console hub:

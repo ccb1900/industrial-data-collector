@@ -1,32 +1,157 @@
-import React, { ComponentType, useCallback, useEffect, useState } from "react";
-import { onObservation, queries } from "../api/client";
+import React, { ComponentType, Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, Button, Empty, Input, Progress, Select, Space, Statistic, Table, Tag, Typography, Descriptions, Row, Col, List } from "antd";
+import { onObservation } from "@gocordis/console-client";
+import { queries as consoleQueries } from "../api/queries";
 import { DataExplorer } from "./DataExplorer";
+import { TrendChart } from "./TrendChart";
+import { MetadataTable } from "./MetadataTable";
 import { CollectionData } from "../hooks/useCollectionData";
-import { LogEntry } from "../models/types";
-import { UICollection, UIFile, UIFileFailure, UIObservation, UIPanel, UIPage } from "../models/types";
-import { relativeTime } from "../lib/observations";
-import { PluginExplorer } from "./Explorer";
+import { UIFileFailure, UISource, LogEntry, UICollection, UIFile, UIObservation, UIPanel, UIPage } from "../models/types";
+import { observationView, relativeTime } from "../lib/observations";
 import { FleetPage } from "./Fleet";
-import {
-  Chip,
-  EmptyState,
-  ErrorNote,
-  EventFeed,
-  MetadataTable,
-  Progress,
-  StatusChip,
-} from "./Lists";
-import { PlayIcon } from "./Icons";
+const PluginExplorer = lazy(() => import("./Explorer").then((m) => ({ default: m.PluginExplorer })));
 
-// Central, static Renderer map. A Renderer is a declarative identity only;
-// business plugins can never inject components or JavaScript. Everything a
-// view shows is a projection of the Query read model plus view-local state.
+// 中央渲染器注册表：业务插件只声明 renderer 身份，宿主按身份渲染。
+// 数据查询页：类型化入库数据的分页查询（antd Table）。
+const DataExplorerPage = lazy(() => import("./DataExplorer").then((m) => ({ default: m.DataExplorer })));
 
-interface ViewProps {
+// 失败账本面板：本地失败账本的合并投影视图。
+function FailureLedgerPanel() {
+  const [failures, setFailures] = useState<UIFileFailure[]>([]);
+  const refresh = useCallback(() => {
+    consoleQueries
+      .listFailures()
+      .then(setFailures)
+      .catch(() => setFailures([]));
+  }, []);
+  useEffect(() => {
+    refresh();
+    const un = onObservation(() => refresh());
+    return un;
+  }, [refresh]);
+  if (failures.length === 0) {
+    return <Typography.Text type="secondary">本地失败账本为空。</Typography.Text>;
+  }
+  return (
+    <List
+      size="small"
+      dataSource={[...failures].reverse()}
+      renderItem={(f) => (
+        <List.Item style={{ padding: "4px 0" }}>
+          <Space direction="vertical" size={0} style={{ width: "100%" }}>
+            <Space>
+              <Tag color="error">{f.attempts}×</Tag>
+              <Typography.Text strong>{f.name}</Typography.Text>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{f.error}</Typography.Text>
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+// 日志面板：结构化应用日志环（hub 查询 logs）。
+function LogsPanel(_props: PanelProps) {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const refresh = useCallback(() => {
+    consoleQueries.listLogs({ limit: 100 }).then(setLogs).catch(() => setLogs([]));
+  }, []);
+  useEffect(() => {
+    refresh();
+    const un = onObservation(() => refresh());
+    return un;
+  }, [refresh]);
+  if (logs.length === 0) {
+    return <Typography.Text type="secondary">暂无日志。</Typography.Text>;
+  }
+  return (
+    <List
+      size="small"
+      dataSource={[...logs].reverse()}
+      renderItem={(l) => (
+        <List.Item style={{ padding: "2px 0" }}>
+          <Space style={{ width: "100%", justifyContent: "space-between" }}>
+            <span>
+              <Tag color={l.level === "ERROR" ? "error" : l.level === "WARN" ? "warning" : "default"}>{l.level}</Tag>
+              <Typography.Text style={{ fontSize: 12 }}>{l.msg}</Typography.Text>
+            </span>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>{new Date(l.time).toLocaleTimeString()}</Typography.Text>
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+
+const pageRenderers: Record<string, ComponentType<ViewProps>> = {
+  dashboard: DashboardPage,
+  collections: CollectionsPage,
+  files: FilesPage,
+  sources: SourcesPage,
+  "data-explorer": DataExplorerPage,
+  "plugin-explorer": PluginExplorerPage,
+  fleet: FleetPage,
+};
+
+const panelRenderers: Record<string, ComponentType<PanelProps>> = {
+  metadata: MetadataPanel,
+  "event-feed": EventFeedPanel,
+  failures: FailureLedgerPanel,
+  logs: LogsPanel,
+};
+
+export interface ViewProps {
   data: CollectionData;
   events: UIObservation[];
-  onTrigger: (sourceID?: string, date?: string) => void;
+  onTrigger: (sourceId?: string, date?: string) => void;
   busy: boolean;
+}
+
+export interface PanelProps {
+  data: CollectionData;
+  events: UIObservation[];
+  onTrigger?: (sourceId?: string, date?: string) => void;
+  busy?: boolean;
+}
+
+// PageHost：按组合声明的 renderer 身份分发到中央注册表。
+export function PageHost({ page, data, events, onTrigger, busy }: {
+  page: UIPage;
+  data: CollectionData;
+  events: UIObservation[];
+  onTrigger: (sourceId?: string, date?: string) => void;
+  busy: boolean;
+}) {
+  const View = pageRenderers[page.renderer];
+  if (!View) {
+    return (
+      <div className="card">
+        <p style={{ color: "#99a2b6", padding: 16 }}>
+          渲染器 “{page.renderer}” 未在本宿主注册。
+        </p>
+      </div>
+    );
+  }
+  return (
+    <Suspense fallback={<div style={{ padding: 24, color: "#99a2b6" }}>加载中…</div>}>
+      <View data={data} events={events} onTrigger={onTrigger} busy={busy} />
+    </Suspense>
+  );
+}
+
+export function PanelHost({ panel, data, events }: { panel: UIPanel; data: CollectionData; events: UIObservation[] }) {
+  const View = panelRenderers[panel.renderer];
+  if (!View) return null;
+  return (
+    <section className="card rail-card" aria-label={panel.title}>
+      <div className="card-head">
+        <h2 style={{ margin: 0, fontSize: 14 }}>{panel.title}</h2>
+      </div>
+      <div style={{ padding: 12 }}>
+        <View data={data} events={events} onTrigger={() => undefined} busy={false} />
+      </div>
+    </section>
+  );
 }
 
 function recordsTotal(collections: UICollection[]): number {
@@ -41,545 +166,304 @@ function collectionMatches(c: UICollection, f: { sourceId: string; date: string 
   return c.sourceId === f.sourceId && c.date === f.date;
 }
 
-function CollectButton({
-  onTrigger,
-  busy,
-  label = "Collect now",
-  sourceID,
-  sourceDate,
-}: {
-  onTrigger: (sourceID?: string, date?: string) => void;
+function CollectButton({ onTrigger, busy, sourceDate, label }: {
+  onTrigger: (sourceId?: string, date?: string) => void;
   busy: boolean;
-  label?: string;
-  sourceID?: string;
   sourceDate?: string;
+  label?: string;
 }) {
   return (
-    <button
-      className="btn primary"
-      disabled={busy}
-      onClick={() => onTrigger(sourceID, sourceDate)}
-    >
-      <PlayIcon size={13} />
-      {busy ? "Accepted…" : label}
-    </button>
+    <Button type="primary" loading={busy} onClick={() => onTrigger(undefined, sourceDate)}>
+      {busy ? "已受理…" : label ?? "立即采集"}
+    </Button>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Pages                                                               */
-/* ------------------------------------------------------------------ */
+function statusTag(status: string | undefined) {
+  switch (status) {
+    case "Succeeded": return <span style={{ color: "#3ecf8e" }}>成功</span>;
+    case "Failed": return <span style={{ color: "#f0655a" }}>失败</span>;
+    case "Pending": return <span style={{ color: "#f2b544" }}>等待数据</span>;
+    case "Active": return <span style={{ color: "#3ecf8e" }}>活跃</span>;
+    default: return <span style={{ color: "#99a2b6" }}>{status ?? "—"}</span>;
+  }
+}
 
+// 概览：统计卡片 + 按日趋势 + 最近采集。
 function DashboardPage({ data, onTrigger, busy }: ViewProps) {
   const failed = data.collections.filter((c) => c.status === "Failed").length;
+  const trend = useMemo(() => {
+    const byDate = new Map<string, { records: number; failed: number }>();
+    for (const c of data.collections) {
+      const agg = byDate.get(c.date) ?? { records: 0, failed: 0 };
+      agg.records += c.records;
+      agg.failed += c.filesFailed;
+      byDate.set(c.date, agg);
+    }
+    return Array.from(byDate.entries())
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([date, agg]) => ({ date, ...agg }));
+  }, [data.collections]);
+
   return (
     <>
-      <div className="page-hero">
-        <div className="page-hero-text">
-          <h1>Overview</h1>
-          <p>
-            The collector observed through its read model. Cards summarize the
-            current Query snapshot; every observation invalidates and re-queries.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22 }}>概览</h1>
+          <p style={{ color: "#99a2b6", marginBottom: 0 }}>
+            采集运行情况总览：由读模型投影，观察流失效后自动重查。
           </p>
         </div>
-        <div className="hero-actions">
-          <CollectButton onTrigger={onTrigger} busy={busy} />
-        </div>
+        <CollectButton onTrigger={onTrigger} busy={busy} />
       </div>
-      <div className="card-body">
-        {data.error && <ErrorNote>{data.error}</ErrorNote>}
-        <div className="summary-grid">
-          <div className="summary-cell">
-            <b>{data.sources.length}</b>
-            <span>SOURCES</span>
-          </div>
-          <div className="summary-cell">
-            <b>{data.collections.length}</b>
-            <span>COLLECTIONS</span>
-          </div>
-          <div className="summary-cell">
-            <b>{recordsTotal(data.collections)}</b>
-            <span>RECORDS</span>
-          </div>
-          <div className={failed > 0 ? "summary-cell warn" : "summary-cell"}>
-            <b>{failed}</b>
-            <span>FAILED RUNS</span>
-          </div>
-        </div>
-      </div>
-      <div className="card-head">
-        <h2>Recent collections</h2>
-        <span className="spacer" />
-        <span className="card-sub">select to focus files &amp; metadata</span>
-      </div>
-      <div className="card-body flush">
-        <RecentCollections data={data} />
-      </div>
+      <Row gutter={[12, 12]}>
+        <Col span={6}><Statistic title="数据源" value={data.sources.length} /></Col>
+        <Col span={6}><Statistic title="采集任务" value={data.collections.length} /></Col>
+        <Col span={6}><Statistic title="累计记录" value={recordsTotal(data.collections)} /></Col>
+        <Col span={6}><Statistic title="失败文件" value={data.collections.reduce((s, c) => s + c.filesFailed, 0)} valueStyle={failed > 0 ? { color: "#f0655a" } : undefined} /></Col>
+      </Row>
+      <h3 style={{ margin: "20px 0 8px", fontSize: 15 }}>按日采集量</h3>
+      <TrendChart points={trendPoints(data.collections)} />
+      <h3 style={{ margin: "20px 0 8px", fontSize: 15 }}>最近采集任务</h3>
+      <RecentCollectionTable data={data} />
     </>
   );
 }
 
-function RecentCollections({ data }: { data: CollectionData }) {
-  const recent = [...data.collections].reverse().slice(0, 8);
-  if (!data.loading && recent.length === 0) {
-    return <EmptyState>No collections recorded yet. Trigger one to begin.</EmptyState>;
+function trendPoints(collections: UICollection[]) {
+  const byDate = new Map<string, { date: string; records: number; failed: number }>();
+  for (const c of collections) {
+    const agg = byDate.get(c.date) ?? { date: c.date, records: 0, failed: 0 };
+    agg.records += c.records;
+    agg.failed += c.filesFailed;
+    byDate.set(c.date, agg);
   }
+  return Array.from(byDate.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+function RecentCollectionTable({ data }: { data: CollectionData }) {
+  const rows = [...data.collections].reverse();
   return (
-    <ul className="row-list">
-      {recent.map((c) => {
-        const selected = data.focus && collectionMatches(c, data.focus) && !data.focusIsLatest;
-        return (
-          <li
-            key={focusKey(c)}
-            className={selected ? "row-item clickable selected" : "row-item clickable"}
-            onClick={() => void data.setFocus({ sourceId: c.sourceId, date: c.date })}
-          >
-            <div className="row-title">
-              <strong>{c.sourceId}</strong>
-              <span className="metric-mono">{c.date}</span>
-            </div>
-            <div className="row-side">
-              <Progress completed={c.filesCompleted} failed={c.filesFailed} total={c.filesTotal} />
-              <span className="metric-mono">
-                {c.filesCompleted}/{c.filesTotal} files
-              </span>
-              <span className="metric-mono">{c.records} rec</span>
-              <StatusChip value={c.status} />
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+    <Table
+      size="small"
+      rowKey={(c) => focusKey(c)}
+      dataSource={rows}
+      pagination={{ pageSize: 8, hideOnSinglePage: true }}
+      columns={[
+        { title: "数据源", dataIndex: "sourceId", key: "sourceId" },
+        { title: "采集日期", dataIndex: "date", key: "date" },
+        {
+          title: "文件进度", key: "files",
+          render: (_: unknown, c: UICollection) => `${c.filesCompleted}/${c.filesTotal}`,
+        },
+        { title: "记录数", dataIndex: "records", key: "records" },
+        {
+          title: "状态", dataIndex: "status", key: "status",
+          render: (s: string) => statusTag(s),
+        },
+      ]}
+    />
   );
 }
 
+// 采集任务页：按数据源/日期列出采集任务，选择行后联动文件与元数据视图。
 function CollectionsPage({ data, onTrigger, busy }: ViewProps) {
   const [date, setDate] = useState("");
   return (
     <>
-      <div className="page-hero">
-        <div className="page-hero-text">
-          <h1>Collections</h1>
-          <p>
-            One entry per source and collection date, projected from outcome
-            events and the persisted state projection. Selecting a row
-            re-points the dependent surfaces.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22 }}>采集任务</h1>
+          <p style={{ color: "#99a2b6", marginBottom: 0 }}>
+            按数据源与采集日期列出任务；选择行后联动文件与元数据视图。
           </p>
         </div>
-        <div className="hero-actions">
-          <input
-            type="date"
-            aria-label="Collection date"
+        <Space wrap>
+          <Input
+            style={{ width: 150 }}
+            placeholder="YYYY-MM-DD（可选）"
             value={date}
             onChange={(e) => setDate(e.target.value)}
-            style={{
-              background: "var(--panel-2)",
-              color: "var(--text)",
-              border: "1px solid var(--line)",
-              borderRadius: 8,
-              padding: "7px 9px",
-              fontSize: 12.5,
-              fontFamily: "var(--mono)",
-            }}
           />
-          <CollectButton
-            onTrigger={onTrigger}
-            busy={busy}
-            sourceDate={date || undefined}
-            label={date ? `Collect ${date}` : "Collect now"}
-          />
-        </div>
+          <CollectButton onTrigger={onTrigger} busy={busy} sourceDate={date || undefined} label={date ? `采集 ${date}` : "立即采集"} />
+        </Space>
       </div>
-      <div className="card-body flush">
-        {data.error && (
-          <div className="card-body" style={{ paddingBottom: 0 }}>
-            <ErrorNote>{data.error}</ErrorNote>
-          </div>
-        )}
-        {!data.loading && data.collections.length === 0 && (
-          <EmptyState>No collections recorded yet. Trigger one to begin.</EmptyState>
-        )}
-        <ul className="row-list">
-          {[...data.collections].reverse().map((c) => {
-            const selected = data.focus && collectionMatches(c, data.focus) && !data.focusIsLatest;
-            return (
-              <li
-                key={focusKey(c)}
-                className={selected ? "row-item clickable selected" : "row-item clickable"}
-                onClick={() => void data.setFocus({ sourceId: c.sourceId, date: c.date })}
-              >
-                <div className="row-title">
-                  <strong>{c.sourceId}</strong>
-                  <span className="metric-mono">{c.date}</span>
-                </div>
-                <div className="row-side">
-                  <Progress
-                    completed={c.filesCompleted}
-                    failed={c.filesFailed}
-                    total={c.filesTotal}
-                  />
-                  <span className="metric-mono">
-                    {c.filesCompleted}/{c.filesTotal} files
-                  </span>
-                  <span className="metric-mono">{c.records} rec</span>
-                  <StatusChip value={c.status} />
-                </div>
-                {c.note && c.status !== "Succeeded" && (
-                  <div className="row-meta">{c.note}</div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      {data.error && <Alert type="error" showIcon message={data.error} />}
+      <Table
+        size="small"
+        rowKey={(c) => focusKey(c)}
+        dataSource={[...data.collections].reverse()}
+        pagination={{ pageSize: 10, hideOnSinglePage: true }}
+        rowClassName={(c) =>
+          data.focus && collectionMatches(c, data.focus) && !data.focusIsLatest ? "row-selected" : ""
+        }
+        onRow={(c) => ({
+          onClick: () => void data.setFocus({ sourceId: c.sourceId, date: c.date }),
+          style: { cursor: "pointer" },
+        })}
+        columns={[
+          { title: "数据源", dataIndex: "sourceId", key: "sourceId" },
+          { title: "采集日期", dataIndex: "date", key: "date" },
+          {
+            title: "文件进度", key: "files",
+            render: (_: unknown, c: UICollection) => (
+              <Progress percent={c.filesTotal ? Math.round((c.filesCompleted / c.filesTotal) * 100) : 0}
+                size="small" style={{ width: 120 }}
+                status={c.status === "Failed" ? "exception" : "normal"}
+                format={() => `${c.filesCompleted}/${c.filesTotal}`} />
+            ),
+          },
+          { title: "记录数", dataIndex: "records", key: "records" },
+          { title: "状态", dataIndex: "status", key: "status", render: (s: string) => statusTag(s) },
+        ]}
+      />
     </>
   );
 }
 
+// 文件页：投影当前聚焦采集的文件列表；展开查看开放的键值元数据。
 function FilesPage({ data }: ViewProps) {
   const focus = data.focus;
   return (
     <>
-      <div className="page-hero">
-        <div className="page-hero-text">
-          <h1>Files</h1>
-          <p>
-            {focus ? (
-              <>
-                Projecting <code style={{ fontFamily: "var(--mono)" }}>{focusKey(focus)}</code>
-                {data.focusIsLatest ? " (latest)" : ""}. Metadata stays open-ended key/value.
-              </>
-            ) : data.files.length > 0 ? (
-              "Projecting the latest collection. Metadata stays open-ended key/value."
-            ) : (
-              "Select a collection to project its files."
-            )}
-          </p>
-        </div>
-        <div className="hero-actions">
-          {focus && !data.focusIsLatest && (
-            <button className="btn ghost" onClick={() => void data.setFocus(null)}>
-              Back to latest
-            </button>
-          )}
-        </div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: 0, fontSize: 22 }}>文件</h1>
+        <p style={{ color: "#99a2b6", marginBottom: 0 }}>
+          {focus
+            ? <> projecting <code style={{ fontFamily: "monospace" }}>{focusKey(focus)}</code>{data.focusIsLatest ? "（最新）" : ""}，元数据为开放键值。</>
+            : "选择一个采集任务以查看其文件。"}
+        </p>
       </div>
-      <div className="card-body flush">
-        {data.loading && <div className="state-note">Loading files</div>}
-        {!data.loading && data.files.length === 0 && (
-          <EmptyState>
-            {focus || data.collections.length > 0
-              ? "No files recorded for this collection."
-              : "No collection available yet."}
-          </EmptyState>
-        )}
-        <ul className="row-list">
-          {data.files.map((f) => (
-            <FileRow key={f.path} file={f} />
-          ))}
-        </ul>
-      </div>
+      {data.error && <Alert type="error" showIcon message={data.error} />}
+      {data.files.length === 0 && !data.loading ? (
+        <Empty description={focus ? "该采集暂无文件" : "尚无采集任务"} />
+      ) : (
+        <Table
+          size="small"
+          rowKey={(f) => f.path}
+          dataSource={data.files}
+          pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          expandable={{
+            expandedRowRender: (f: UIFile) => <MetadataTable metadata={f.metadata} />,
+            rowExpandable: () => true,
+          }}
+          columns={[
+            { title: "文件", dataIndex: "name", key: "name" },
+            { title: "路径", dataIndex: "path", key: "path", ellipsis: true },
+            { title: "记录数", dataIndex: "records", key: "records", width: 90 },
+            {
+              title: "状态", dataIndex: "status", key: "status", width: 100,
+              render: (s: string) => statusTag(s),
+            },
+          ]}
+        />
+      )}
     </>
   );
 }
 
-function FileRow({ file }: { file: UIFile }) {
-  const [open, setOpen] = useState(false);
-  const keys = Object.keys(file.metadata ?? {}).length;
-  return (
-    <li className="row-item" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
-      <div className="row-title">
-        <button
-          className="btn ghost"
-          style={{ padding: "4px 8px" }}
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
-          {open ? "▾" : "▸"}
-        </button>
-        <strong>{file.name}</strong>
-        <span className="row-meta">{file.records} rec</span>
-        <span className="spacer" style={{ flex: 1 }} />
-        <StatusChip value={file.status} />
-      </div>
-      <div className="row-meta">{file.path}</div>
-      {open && (
-        <div style={{ padding: "6px 0 2px" }}>
-          <MetadataTable metadata={file.metadata} />
-        </div>
-      )}
-      {!open && keys > 0 && (
-        <div className="row-meta">
-          {keys} metadata field{keys > 1 ? "s" : ""}
-        </div>
-      )}
-    </li>
-  );
-}
-
+// 数据源页：逻辑源单元清单与按源触发。
 function SourcesPage({ data, onTrigger, busy }: ViewProps) {
   return (
     <>
-      <div className="page-hero">
-        <div className="page-hero-text">
-          <h1>Sources</h1>
-          <p>
-            Logical source units composed from shared profiles. Each keeps an
-            independent state namespace; triggering one emits a Runtime event.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22 }}>数据源</h1>
+          <p style={{ color: "#99a2b6", marginBottom: 0 }}>
+            由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。
           </p>
         </div>
-        <div className="hero-actions">
-          <CollectButton onTrigger={onTrigger} busy={busy} label="Collect all" />
-        </div>
+        <CollectButton onTrigger={onTrigger} busy={busy} label="全部采集" />
       </div>
-      <div className="card-body flush">
-        {!data.loading && data.sources.length === 0 && (
-          <EmptyState>No sources configured in the active composition.</EmptyState>
-        )}
-        <ul className="row-list">
-          {data.sources.map((s) => (
-            <li key={s.id} className="row-item" style={{ gridTemplateColumns: "minmax(0, 1fr) auto" }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="row-title">
-                  <strong>{s.name}</strong>
-                  <StatusChip value={s.status} />
-                </div>
-                {s.path && <div className="row-meta">{s.path}</div>}
-                {(s.profiles ?? []).length > 0 && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                    {s.profiles.map((p) => (
-                      <Chip key={p} tone="accent">
-                        {p}
-                      </Chip>
-                    ))}
+      {data.sources.length === 0 && !data.loading && (
+        <Empty description="当前组合未声明数据源" />
+      )}
+      <List
+        dataSource={data.sources}
+        renderItem={(s: UISource) => (
+          <List.Item
+            actions={[
+              <Button key="run" size="small" disabled={busy} onClick={() => onTrigger(s.id)}>
+                采集
+              </Button>,
+            ]}
+          >
+            <List.Item.Meta
+              title={<span>{s.name} {s.status && <Tag>{s.status}</Tag>}</span>}
+              description={
+                <>
+                  <div style={{ fontFamily: "monospace", fontSize: 12 }}>{s.path}</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                    {s.profiles.map((p) => <Tag key={p}>{p}</Tag>)}
                   </div>
-                )}
-              </div>
-              <div className="row-side">
-                <button
-                  className="btn"
-                  disabled={busy}
-                  onClick={() => onTrigger(s.id)}
-                  title={`Trigger collection for ${s.id}`}
-                >
-                  Run
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
+                </>
+              }
+            />
+          </List.Item>
+        )}
+      />
     </>
   );
 }
 
-function PluginExplorerPage(_props: ViewProps) {
+// 数据查询页：类型化入库数据的分页查询 + 存储洞察。
+
+function PluginExplorerPage() {
   return <PluginExplorer />;
 }
 
-// DataExplorerPage frames the antd-based table explorer.
-function DataExplorerPage(_props: ViewProps) {
-  return <DataExplorer />;
-}
-
-const pageRenderers: Record<string, ComponentType<ViewProps>> = {
-  dashboard: DashboardPage,
-  collections: CollectionsPage,
-  files: FilesPage,
-  sources: SourcesPage,
-  "data-explorer": DataExplorerPage,
-  "plugin-explorer": PluginExplorerPage,
-  fleet: FleetPage,
-};
-
-export function PageHost({
-  page,
-  data,
-  events,
-  onTrigger,
-  busy,
-}: {
-  page: UIPage;
-  data: CollectionData;
-  events: UIObservation[];
-  onTrigger: (sourceID?: string, date?: string) => void;
-  busy: boolean;
-}) {
-  const View = pageRenderers[page.renderer];
-  return (
-    <section className="card" aria-label={page.title}>
-      {View ? (
-        <View data={data} events={events} onTrigger={onTrigger} busy={busy} />
-      ) : (
-        <>
-          <div className="page-hero">
-            <div className="page-hero-text">
-              <h1>{page.title}</h1>
-              <p>
-                Renderer “{page.renderer}” is not installed in this host. The page
-                is contributed dynamically; the host simply has no view for it.
-              </p>
-            </div>
-          </div>
-          <EmptyState>Unknown renderer — waiting for a host that provides it.</EmptyState>
-        </>
-      )}
-    </section>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Panels                                                              */
-/* ------------------------------------------------------------------ */
-
-interface PanelProps {
-  data: CollectionData;
-  events: UIObservation[];
-}
-
+// 元数据面板：投影聚焦采集首个/选中文件的开放键值元数据。
 function MetadataPanel({ data }: PanelProps) {
   const [index, setIndex] = useState(0);
   const file = data.files.length ? data.files[Math.min(index, data.files.length - 1)] : null;
   return (
     <>
       {data.files.length > 1 && (
-        <select
-          aria-label="File"
-          value={file?.path ?? ""}
-          onChange={(e) => setIndex(data.files.findIndex((f) => f.path === e.target.value))}
-          style={{
-            width: "100%",
-            marginBottom: 10,
-            background: "var(--panel-2)",
-            color: "var(--text)",
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            padding: "7px 9px",
-            fontSize: 12,
-            fontFamily: "var(--mono)",
-          }}
-        >
-          {data.files.map((f) => (
-            <option key={f.path} value={f.path}>
-              {f.name}
-            </option>
-          ))}
-        </select>
+        <Select
+          style={{ width: "100%", marginBottom: 10 }}
+          value={file?.path}
+          onChange={(v) => setIndex(data.files.findIndex((f) => f.path === v))}
+          options={data.files.map((f) => ({ value: f.path, label: f.name }))}
+        />
       )}
       {file ? (
-        <MetadataTable metadata={file.metadata} />
+        <Descriptions size="small" column={1} bordered>
+          {Object.entries(file.metadata).map(([k, v]) => (
+            <Descriptions.Item key={k} label={k}>{v}</Descriptions.Item>
+          ))}
+        </Descriptions>
       ) : (
-        <EmptyState>Metadata appears with the first collected file.</EmptyState>
+        <Typography.Text type="secondary">暂无文件元数据。</Typography.Text>
       )}
     </>
   );
 }
 
+// 事件流面板：观察流失效历史的倒序投影视图。
 function EventFeedPanel({ events }: PanelProps) {
-  return <EventFeed events={events} />;
-}
-
-// FailureLedgerPanel renders the merged local failure ledger (persisted
-// ledger plus live failures). It re-queries on observation only — the same
-// invalidation discipline as every other surface.
-function FailureLedgerPanel(_props: PanelProps) {
-  const [failures, setFailures] = useState<UIFileFailure[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const refresh = useCallback(async () => {
-    try {
-      setFailures(await queries.listFailures());
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-  useEffect(() => {
-    void refresh();
-    return onObservation(() => void refresh());
-  }, [refresh]);
-  if (error) {
-    return <ErrorNote>{error}</ErrorNote>;
-  }
-  if (failures.length === 0) {
-    return <EmptyState>No failed files in the local ledger.</EmptyState>;
-  }
-  const now = Date.now();
-  return (
-    <ul className="row-list" style={{ maxHeight: 260, overflowY: "auto" }}>
-      {failures.map((f, i) => (
-        <li className="row-item" key={`${f.path}-${i}`} style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
-          <div className="row-title">
-            <strong>{f.name}</strong>
-            <span className="row-meta">{f.sourceId} / {f.date}</span>
-            <span className="spacer" style={{ flex: 1 }} />
-            <Chip tone="danger">{f.attempts}×</Chip>
-          </div>
-          <div className="row-meta">{f.path}</div>
-          <div className="row-meta" style={{ color: "var(--danger)" }}>{f.error}</div>
-          <div className="row-meta">failed {relativeTime(f.failedAt, now)}</div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// LogsPanel renders the structured application log ring (hub query "logs").
-function LogsPanel(_props: PanelProps) {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const refresh = useCallback(() => {
-    queries.listLogs({ limit: 100 }).then(setLogs).catch(() => setLogs([]));
-  }, []);
-  useEffect(() => {
-    refresh();
-    const un = onObservation(() => refresh());
-    return un;
-  }, [refresh]);
-  if (logs.length === 0) {
-    return <EmptyState>No log entries.</EmptyState>;
+  if (events.length === 0) {
+    return <Typography.Text type="secondary">暂无观察事件——运行时变更上下文后自动填充。</Typography.Text>;
   }
   return (
-    <ul className="event-list" aria-label="Logs">
-      {logs.map((l, i) => (
-        <li className="event-row" key={i}>
-          <Chip tone={l.level === "ERROR" ? "danger" : l.level === "WARN" ? "warn" : "muted"}>
-            {l.level}
-          </Chip>
-          <span className="event-src">{l.msg}</span>
-          <time>{new Date(l.time).toLocaleTimeString()}</time>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-const panelRenderers: Record<string, ComponentType<PanelProps>> = {
-  metadata: MetadataPanel,
-  "event-feed": EventFeedPanel,
-  failures: FailureLedgerPanel,
-  logs: LogsPanel,
-};
-
-export function PanelHost({
-  panel,
-  data,
-  events,
-}: {
-  panel: UIPanel;
-  data: CollectionData;
-  events: UIObservation[];
-}) {
-  const View = panelRenderers[panel.renderer];
-  if (!View) {
-    return null;
-  }
-  return (
-    <section className="card rail-card" aria-label={panel.title}>
-      <div className="card-head">
-        <h2 style={{ fontSize: 13 }}>{panel.title}</h2>
-      </div>
-      <div className="card-body">
-        <View data={data} events={events} />
-      </div>
-    </section>
+    <List
+      size="small"
+      dataSource={[...events].reverse()}
+      renderItem={(ev: UIObservation) => {
+        const view = observationView(ev.type);
+        return (
+          <List.Item style={{ padding: "4px 0" }}>
+            <Space style={{ width: "100%", justifyContent: "space-between" }}>
+              <span>
+                <Tag color={view.tone === "ok" ? "success" : view.tone === "danger" ? "error" : view.tone === "warn" ? "warning" : "default"}>
+                  {view.label}
+                </Tag>
+                {ev.sourceId && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{ev.sourceId}</Typography.Text>}
+              </span>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>{relativeTime(ev.timestamp)}</Typography.Text>
+            </Space>
+          </List.Item>
+        );
+      }}
+    />
   );
 }

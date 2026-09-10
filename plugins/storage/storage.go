@@ -48,11 +48,10 @@ func (c *StorageComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) 
 		var opened *storage.TableStorage
 		var err error
 		if c.lazy {
+			// lazy_connect: defer the connection to the first write so a
+			// deployment starts even while the remote database is down.
 			opened, err = storage.OpenTableLazy(*c.tableCfg)
 			if err != nil {
-				return nil, err
-			}
-			if err := opened.EnsureConnected(ctx.Context()); err != nil {
 				return nil, err
 			}
 		} else {
