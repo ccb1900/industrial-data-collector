@@ -30,12 +30,11 @@ import (
 	"syscall"
 	"time"
 
-	consoleexplorer "dynamic-runtime/console/explorer"
-	consolehost "dynamic-runtime/console/host"
-	consolewebui "dynamic-runtime/console/webui"
+	consoleexplorer "dynamic-runtime/extensions/console/explorer"
+	consolehost "dynamic-runtime/extensions/console/host"
+	consolewebui "dynamic-runtime/extensions/console/webui"
 	appconfig "gocordis-csv-collector/app/config"
 	apphost "gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/app/sourcecomp"
 	"gocordis-csv-collector/web"
 )
 
@@ -54,30 +53,21 @@ func main() {
 }
 
 func run(logger *slog.Logger, configPath, addr string) error {
-	appHost, err := apphost.New(logger)
+	// WatchHost = config watch + reconciliation: TOML edits hot-apply to the
+	// running composition (loader semantics), no restart.
+	app, err := apphost.NewWatchHost(configPath, logger)
 	if err != nil {
 		return err
 	}
-	defer appHost.Close(context.Background())
+	defer app.Close(context.Background())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("config file: %w", err)
+	if err := app.Sync(ctx); err != nil {
+		return fmt.Errorf("config sync: %w", err)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	parsed, err := sourcecomp.Expand(data)
-	if err != nil {
-		return err
-	}
-	if err := appHost.Reconcile(ctx, parsed); err != nil {
-		return err
-	}
-	ui := findUIComponent(appHost)
+	ui := findUIComponent(app.Host)
 	if ui == nil {
 		return fmt.Errorf("no active ui component in configuration")
 	}
@@ -88,18 +78,22 @@ func run(logger *slog.Logger, configPath, addr string) error {
 		return fmt.Errorf("embedded ui assets: %w", err)
 	}
 	srv := consolewebui.New(ui.HostAdapter(), fs.FS(sub))
-	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
+	if exp := findExplorerComponent(app.Host); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
 	// Fleet self-description: identity + peer list come from the ui component
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
-	// Desired-state editing: uninstall persists to <config>.removed.json.
-	appHost.SetOverlayPath(configPath + ".removed.json")
-	srv.SetPluginLifecycle(lifecycleAdapter{h: appHost})
+	// Desired-state editing: uninstall/install persist to the overlay file.
+	app.SetOverlayPath(configPath + ".removed.json")
+	srv.SetPluginLifecycle(lifecycleAdapter{h: app.Host})
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
+
+	// Config watch loop runs beside the HTTP server: TOML edits reconcile
+	// the live composition without restarting the process.
+	go func() { _ = app.Run(ctx) }()
 
 	httpServer := &http.Server{Addr: addr, Handler: srv}
 	go func() {
@@ -137,6 +131,14 @@ func (a lifecycleAdapter) Removed(ctx context.Context) ([]consolewebui.RemovedPl
 		out = append(out, consolewebui.RemovedPlugin{ID: cc.ID, Name: appconfig.DisplayName(cc.Type)})
 	}
 	return out, nil
+}
+
+func (a lifecycleAdapter) Config(ctx context.Context, id string) (map[string]any, error) {
+	return a.h.ComponentConfig(id)
+}
+
+func (a lifecycleAdapter) SetConfig(ctx context.Context, id string, cfg map[string]any) error {
+	return a.h.SetComponentConfig(ctx, id, cfg)
 }
 
 func findUIComponent(h *apphost.Host) *consolehost.UIComponent {

@@ -7,8 +7,8 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "dynamic-runtime/console/host"
-	appui "dynamic-runtime/console/registry"
+	uiplugin "dynamic-runtime/extensions/console/host"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 func TestP32_15SinglePluginDispose(t *testing.T) {

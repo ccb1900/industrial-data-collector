@@ -13,7 +13,7 @@ import (
 	"dynamic-runtime/extensions/config"
 	"gocordis-csv-collector/app/sourcecomp"
 
-	consolehost "dynamic-runtime/console/host"
+	consolehost "dynamic-runtime/extensions/console/host"
 	"gocordis-csv-collector/app/model"
 	_ "modernc.org/sqlite"
 )

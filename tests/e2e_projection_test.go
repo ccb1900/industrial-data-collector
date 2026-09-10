@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	uiplugin "dynamic-runtime/console/host"
+	uiplugin "dynamic-runtime/extensions/console/host"
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"

@@ -9,7 +9,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "dynamic-runtime/console/host"
+	uiplugin "dynamic-runtime/extensions/console/host"
 )
 
 // TestUIP2HostBridgeFullLoop exercises the P2 Wails/React bridge surface in

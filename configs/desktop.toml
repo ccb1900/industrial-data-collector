@@ -186,6 +186,48 @@ position = "bottom"
 renderer = "failures"
 order = 30
 
+# 声明式视图示例：零前端代码的插件页面。
+# 渲染器 generic-table 按 view schema 轮询 hub 命名查询并渲染表格——
+# WASM / 进程外插件贡献页面走的就是这个契约。
+
+[[components]]
+id = "ui-page-readings"
+type = "ui-page"
+
+[components.config]
+page_id = "readings"
+title = "原始记录"
+route = "/readings"
+renderer = "generic-table"
+order = 45
+
+[components.config.view]
+query = "rows"
+
+[components.config.view.params]
+sourceId = "production-source"
+date = "2026-09-08"
+
+[[components.config.view.columns]]
+key = "row_number"
+title = "行号"
+
+[[components.config.view.columns]]
+key = "ts"
+title = "时间"
+
+[[components.config.view.columns]]
+key = "temperature"
+title = "温度"
+
+[[components.config.view.columns]]
+key = "unit"
+title = "单位"
+
+[[components.config.view.columns]]
+key = "product"
+title = "产品"
+
 # Plugin Explorer is itself an ordinary plugin: it contributes this Console
 # page and exposes Runtime inspection/control through the application bridge.
 [[components]]

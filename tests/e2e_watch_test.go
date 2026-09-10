@@ -54,10 +54,6 @@ source = "gauge"
 debounce = "200ms"
 
 [[components]]
-id = "console-bridge"
-type = "console-bridge"
-
-[[components]]
 id = "query-provider"
 type = "query-provider"
 

@@ -1,12 +1,74 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { commands, onObservation, queries } from "../api/client";
 import { ExplorerControlResult, ExplorerPlugin } from "../models/types";
+import { Button, Input, Space, Typography } from "antd";
 import { Chip, EmptyState, ErrorNote, LoadingState, StatusChip } from "./Lists";
 import { PulseIcon } from "./Icons";
 
 // The Plugin Console: Runtime truth, never optimistic. Rows come from
 // Controller-owned fibers; a control action returns Accepted/Rejected/Failed
 // and the view re-reads Runtime afterwards instead of flipping a boolean.
+// 配置编辑器：查看/编辑组件配置（JSON），保存即校验 + reconcile。
+function ConfigEditor({ pluginId }: { pluginId: string }) {
+  const [text, setText] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    setText("");
+    setLoaded(false);
+    setSavedAt(null);
+    setError(null);
+    queries
+      .pluginConfig(pluginId)
+      .then((cfg) => setText(JSON.stringify(cfg, null, 2)))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [pluginId]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const cfg = JSON.parse(text);
+      await queries.setPluginConfig(pluginId, cfg);
+      setSavedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error && !text) {
+    return <ErrorNote>{error}</ErrorNote>;
+  }
+  return (
+    <div style={{ marginTop: 14 }}>
+      <Space align="center" style={{ marginBottom: 6 }}>
+        <Typography.Text strong>配置编辑</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          保存即校验并 reconcile；失败自动回滚
+        </Typography.Text>
+        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 11 }}>已保存 {savedAt}</Typography.Text>}
+      </Space>
+      <Input.TextArea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={Math.min(18, Math.max(6, text.split("\n").length + 1))}
+        style={{ fontFamily: "monospace", fontSize: 12 }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <Button size="small" type="primary" loading={saving} onClick={() => void save()}>
+          保存配置
+        </Button>
+      </div>
+      {error && <ErrorNote>{error}</ErrorNote>}
+    </div>
+  );
+}
+
 // 控制台基础设施组件：卸载会导致控制台自身失效，服务端同样拒绝。
 const CONSOLE_CRITICAL = new Set(["ui", "query-provider", "console-bridge", "plugin-explorer"]);
 
@@ -266,6 +328,7 @@ export function PluginExplorer() {
                   </div>
                 )}
               </dl>
+              <ConfigEditor key={selected.id} pluginId={selected.id} />
               {removed.length > 0 && (
                 <>
                   <p className="nav-label" style={{ marginTop: 18 }}>

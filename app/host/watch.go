@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
@@ -42,6 +43,13 @@ type WatchHost struct {
 }
 
 func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
+	// configwatch 要求绝对路径：以调用方工作目录解析为绝对路径，
+	// 这样相对路径的 -config 在任何 cwd 下行为一致。
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	path = abs
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("config file: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 	"dynamic-runtime/extensions/event"
 	"dynamic-runtime/runtime"
 
-	consolehost "dynamic-runtime/console/host"
-	"dynamic-runtime/console/hub"
+	consolehost "dynamic-runtime/extensions/console/host"
+	"dynamic-runtime/extensions/console/hub"
 
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
@@ -29,6 +30,8 @@ import (
 	"gocordis-csv-collector/internal/logstore"
 	"gocordis-csv-collector/internal/obsjournal"
 	queryplugin "gocordis-csv-collector/plugins/query"
+	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
+	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
 )
 
 // Component requires the console hub plus the Application Query/Command
@@ -36,8 +39,19 @@ import (
 // own: the read model stays owned by the query provider, the console stays
 // domain-free, and unloading this component withdraws every registration.
 type Component struct {
+	mu      sync.Mutex
 	emitCtx *runtime.Context
 	nextID  int
+	// units 是采集应用的源单元集合：宿主在 reconcile 后注入，
+	// "plan" 命名查询按需调用它们的补采规划器。
+	units []*sourceunitplugin.SourceUnitComponent
+}
+
+// SetUnits 注入源单元集合（宿主在每次 reconcile 后调用）。
+func (c *Component) SetUnits(units []*sourceunitplugin.SourceUnitComponent) {
+	c.mu.Lock()
+	c.units = units
+	c.mu.Unlock()
 }
 
 func (c *Component) Name() string { return "console-bridge:collector" }
@@ -50,6 +64,7 @@ func (c *Component) Inject() []runtime.Dependency {
 		runtime.Requires(queryplugin.FailureQueryKey),
 		runtime.Requires(queryplugin.ObservationKey),
 		runtime.Requires(queryplugin.CommandKey),
+		runtime.Requires(schedulerplugin.CollectionTriggerKey),
 	}
 }
 func (c *Component) Provide() []runtime.Capability { return nil }
@@ -80,6 +95,10 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	command, err := runtime.Require(ctx, queryplugin.CommandKey)
+	if err != nil {
+		return nil, err
+	}
+	sched, err := runtime.Require(ctx, schedulerplugin.CollectionTriggerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +197,30 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			records := journal.Recent(limit)
 			out := make([]obsjournal.Record, len(records))
 			copy(out, records)
+			return out, nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("schedule", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			return sched.Info(), nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("plan", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			out := []map[string]any{}
+			for _, u := range c.units {
+				keys, err := u.PlanKeys(ctx)
+				if err != nil {
+					continue
+				}
+				for _, k := range keys {
+					out = append(out, map[string]any{"sourceId": string(k.SourceID), "date": k.Date.String()})
+				}
+			}
 			return out, nil
 		})
 	}); err != nil {

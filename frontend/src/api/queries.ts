@@ -26,6 +26,11 @@ export const queries = {
   listPlugins: () => invoke<ExplorerPluginList>("ListPlugins"),
   listFailures: (sourceId = "") => invoke<UIFileFailure[]>("ListFileFailures", { sourceId }),
   listObservations: (limit = 200) => invoke<unknown[]>("ListObservations", { limit }),
+  listSchedule: () => invoke<Record<string, string>>("Schedule", {}),
+  hubQuery: <T = unknown>(name: string, params: Record<string, string | number> = {}) => invoke<T>("HubQuery", { name, params }),
+  listPlan: () => invoke<Array<{ sourceId: string; date: string }>>("Plan", {}),
+  pluginConfig: (id: string) => invoke<Record<string, unknown>>("GetPluginConfig", { id }),
+  setPluginConfig: (id: string, config: Record<string, unknown>) => invoke<void>("SetPluginConfig", { id, config }),
   fleet: () =>
     invoke<{ peers: import("../models/types").FleetEntry[]; checkedAt: string }>("Fleet"),
   listRows: (params: Record<string, string | number>) => invoke<RowsPage>("ListRows", params),

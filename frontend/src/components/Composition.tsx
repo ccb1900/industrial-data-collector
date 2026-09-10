@@ -1,8 +1,10 @@
 import React, { ComponentType, Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Empty, Input, Progress, Select, Space, Statistic, Table, Tag, Typography, Descriptions, Row, Col, List } from "antd";
+import { Alert, Button, DatePicker, Empty, Input, Progress, Select, Space, Statistic, Table, Tag, Typography, Descriptions, Row, Col, List } from "antd";
+import dayjs from "dayjs";
 import { onObservation } from "@gocordis/console-client";
 import { queries as consoleQueries } from "../api/queries";
 import { DataExplorer } from "./DataExplorer";
+import { GenericTableView } from "./GenericTableView";
 import { TrendChart } from "./TrendChart";
 import { MetadataTable } from "./MetadataTable";
 import { CollectionData } from "../hooks/useCollectionData";
@@ -122,6 +124,20 @@ export function PageHost({ page, data, events, onTrigger, busy }: {
   onTrigger: (sourceId?: string, date?: string) => void;
   busy: boolean;
 }) {
+  // 声明式视图：页面自带 view schema（表格），宿主通用渲染器执行——
+  // 这是 WASM / 进程外插件贡献页面且零前端代码的通道。
+  if (page.renderer === "generic-table" && page.view) {
+    return (
+      <section className="card">
+        <div style={{ padding: "20px 22px" }}>
+          <h1 style={{ margin: 0, fontSize: 22 }}>{page.title}</h1>
+        </div>
+        <div style={{ padding: "0 22px 20px" }}>
+          <GenericTableView view={page.view} />
+        </div>
+      </section>
+    );
+  }
   const View = pageRenderers[page.renderer];
   if (!View) {
     return (
@@ -267,6 +283,62 @@ function RecentCollectionTable({ data }: { data: CollectionData }) {
 }
 
 // 采集任务页：按数据源/日期列出采集任务，选择行后联动文件与元数据视图。
+// 调度卡片：定时采集的配置时间 / 上次触发 / 下次触发。
+function ScheduleCard() {
+  const [info, setInfo] = useState<Record<string, string>>({});
+  useEffect(() => {
+    consoleQueries
+      .listSchedule()
+      .then(setInfo)
+      .catch(() => setInfo({}));
+  }, []);
+  return (
+    <Descriptions size="small" column={1} bordered style={{ marginBottom: 12 }}>
+      <Descriptions.Item label="调度策略"><Tag>{String(info.schedule ?? "daily")}</Tag></Descriptions.Item>
+      <Descriptions.Item label="触发时间">{String(info.time ?? "—")}</Descriptions.Item>
+      <Descriptions.Item label="下次触发">{info.next ? new Date(info.next).toLocaleString() : "—"}</Descriptions.Item>
+      <Descriptions.Item label="上次触发">{info.last ? new Date(info.last).toLocaleString() : "尚未触发"}</Descriptions.Item>
+    </Descriptions>
+  );
+}
+
+// 补采计划：恢复规划器当前会尝试的采集键（待补采 / 待数据一目了然）。
+function PlanCard({ onTrigger, busy }: { onTrigger: (sourceId?: string, date?: string) => void; busy: boolean }) {
+  const [plan, setPlan] = useState<Array<{ sourceId: string; date: string }>>([]);
+  const refresh = useCallback(() => {
+    consoleQueries
+      .listPlan()
+      .then(setPlan)
+      .catch(() => setPlan([]));
+  }, []);
+  useEffect(() => {
+    refresh();
+    return onObservation(() => refresh());
+  }, [refresh]);
+  if (plan.length === 0) {
+    return <Typography.Text type="secondary">没有待补采的日期。</Typography.Text>;
+  }
+  return (
+    <List
+      size="small"
+      dataSource={plan}
+      renderItem={(entry) => (
+        <List.Item
+          actions={[
+            <Button key="go" size="small" disabled={busy} onClick={() => onTrigger(entry.sourceId, entry.date)}>
+              采集
+            </Button>,
+          ]}
+        >
+          <Typography.Text>
+            {entry.sourceId} · {entry.date}
+          </Typography.Text>
+        </List.Item>
+      )}
+    />
+  );
+}
+
 function CollectionsPage({ data, onTrigger, busy }: ViewProps) {
   const [date, setDate] = useState("");
   return (
@@ -279,16 +351,20 @@ function CollectionsPage({ data, onTrigger, busy }: ViewProps) {
           </p>
         </div>
         <Space wrap>
-          <Input
-            style={{ width: 150 }}
-            placeholder="YYYY-MM-DD（可选）"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
+          <DatePicker
+            value={date ? dayjs(date) : null}
+            onChange={(d) => setDate(d ? d.format("YYYY-MM-DD") : "")}
+            placeholder="选择日期（默认按调度策略）"
+            style={{ width: 170 }}
           />
           <CollectButton onTrigger={onTrigger} busy={busy} sourceDate={date || undefined} label={date ? `采集 ${date}` : "立即采集"} />
         </Space>
       </div>
       {data.error && <Alert type="error" showIcon message={data.error} />}
+      <ScheduleCard />
+      <h3 style={{ margin: "16px 0 8px", fontSize: 15 }}>补采计划</h3>
+      <PlanCard onTrigger={onTrigger} busy={busy} />
+      <h3 style={{ margin: "16px 0 8px", fontSize: 15 }}>采集历史</h3>
       <Table
         size="small"
         rowKey={(c) => focusKey(c)}

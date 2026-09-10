@@ -39,6 +39,8 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
     ListFiles: { query: "files", pick: ["sourceId", "date"] },
     ListFileFailures: { query: "failures", pick: ["sourceId"] },
     ListObservations: { query: "observations", pick: ["limit"] },
+    Schedule: { query: "schedule" },
+    Plan: { query: "plan" },
     ListRows: { query: "rows" },
     ListLogs: { query: "logs" },
   };
@@ -67,6 +69,23 @@ function httpRoute(name: string, args: unknown[]): { url: string; init: RequestI
       return post(`${API_BASE}/command/trigger`, args[0] ?? {});
     case "ControlPlugin":
       return post(`${API_BASE}/plugins/control`, args[0] ?? {});
+    case "HubQuery": {
+      // 通用 hub 透传：声明式视图按 schema 查询命名查询。
+      const r = args[0] as { name: string; params?: Record<string, string | number> };
+      const qs = Object.entries(r.params ?? {})
+        .filter(([, v]) => v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+        .join("&");
+      return { url: `${API_BASE}/query/${r.name}${qs ? `?${qs}` : ""}`, init: {} };
+    }
+    case "GetPluginConfig": {
+      const r = args[0] as { id: string };
+      return { url: `${API_BASE}/plugins/${q(r.id)}/config`, init: {} };
+    }
+    case "SetPluginConfig": {
+      const r = args[0] as { id: string; config: Record<string, unknown> };
+      return post(`${API_BASE}/plugins/${q(r.id)}/config`, { config: r.config });
+    }
     case "UninstallPlugin":
       return post(`${API_BASE}/plugins/uninstall`, args[0] ?? {});
     case "InstallPlugin":

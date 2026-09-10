@@ -8,8 +8,8 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	consolehost "dynamic-runtime/console/host"
-	"dynamic-runtime/console/hub"
+	consolehost "dynamic-runtime/extensions/console/host"
+	"dynamic-runtime/extensions/console/hub"
 
 	storageplugin "gocordis-csv-collector/plugins/storage"
 )
@@ -32,19 +32,14 @@ func (c *RowsComponent) Inject() []runtime.Dependency {
 func (c *RowsComponent) Provide() []runtime.Capability { return nil }
 
 func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	println("[console-rows] apply enter")
 	hubRegistry, err := runtime.Require(ctx, consolehost.HubKey)
 	if err != nil {
-		println("[console-rows] hub require error:", err.Error())
 		return nil, err
 	}
-	println("[console-rows] hub ok")
 	rows, err := runtime.Require(ctx, storageplugin.TableRowsQueryKey)
 	if err != nil {
-		println("[console-rows] rows require error:", err.Error())
 		return nil, err
 	}
-	println("[console-rows] rows capability ok")
 	unStorage, err := hubRegistry.RegisterQuery("storage", "console-rows", func(ctx context.Context, _ url.Values) (any, *hub.Error) {
 		stats, serr := rows.Stats(ctx)
 		if serr != nil {

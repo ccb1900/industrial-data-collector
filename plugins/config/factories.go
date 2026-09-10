@@ -6,8 +6,8 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	explorerplugin "dynamic-runtime/console/explorer"
-	uiplugin "dynamic-runtime/console/host"
+	explorerplugin "dynamic-runtime/extensions/console/explorer"
+	uiplugin "dynamic-runtime/extensions/console/host"
 	collectorplugin "gocordis-csv-collector/plugins/collector"
 	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"

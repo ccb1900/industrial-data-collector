@@ -473,7 +473,13 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error) {
 	page := RowsPage{Columns: []string{}, Rows: [][]interface{}{}}
 	if t.db == nil {
-		return page, errs.ClassifyStorageError("closed", sql.ErrConnDone)
+		// lazy_connect 模式：读路径同样按需建连，重启后无需一次写入来“唤醒”。
+		if !t.lazy {
+			return page, errs.ClassifyStorageError("closed", sql.ErrConnDone)
+		}
+		if err := t.EnsureConnected(ctx); err != nil {
+			return page, err
+		}
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100

@@ -86,6 +86,19 @@ func (c *SourceUnitComponent) SourceID() string { return string(c.sourceID) }
 // memory-storage (nil for SQL-backed components).
 func (c *SourceUnitComponent) MemoryStore() *storage.MemoryStore { return c.mem }
 
+// PlanKeys computes the collection keys a trigger would attempt right now
+// for this source: known incomplete rows plus calendar gaps (bounded by the
+// configured catch-up window). It is the recovery planner's view, exposed
+// for the console's "待补采" display.
+func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionKey, error) {
+	target, err := c.policy.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	planner := recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays}
+	return planner.Plan(ctx, c.sourceID, target)
+}
+
 // Projection builds the durable UI projection of this unit: collection
 // records, completed files, and the failure ledger as they exist in the
 // unit's CollectionState right now. It is read-only; the unit keeps no

@@ -3,6 +3,7 @@ package schedulerplugin
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"dynamic-runtime/extensions/config"
@@ -27,13 +28,17 @@ var CollectionTriggerKey = runtime.NewKey[Trigger]("csv.collection.trigger")
 // Scheduler plugin.
 type Trigger interface {
 	Trigger(ctx context.Context, req model.CollectionRequested) error
+	// Info exposes the operator-visible schedule facts: configured time,
+	// last trigger instant, and the next scheduled trigger.
+	Info() map[string]any
 }
 
 type SchedulerComponent struct {
-	typ     string
-	clock   string
-	emitCtx *runtime.Context
-	ext     *rtscheduler.Scheduler
+	typ      string
+	clock    string
+	emitCtx  *runtime.Context
+	ext      *rtscheduler.Scheduler
+	lastTrig atomic.Value // time.Time
 }
 
 func (c *SchedulerComponent) Name() string                 { return "scheduler:" + c.typ }
@@ -77,7 +82,24 @@ func (c *SchedulerComponent) Trigger(ctx context.Context, req model.CollectionRe
 	if c.emitCtx == nil {
 		return fmt.Errorf("%w: scheduler not active", errs.ErrDependency)
 	}
+	c.lastTrig.Store(time.Now())
 	return event.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
+}
+
+// Info renders the schedule facts for the console (schedule query): the
+// configured trigger time, the last trigger instant, and the next scheduled
+// trigger computed from the daily anchor.
+func (c *SchedulerComponent) Info() map[string]any {
+	now := time.Now()
+	out := map[string]any{"schedule": c.typ, "time": c.clock}
+	if anchor, err := appschedule.DailyAnchor(c.clock, now); err == nil {
+		next := anchor
+		if now.After(next) {
+			next = anchor.Add(24 * time.Hour)
+		}
+		out["next"] = next.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 // NewScheduler creates the scheduler Component from configuration.

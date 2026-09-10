@@ -73,7 +73,7 @@ func Validate(cfg extconfig.Config) error {
 		if !ok {
 			return fmt.Errorf("unknown component type %q", cc.Type)
 		}
-		if err := validateOne(cc, ti); err != nil {
+		if err := validateOne(cfg, cc, ti); err != nil {
 			return err
 		}
 	}
@@ -143,7 +143,7 @@ func Validate(cfg extconfig.Config) error {
 	return nil
 }
 
-func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
+func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti TypeInfo) error {
 	switch ti.Kind {
 	case "source":
 		if cc.Type == "single-file-source" {
@@ -308,7 +308,13 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			return err
 		}
 	case "console-bridge", "console-rows":
-		// no config keys in v0.2
+		// 桥/行查询依赖控制台宿主（hub）与查询能力：三者必须同时组合，
+		// 否则组件永远无法就绪。
+		for _, req := range []string{"ui", "query-provider", "scheduler"} {
+			if !hasType(cfg, req) {
+				return fmt.Errorf("%s %q requires component %q in the composition", cc.Type, cc.ID, req)
+			}
+		}
 	case "watch-trigger":
 		if str(cc.Config, "path") == "" {
 			return fmt.Errorf("watch-file-trigger %q missing path", cc.ID)
@@ -531,6 +537,17 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 // validateDetectContent rejects ambiguous discovery configuration: content
 // detection judges every file by its bytes, so a name glob alongside it has
 // no defined meaning.
+// hasType reports whether the desired composition contains a component of
+// the given type (ID matching is wrong here: scheduler ids vary per host).
+func hasType(cfg extconfig.Config, typ string) bool {
+	for _, cc := range cfg.Components {
+		if cc.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
 func validateDetectContent(cc extconfig.ComponentConfig, kind string) error {
 	if raw, ok := cc.Config["detect_content"]; ok {
 		if _, valid := boolCfgValue(raw); !valid {

@@ -7,6 +7,7 @@
 package uicontrib
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,8 +16,8 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	uiplugin "dynamic-runtime/console/host"
-	appui "dynamic-runtime/console/registry"
+	uiplugin "dynamic-runtime/extensions/console/host"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // PageComponent registers one Page during each activation.
@@ -239,7 +240,10 @@ func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
 	if err != nil {
 		return appui.PageDefinition{}, err
 	}
-	return appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}, nil
+	view, _ := json.Marshal(m["view"])
+	def := appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
+	def.View = view
+	return def, nil
 }
 
 func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {

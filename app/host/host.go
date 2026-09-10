@@ -11,12 +11,13 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	consoleexplorer "dynamic-runtime/console/explorer"
-	explorerplugin "dynamic-runtime/console/explorer"
+	consoleexplorer "dynamic-runtime/extensions/console/explorer"
+	explorerplugin "dynamic-runtime/extensions/console/explorer"
 	appconfig "gocordis-csv-collector/app/config"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 	configplugin "gocordis-csv-collector/plugins/config"
+	consolebridge "gocordis-csv-collector/plugins/consolebridge"
 	queryplugin "gocordis-csv-collector/plugins/query"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
 	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
@@ -33,12 +34,15 @@ type Host struct {
 	explorer *explorerplugin.Service
 	log      *slog.Logger
 
-	// desired-state overlay: components removed from (or re-added to) the
-	// desired configuration by the console. The config file stays the source
-	// of truth; the overlay persists uninstall decisions across restarts.
+	// desired-state overlay: console-driven changes to the desired
+	// configuration — uninstall decisions AND per-component config edits.
+	// The config file stays the source of truth; the overlay persists these
+	// decisions across restarts and is re-applied on every reconcile.
 	overlayPath string
 	removed     map[string]config.ComponentConfig
 	removedIDs  []string
+	modified    map[string]config.ComponentConfig
+	modifiedIDs []string
 	lastDesired config.Config
 	mu          sync.Mutex
 }
@@ -87,16 +91,23 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 	return nil
 }
 
-// applyOverlay removes uninstalled components from the desired configuration.
+// applyOverlay applies the console-driven desired-state overlay to a fresh
+// configuration: uninstalled components are dropped, edited components are
+// replaced by their edited definition. Order of the declared composition is
+// preserved.
 func (h *Host) applyOverlay(cfg *config.Config) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.removed) == 0 {
+	if len(h.removed) == 0 && len(h.modified) == 0 {
 		return
 	}
 	out := make([]config.ComponentConfig, 0, len(cfg.Components))
 	for _, cc := range cfg.Components {
 		if _, gone := h.removed[cc.ID]; gone {
+			continue
+		}
+		if edited, editedOK := h.modified[cc.ID]; editedOK {
+			out = append(out, edited)
 			continue
 		}
 		out = append(out, cc)
@@ -113,7 +124,8 @@ func (h *Host) SetOverlayPath(path string) {
 		return
 	}
 	var snap struct {
-		Removed []config.ComponentConfig `json:"removed"`
+		Removed  []config.ComponentConfig `json:"removed"`
+		Modified []config.ComponentConfig `json:"modified"`
 	}
 	if err := json.Unmarshal(data, &snap); err != nil {
 		h.log.Warn("overlay file unreadable; ignoring", "path", path, "error", err.Error())
@@ -130,6 +142,15 @@ func (h *Host) SetOverlayPath(path string) {
 		h.removed[cc.ID] = cc
 		h.removedIDs = append(h.removedIDs, cc.ID)
 	}
+	h.modified = map[string]config.ComponentConfig{}
+	h.modifiedIDs = nil
+	for _, cc := range snap.Modified {
+		if cc.ID == "" {
+			continue
+		}
+		h.modified[cc.ID] = cc
+		h.modifiedIDs = append(h.modifiedIDs, cc.ID)
+	}
 }
 
 func (h *Host) persistOverlay() error {
@@ -141,12 +162,87 @@ func (h *Host) persistOverlay() error {
 	for _, id := range h.removedIDs {
 		removed = append(removed, h.removed[id])
 	}
+	modified := make([]config.ComponentConfig, 0, len(h.modifiedIDs))
+	for _, id := range h.modifiedIDs {
+		modified = append(modified, h.modified[id])
+	}
 	h.mu.Unlock()
-	data, err := json.MarshalIndent(map[string]any{"removed": removed}, "", "  ")
+	data, err := json.MarshalIndent(map[string]any{
+		"removed":  removed,
+		"modified": modified,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(h.overlayPath, data, 0o644)
+}
+
+// ComponentConfig returns the effective configuration of one desired
+// component (console edits applied).
+func (h *Host) ComponentConfig(id string) (map[string]any, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if edited, ok := h.modified[id]; ok {
+		return edited.Config, nil
+	}
+	for _, cc := range h.lastDesired.Components {
+		if cc.ID == id {
+			out := map[string]any{}
+			for k, v := range cc.Config {
+				out[k] = v
+			}
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
+}
+
+// SetComponentConfig replaces the configuration of one desired component.
+// The edit persists to the overlay and is applied by reconciliation; a
+// failed reconciliation rolls the edit back so the overlay never holds a
+// configuration the runtime rejected.
+func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string]any) error {
+	h.mu.Lock()
+	var def config.ComponentConfig
+	found := false
+	for _, cc := range h.lastDesired.Components {
+		if cc.ID == id {
+			def = cc
+			found = true
+			break
+		}
+	}
+	h.mu.Unlock()
+	if !found {
+		return fmt.Errorf("component %q is not part of the desired configuration", id)
+	}
+
+	h.mu.Lock()
+	prev, hadPrev := h.modified[id]
+	edited := def
+	edited.Config = cfg
+	h.modified[id] = edited
+	if !hadPrev {
+		h.modifiedIDs = append(h.modifiedIDs, id)
+	}
+	h.mu.Unlock()
+
+	if err := h.persistOverlay(); err != nil {
+		return err
+	}
+	if err := h.Reconcile(ctx, h.lastDesired); err != nil {
+		// roll the edit back — the runtime rejected the new configuration.
+		h.mu.Lock()
+		if hadPrev {
+			h.modified[id] = prev
+		} else {
+			delete(h.modified, id)
+		}
+		h.mu.Unlock()
+		_ = h.persistOverlay()
+		return fmt.Errorf("apply config for %q: %w", id, err)
+	}
+	return nil
 }
 
 // UninstallComponent removes one component from the desired configuration and
@@ -227,18 +323,23 @@ func (h *Host) RemovedComponents() []config.ComponentConfig {
 // owned by the CollectionState components.
 func (h *Host) attachStateProjection() {
 	var units []query.UnitState
+	var unitComps []*sourceunitplugin.SourceUnitComponent
 	var qp *queryplugin.QueryComponent
+	var bridge *consolebridge.Component
 	for _, o := range h.ctrl.Owned() {
 		if o.Fiber == nil || o.Fiber.Component() == nil {
 			continue
 		}
 		switch comp := o.Fiber.Component().(type) {
 		case *sourceunitplugin.SourceUnitComponent:
+			unitComps = append(unitComps, comp)
 			units = append(units, comp.Projection())
 		case *stateplugin.StateComponent:
 			units = append(units, projectSharedState(comp.State()))
 		case *queryplugin.QueryComponent:
 			qp = comp
+		case *consolebridge.Component:
+			bridge = comp
 		}
 	}
 	if qp == nil || len(units) == 0 {
@@ -246,6 +347,9 @@ func (h *Host) attachStateProjection() {
 	}
 	if err := qp.AttachUnits(units); err != nil {
 		h.log.Warn("state projection attach failed", "error", err.Error())
+	}
+	if bridge != nil {
+		bridge.SetUnits(unitComps)
 	}
 }
 
