@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -74,21 +75,39 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 	return h.PostReconcile(ctx, cfg)
 }
 
+// readyTimeout 是组件就绪检查的上限：Fiber.Ready 会无限等待，超出这个
+// 时间仍未就绪的组件应当带着「哪个组件、处于什么状态」的错误返回，而不是
+// 把 reconcile 的调用方（启动、热加载）一起挂死。
+const readyTimeout = 30 * time.Second
+
+func hReadyBound(ctx context.Context, owned []config.OwnedComponent) error {
+	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+	defer cancel()
+	for _, o := range owned {
+		if err := o.Fiber.Ready(readyCtx); err != nil {
+			st := "nil"
+			if o.Fiber != nil {
+				st = o.Fiber.State().String()
+			}
+			return fmt.Errorf("component %s not ready (state %s): %w", o.ID, st, err)
+		}
+	}
+	return nil
+}
+
 // PostReconcile 运行每次成功 reconcile 之后的应用层步骤：组件就绪检查、
 // explorer 台账、状态投影。configwatch 的热加载路径与显式 Reconcile
 // 共享同一条收尾路径，避免“双入口、一半忘记”的漂移。
 func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
-	for _, owned := range h.ctrl.Owned() {
-		if err := owned.Fiber.Ready(ctx); err != nil {
-			for _, o := range h.ctrl.Owned() {
-				st := "nil"
-				if o.Fiber != nil {
-					st = o.Fiber.State().String()
-				}
-				h.log.Error("fiber not ready", "id", o.ID, "state", st)
+	if err := hReadyBound(ctx, h.ctrl.Owned()); err != nil {
+		for _, o := range h.ctrl.Owned() {
+			st := "nil"
+			if o.Fiber != nil {
+				st = o.Fiber.State().String()
 			}
-			return fmt.Errorf("component %s not ready: %w", owned.ID, err)
+			h.log.Error("fiber not ready", "id", o.ID, "state", st)
 		}
+		return err
 	}
 	if h.explorer != nil {
 		h.explorer.SetDesired(cfg)

@@ -67,6 +67,9 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		w,
 		configwatch.WithParser(&validatingParser{host: h}),
 		configwatch.WithPostReconcile(h.PostReconcile),
+		// 一次 reconcile（含应用层收尾）以 readyTimeout 兜底：组件永远
+		// 不就绪时返回明确错误，而不是把处理循环和调用方一起挂死。
+		configwatch.WithReconcileTimeout(readyTimeout),
 	)
 	if err != nil {
 		_ = h.Close(context.Background())
@@ -80,12 +83,7 @@ func (w *WatchHost) Sync(ctx context.Context) error {
 	if err := w.adapter.Sync(ctx); err != nil {
 		return err
 	}
-	for _, o := range w.ctrl.Owned() {
-		if err := o.Fiber.Ready(ctx); err != nil {
-			return fmt.Errorf("component %s not ready: %w", o.ID, err)
-		}
-	}
-	return nil
+	return hReadyBound(ctx, w.ctrl.Owned())
 }
 
 func (w *WatchHost) Run(ctx context.Context) error {

@@ -15,6 +15,15 @@
         "title": "失败账本1"
       },
       "Enabled": null
+    },
+    {
+      "ID": "scheduler",
+      "Type": "scheduler",
+      "Config": {
+        "schedule": "daily",
+        "time": "21:45"
+      },
+      "Enabled": null
     }
   ],
   "removed": []
