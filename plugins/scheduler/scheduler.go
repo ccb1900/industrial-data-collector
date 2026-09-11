@@ -10,7 +10,7 @@ import (
 	"dynamic-runtime/extensions/event"
 	rtscheduler "dynamic-runtime/extensions/scheduler"
 	"dynamic-runtime/runtime"
-	cronsched "github.com/robfig/cron/v3"
+	"github.com/robfig/cron/v3"
 
 	"gocordis-csv-collector/plugins/internal/configutil"
 
@@ -39,9 +39,22 @@ type SchedulerComponent struct {
 	clock    string
 	emitCtx  *runtime.Context
 	ext      *rtscheduler.Scheduler
-	lastTrig atomic.Value // time.Time
-	cronExpr string       // non-empty when using cron format
-	cron     *cronsched.Cron
+	lastTrig atomic.Value  // time.Time
+	cronExpr string        // non-empty when using cron format
+	cron     cron.Schedule // parsed cron schedule driving the trigger
+}
+
+// cronSchedule adapts a parsed robfig cron schedule to the framework
+// scheduler's Schedule contract, so cron triggers run on the same single
+// scheduling engine (and the same Effect cleanup) as interval schedules.
+type cronSchedule struct{ inner cron.Schedule }
+
+func (c cronSchedule) Next(after time.Time) (time.Time, bool) {
+	next := c.inner.Next(after)
+	if next.IsZero() {
+		return time.Time{}, false
+	}
+	return next, true
 }
 
 func (c *SchedulerComponent) Name() string                 { return "scheduler:" + c.typ }
@@ -61,17 +74,23 @@ func (c *SchedulerComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 	if err := runtime.Provide(ctx, CollectionTriggerKey, Trigger(c)); err != nil {
 		return nil, err
 	}
-	anchor, err := c.anchor()
-	if err != nil {
-		return nil, err
-	}
-	if err := ext.Add(rtscheduler.Job{
-		ID:       "daily",
-		Schedule: rtscheduler.Interval{Start: anchor, Every: 24 * time.Hour},
+	job := rtscheduler.Job{
 		Task: func(taskCtx context.Context) error {
 			return c.Trigger(taskCtx, model.CollectionRequested{Reason: "scheduled"})
 		},
-	}); err != nil {
+	}
+	if c.cron != nil {
+		job.ID = "cron"
+		job.Schedule = cronSchedule{inner: c.cron}
+	} else {
+		anchor, err := c.anchor()
+		if err != nil {
+			return nil, err
+		}
+		job.ID = "daily"
+		job.Schedule = rtscheduler.Interval{Start: anchor, Every: 24 * time.Hour}
+	}
+	if err := ext.Add(job); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -90,19 +109,28 @@ func (c *SchedulerComponent) Trigger(ctx context.Context, req model.CollectionRe
 }
 
 // Info renders the schedule facts for the console (schedule query): the
-// configured trigger time, the last trigger instant, and the next scheduled
-// trigger computed from the daily anchor.
+// configured kind, the daily trigger time (daily mode), the cron expression
+// (cron mode), and the next scheduled trigger computed from the active
+// schedule — the cron timeline in cron mode, the daily anchor otherwise.
 func (c *SchedulerComponent) Info() map[string]any {
 	now := time.Now()
-	out := map[string]any{"schedule": c.typ, "time": c.clock}
+	out := map[string]any{"schedule": c.typ}
+	if c.clock != "" {
+		out["time"] = c.clock
+	}
 	if c.cronExpr != "" {
 		out["cron"] = c.cronExpr
 	}
-	if anchor, err := appschedule.DailyAnchor(c.clock, now); err == nil {
-		next := anchor
+	var next time.Time
+	if c.cron != nil {
+		next = c.cron.Next(now)
+	} else if anchor, err := appschedule.DailyAnchor(c.clock, now); err == nil {
+		next = anchor
 		if now.After(next) {
 			next = anchor.Add(24 * time.Hour)
 		}
+	}
+	if !next.IsZero() {
 		out["next"] = next.UTC().Format(time.RFC3339)
 	}
 	return out
@@ -114,11 +142,12 @@ func NewScheduler(cc config.ComponentConfig) (*SchedulerComponent, error) {
 	clock := configutil.OptionalString(cc, "time", "02:00")
 	cronExpr := configutil.OptionalString(cc, "cron", "")
 	if cronExpr != "" {
-		parser := cronsched.NewParser(cronsched.Minute | cronsched.Hour | cronsched.Dom | cronsched.Month | cronsched.Dow)
-		if _, err := parser.Parse(cronExpr); err != nil {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		schedule, err := parser.Parse(cronExpr)
+		if err != nil {
 			return nil, fmt.Errorf("%w: invalid cron expression %q: %v", errs.ErrInvalidConfig, cronExpr, err)
 		}
-		return &SchedulerComponent{typ: "cron", clock: clock, cronExpr: cronExpr}, nil
+		return &SchedulerComponent{typ: "cron", cronExpr: cronExpr, cron: schedule}, nil
 	}
 	return &SchedulerComponent{typ: kind, clock: clock}, nil
 }

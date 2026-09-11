@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/robfig/cron/v3"
 	"regexp"
 	"strconv"
 	"strings"
@@ -244,8 +245,16 @@ func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti TypeInfo
 			return fmt.Errorf("file-state %q missing path", cc.ID)
 		}
 	case "scheduler":
-		if str(cc.Config, "schedule") != "daily" {
-			return fmt.Errorf("scheduler %q must use schedule=\"daily\"", cc.ID)
+		if cronExpr := str(cc.Config, "cron"); cronExpr != "" {
+			// cron 表达式接管时间线（与插件工厂同一解析规则，键必为
+			// 五段式 分 时 日 月 周）；schedule/time 此时不再生效。
+			if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(cronExpr); err != nil {
+				return fmt.Errorf("scheduler %q: invalid cron expression %q: %v", cc.ID, cronExpr, err)
+			}
+			return nil
+		}
+		if kind := str(cc.Config, "schedule"); kind != "daily" && kind != "" {
+			return fmt.Errorf("scheduler %q must use schedule=\"daily\" (or a cron expression)", cc.ID)
 		}
 		if _, err := parseClock(str(cc.Config, "time")); err != nil {
 			return fmt.Errorf("scheduler %q: %w", cc.ID, err)

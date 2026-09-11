@@ -59,13 +59,14 @@ from = "filename"
 pattern = "{product}.csv"
 required = true
 
+# 定时采集：默认每日锚点（schedule + time）；也可给 cron 表达式接管时间线，
+# 例如 cron = "0 */6 * * *"（每 6 小时）。cron 与 schedule/time 二选一。
 [[components]]
 id = "scheduler"
 type = "scheduler"
 
 [components.config]
-schedule = "daily"
-time = "02:00"
+cron = "23 3 * * *"
 
 [[components]]
 id = "console-bridge"
@@ -160,6 +161,7 @@ query = "schedule"
 fields = [
   { key = "schedule", label = "调度策略" },
   { key = "time", label = "触发时间" },
+  { key = "cron", label = "Cron 表达式" },
   { key = "last", label = "上次触发" },
   { key = "next", label = "下次触发" },
 ]
