@@ -252,10 +252,12 @@ query = "rows"
 pageSize = 20
 filters = [
   { key = "sourceId", label = "数据源", optionsQuery = "sources", optionKey = "id", optionLabel = "name", required = true },
-  { key = "date", label = "日期", type = "date", required = true, default = "$yesterday" },
+  # 日期留空 = 跨批次查询该数据源的全部数据（默认给昨天）。
+  { key = "date", label = "日期", type = "date", default = "$yesterday" },
 ]
 # 不声明 columns 时控制台用响应列名作表头；这里显式挑选展示列。
 columns = [
+  { key = "collection_date", title = "采集日" },
   { key = "row_number", title = "行号" },
   { key = "ts", title = "时间" },
   { key = "temperature", title = "温度" },

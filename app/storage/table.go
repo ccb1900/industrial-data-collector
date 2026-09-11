@@ -138,7 +138,8 @@ type StorageStats struct {
 
 // RowsQuery is the console-facing read side of the typed sink.
 type RowsQuery interface {
-	// QueryRows pages collected rows of one source/date. filters are
+	// QueryRows pages collected rows; an empty sourceID or date means that
+	// dimension is unfiltered (cross-batch queries). filters are
 	// exact-match column filters (declared columns only).
 	QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error)
 	// Stats reports connectivity and per-table row counts for the storage
@@ -491,8 +492,17 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	for _, c := range t.cfg.Columns {
 		declared[strings.ToLower(c.Column)] = true
 	}
-	where := []string{"source_id = ?", "collection_date = ?"}
-	args := []any{sourceID, date}
+	// sourceID/date 留空表示该维度不过滤：控制台的跨批次查询依赖这一点。
+	where := []string{}
+	args := []any{}
+	if sourceID != "" {
+		where = append(where, "source_id = ?")
+		args = append(args, sourceID)
+	}
+	if date != "" {
+		where = append(where, "collection_date = ?")
+		args = append(args, date)
+	}
 	filterCols := make([]string, 0, len(filters))
 	for c := range filters {
 		filterCols = append(filterCols, c)
@@ -522,12 +532,18 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	}
 	tbl := quoteIdent(t.cfg.Dialect, t.cfg.Table)
 	rows, err := t.db.QueryContext(ctx, fmt.Sprintf(
-		"SELECT %s FROM %s %s ORDER BY file_id, row_number LIMIT %d OFFSET %d",
+		"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number LIMIT %d OFFSET %d",
 		strings.Join(quoted, ", "), tbl, w, limit, offset), args...)
 	if err != nil {
 		return page, errs.ClassifyStorageError("query rows", err)
 	}
 	defer rows.Close()
+	// Total reflects the same filters without paging, so the console can show
+	// how much the query matched beyond the current page.
+	if err := t.db.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s %s", tbl, w), args...).Scan(&page.Total); err != nil {
+		return page, errs.ClassifyStorageError("count rows", err)
+	}
 	page.Columns = cols
 	for rows.Next() {
 		vals := make([]any, len(cols))
