@@ -109,12 +109,17 @@ func (c *SchedulerComponent) Trigger(ctx context.Context, req model.CollectionRe
 }
 
 // Info renders the schedule facts for the console (schedule query): the
-// configured kind, the daily trigger time (daily mode), the cron expression
-// (cron mode), and the next scheduled trigger computed from the active
-// schedule — the cron timeline in cron mode, the daily anchor otherwise.
+// configured kind, the last trigger instant, the daily trigger time (daily
+// mode), the cron expression (cron mode), and the next scheduled trigger
+// computed from the active schedule. Instants carry the server-local offset:
+// cron semantics live in wall-clock time, and operators compare against their
+// own clock — UTC here read like a wrong hour.
 func (c *SchedulerComponent) Info() map[string]any {
 	now := time.Now()
 	out := map[string]any{"schedule": c.typ}
+	if last, ok := c.lastTrig.Load().(time.Time); ok {
+		out["last"] = last.Format(time.RFC3339)
+	}
 	if c.clock != "" {
 		out["time"] = c.clock
 	}
@@ -131,7 +136,7 @@ func (c *SchedulerComponent) Info() map[string]any {
 		}
 	}
 	if !next.IsZero() {
-		out["next"] = next.UTC().Format(time.RFC3339)
+		out["next"] = next.Format(time.RFC3339)
 	}
 	return out
 }

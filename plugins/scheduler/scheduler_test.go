@@ -55,7 +55,8 @@ func TestCronScheduleAndInfo(t *testing.T) {
 	if _, has := info["time"]; has {
 		t.Fatalf("cron mode must not report the daily time: %v", info)
 	}
-	wantNext := c.cron.Next(time.Now()).UTC().Format(time.RFC3339)
+	// next 带服务器本地偏移：操作员直接对着墙上时钟核对 cron。
+	wantNext := c.cron.Next(time.Now()).Format(time.RFC3339)
 	if info["next"] != wantNext {
 		t.Fatalf("Info next = %v, want %v", info["next"], wantNext)
 	}
