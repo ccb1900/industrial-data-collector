@@ -141,3 +141,62 @@ machine = "001"
 		t.Fatalf("metadata must not remain in config: %#v", rs.Config)
 	}
 }
+
+// 多源共享同一入库画像：console 暴露权（expose_console）只保留声明序中
+// 的第一个，其余源照常写同一张表；不同存储身份的暴露互不影响。
+func TestExpandDedupesConsoleExposure(t *testing.T) {
+	toml := `
+[profiles.shared]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/one.db"
+table = "records"
+expose_console = true
+columns = [{ name = "ts", column = "ts", type = "timestamp", required = true }]
+
+[profiles.other]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/two.db"
+table = "records"
+expose_console = true
+columns = [{ name = "ts", column = "ts", type = "timestamp", required = true }]
+
+[[sources]]
+id = "alpha"
+path = "data/alpha"
+profiles = ["shared"]
+
+[[sources]]
+id = "beta"
+path = "data/beta"
+profiles = ["shared"]
+
+[[sources]]
+id = "gamma"
+path = "data/gamma"
+profiles = ["other"]
+`
+	result, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expose := map[string]bool{}
+	for _, c := range result.Config.Components {
+		if c.Type != "csv-source-unit" {
+			continue
+		}
+		if v, ok := c.Config["expose_console"].(bool); ok && v {
+			expose[c.ID] = true
+		}
+	}
+	if !expose["source-unit:alpha"] {
+		t.Fatalf("first source must keep exposure: %v", expose)
+	}
+	if expose["source-unit:beta"] {
+		t.Fatalf("second source sharing the sink must not duplicate the provider: %v", expose)
+	}
+	if !expose["source-unit:gamma"] {
+		t.Fatalf("a different physical sink stays exposed: %v", expose)
+	}
+}

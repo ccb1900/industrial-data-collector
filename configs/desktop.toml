@@ -47,6 +47,9 @@ name = "product"
 column = "product"
 type = "text"
 
+# 多源同格式：任意多个 source 复用同一组 profiles（同格式、同入库表），
+# 各自展开为独立的 source-unit 组件——独立目录、独立补采链、可单独卸载；
+# 行入库后以 source_id 列区分。
 [[sources]]
 id = "production-source"
 path = "./data/production"
@@ -54,6 +57,17 @@ profiles = ["csv_machine", "typed_sqlite"]
 
 [sources.metadata]
 plant = "demo"
+
+[[sources.path_metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.csv"
+required = true
+
+[[sources]]
+id = "quality-source"
+path = "./data/quality"
+profiles = ["csv_machine", "typed_sqlite"]
 
 [[sources.path_metadata]]
 name = "product"

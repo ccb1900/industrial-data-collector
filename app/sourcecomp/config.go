@@ -309,6 +309,11 @@ func expandSources(components []extconfig.ComponentConfig, sources []*ResolvedSo
 		}
 		out[queryIndex].Config["source_definitions"] = definitions
 	}
+	// 多源共享同一入库画像（相同 driver/dsn/table）时，console rows 能力
+	// 只能有一个提供者：声明序中第一个 expose_console 的源保留暴露权，
+	// 后续源关闭暴露但照常写同一张表（行以 source_id 列区分）。声明序
+	// 在 Parse 中已按 source id 排序，结果是确定性的。
+	exposedStorages := map[string]bool{}
 	for _, rs := range sources {
 		cfg := make(map[string]any, len(rs.Config)+5)
 		for k, v := range rs.Config {
@@ -318,6 +323,16 @@ func expandSources(components []extconfig.ComponentConfig, sources []*ResolvedSo
 		cfg["path"] = rs.Path
 		cfg["metadata"] = rs.Metadata
 		cfg["profiles"] = append([]string(nil), rs.Profiles...)
+		if expose, _ := cfg["expose_console"].(bool); expose {
+			id := storageIdentity(cfg)
+			if id != "" {
+				if exposedStorages[id] {
+					cfg["expose_console"] = false
+				} else {
+					exposedStorages[id] = true
+				}
+			}
+		}
 		out = append(out, extconfig.ComponentConfig{
 			ID:     SourceComponentPrefix + rs.ID,
 			Type:   SourceUnitType,
@@ -354,4 +369,19 @@ func sourceDefinitions(sources []*ResolvedSource) []any {
 // state namespace.
 func SourceComponentID(sourceID string) string {
 	return SourceComponentPrefix + strings.TrimSpace(sourceID)
+}
+
+// storageIdentity names one physical sink (driver + location + tables).
+// Sources composing the same identity share one physical table, so a single
+// console rows provider serves every source writing into it.
+func storageIdentity(cfg map[string]any) string {
+	part := func(key string) string {
+		s, _ := cfg[key].(string)
+		return s
+	}
+	typ, driver, dsn := part("storage"), part("driver"), part("dsn")
+	if typ == "" && driver == "" && dsn == "" {
+		return ""
+	}
+	return strings.Join([]string{typ, driver, dsn, part("table"), part("file_table")}, "|")
 }
