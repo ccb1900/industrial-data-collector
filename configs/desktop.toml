@@ -64,6 +64,31 @@ from = "filename"
 pattern = "{product}.csv"
 required = true
 
+# 同目录不同格式：legacy-source 与 production-source 共享 ./data/production，
+# 以模式分工——*.dat（GBK 编码的历史导出）归 legacy-source，*.csv 归
+# production-source；行入库后以 source_id 区分。注意：共目录时不要与
+# detect_content = true 的源混用（内容探测会无视扩展名认领所有文件）。
+[profiles.legacy_machine]
+parser = "csv"
+header = true
+pattern = "*.dat"
+encoding = "gbk"
+file_stable_window_seconds = 0
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 1000
+
+[[sources]]
+id = "legacy-source"
+path = "./data/production"
+profiles = ["legacy_machine", "typed_sqlite"]
+
+[[sources.path_metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.dat"
+required = true
+
 [[sources]]
 id = "quality-source"
 path = "./data/quality"

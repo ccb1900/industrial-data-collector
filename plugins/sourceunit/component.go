@@ -275,7 +275,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q missing path", cc.ID)
 	}
 	detectContent := configutil.OptionalBool(cc, "detect_content", false)
-	pattern := "*.csv"
+	// pattern 来自配置（默认 *.csv）：同目录多格式就靠它分工——例如
+	// *.dat+gbk 一个源、*.csv 另一个源。内容探测开启时 glob 无效。
+	pattern := configutil.OptionalString(cc, "pattern", "*.csv")
 	if detectContent {
 		// Discovery judges by content, not by name; the glob is unused.
 		pattern = ""
