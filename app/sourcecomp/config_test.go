@@ -142,9 +142,9 @@ machine = "001"
 	}
 }
 
-// 多源共享同一入库画像：console 暴露权（expose_console）只保留声明序中
-// 的第一个，其余源照常写同一张表；不同存储身份的暴露互不影响。
-func TestExpandDedupesConsoleExposure(t *testing.T) {
+// 暴露不再去重：每个声明 expose_console 的源都登记自己的 sink，读侧由
+// console-rows 的 sink 注册表按源路由、缺省聚合（含共享同一物理表的源）。
+func TestExpandKeepsPerSourceExposure(t *testing.T) {
 	toml := `
 [profiles.shared]
 storage = "sqlite-storage"
@@ -190,13 +190,9 @@ profiles = ["other"]
 			expose[c.ID] = true
 		}
 	}
-	if !expose["source-unit:alpha"] {
-		t.Fatalf("first source must keep exposure: %v", expose)
-	}
-	if expose["source-unit:beta"] {
-		t.Fatalf("second source sharing the sink must not duplicate the provider: %v", expose)
-	}
-	if !expose["source-unit:gamma"] {
-		t.Fatalf("a different physical sink stays exposed: %v", expose)
+	for _, id := range []string{"alpha", "beta", "gamma"} {
+		if !expose["source-unit:"+id] {
+			t.Fatalf("source %s must keep exposure: %v", id, expose)
+		}
 	}
 }

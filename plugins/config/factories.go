@@ -1,3 +1,9 @@
+// Package configplugin composes the application's plugin set. Each plugin
+// package owns its type bindings via its own Register function; this entry
+// point only wires the packages the application ships plus the console-facing
+// components that need the explorer service. Adding a plugin to the
+// application means adding its package here — types stay explicit, instances
+// stay in the TOML composition.
 package configplugin
 
 import (
@@ -8,145 +14,73 @@ import (
 
 	explorerplugin "dynamic-runtime/extensions/console/explorer"
 	uiplugin "dynamic-runtime/extensions/console/host"
-	collectorplugin "gocordis-csv-collector/plugins/collector"
 	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
+	collectorplugin "gocordis-csv-collector/plugins/collector"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	queryplugin "gocordis-csv-collector/plugins/query"
 	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
 	sourceplugin "gocordis-csv-collector/plugins/source"
-	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
+	sourceunit "gocordis-csv-collector/plugins/sourceunit"
 	stateplugin "gocordis-csv-collector/plugins/state"
 	storageplugin "gocordis-csv-collector/plugins/storage"
 	uicontrib "gocordis-csv-collector/plugins/ui-contrib"
 	watchtrigger "gocordis-csv-collector/plugins/watchtrigger"
+	"gocordis-csv-collector/plugins/internal/pluginkit"
 )
 
-type adapterFactory struct {
-	build func(config.ComponentConfig) (runtime.Component, error)
-}
-
-func (a *adapterFactory) Create(cc config.ComponentConfig) (runtime.Component, error) {
-	return a.build(cc)
-}
-
-// RegisterFactories registers every Application Layer component type. The
-// optional explorer service powers plugin-explorer Console components.
+// RegisterFactories composes every component type the application ships.
 func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorerServices ...*explorerplugin.Service) error {
-	register := func(typ string, build func(config.ComponentConfig) (runtime.Component, error)) error {
-		return reg.Register(typ, &adapterFactory{build: build})
-	}
 	var explorerSvc *explorerplugin.Service
 	if len(explorerServices) > 0 {
 		explorerSvc = explorerServices[0]
 	}
-	if err := register("local-file-source", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return sourceplugin.NewSource(cc)
-	}); err != nil {
+
+	if err := sourceplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("unc-file-source", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return sourceplugin.NewSource(cc)
-	}); err != nil {
+	if err := parserplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("csv-parser", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return parserplugin.NewParser(cc)
-	}); err != nil {
+	if err := watchtrigger.Register(reg); err != nil {
 		return err
 	}
-	if err := register("text-parser", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return parserplugin.NewParser(cc)
-	}); err != nil {
+	if err := storageplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("single-file-source", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return sourceplugin.NewSingleFileSource(cc)
-	}); err != nil {
+	if err := stateplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("watch-file-trigger", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return watchtrigger.NewTrigger(cc)
-	}); err != nil {
+	if err := schedulerplugin.Register(reg); err != nil {
 		return err
 	}
-	for _, typ := range []string{"memory-storage", "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage"} {
-		typ := typ
-		if err := register(typ, func(cc config.ComponentConfig) (runtime.Component, error) {
-			return storageplugin.NewStorage(cc)
-		}); err != nil {
-			return err
-		}
-	}
-	if err := register("memory-state", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return stateplugin.NewState(cc)
-	}); err != nil {
+	if err := collectorplugin.Register(reg, logger); err != nil {
 		return err
 	}
-	if err := register("file-state", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return stateplugin.NewState(cc)
-	}); err != nil {
+	if err := sourceunit.Register(reg, logger); err != nil {
 		return err
 	}
-	if err := register("scheduler", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return schedulerplugin.NewScheduler(cc)
-	}); err != nil {
+	if err := metadataplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("csv-collector", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return collectorplugin.NewCollector(cc, logger)
-	}); err != nil {
+	if err := queryplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register(sourceunitplugin.Type, func(cc config.ComponentConfig) (runtime.Component, error) {
-		return sourceunitplugin.NewSourceUnit(cc, logger)
-	}); err != nil {
+	if err := uicontrib.Register(reg); err != nil {
 		return err
 	}
-	if err := register("path-metadata", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return metadataplugin.NewMetadata(cc)
-	}); err != nil {
+	if err := bridgeplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := register("query-provider", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return queryplugin.NewQuery(cc)
-	}); err != nil {
-		return err
-	}
-	if err := register("ui", func(cc config.ComponentConfig) (runtime.Component, error) {
+
+	// Console-facing components: the host owns the registry + hub, and the
+	// plugin explorer needs the explorer service.
+	if err := pluginkit.Bind(reg, "ui", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return uiplugin.NewConsole(cc)
 	}); err != nil {
 		return err
 	}
-	if err := register("ui-page", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return uicontrib.NewPage(cc)
-	}); err != nil {
-		return err
-	}
-	if err := register("ui-panel", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return uicontrib.NewPanel(cc)
-	}); err != nil {
-		return err
-	}
-	if err := register("ui-contribution", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return uicontrib.NewContribution(cc)
-	}); err != nil {
-		return err
-	}
-	if err := register("plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
+	return pluginkit.Bind(reg, "plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return explorerplugin.NewPlugin(cc, explorerSvc)
-	}); err != nil {
-		return err
-	}
-	if err := register("console-bridge", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return bridgeplugin.NewConsoleBridge(cc)
-	}); err != nil {
-		return err
-	}
-	if err := register("console-rows", func(cc config.ComponentConfig) (runtime.Component, error) {
-		return bridgeplugin.NewConsoleRows(cc)
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }

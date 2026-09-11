@@ -13,6 +13,40 @@ date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
 
+# 遗留导出的独立入库表：不同格式的文件写到不同的表。
+[profiles.legacy_sink]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/collect.db"
+table = "legacy_readings"
+expose_console = true
+lazy_connect = true
+
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "ts"
+column = "ts"
+type = "timestamp"
+required = true
+
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "temperature"
+column = "temperature"
+type = "float"
+
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "unit"
+column = "unit"
+type = "text"
+
+[[profiles.legacy_sink.columns]]
+from = "metadata"
+name = "product"
+column = "product"
+type = "text"
+
 [profiles.typed_sqlite]
 storage = "sqlite-storage"
 driver = "sqlite"
@@ -81,7 +115,7 @@ batch_size = 1000
 [[sources]]
 id = "legacy-source"
 path = "./data/production"
-profiles = ["legacy_machine", "typed_sqlite"]
+profiles = ["legacy_machine", "legacy_sink"]
 
 [[sources.path_metadata]]
 name = "product"

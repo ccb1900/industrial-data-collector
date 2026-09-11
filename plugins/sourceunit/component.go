@@ -70,13 +70,7 @@ type job struct {
 
 func (c *SourceUnitComponent) Name() string                 { return "source-unit:" + string(c.sourceID) }
 func (c *SourceUnitComponent) Inject() []runtime.Dependency { return nil }
-func (c *SourceUnitComponent) Provide() []runtime.Capability {
-	if c.tableCfg != nil && c.tableCfg.Exposer {
-		// The typed relational sink serves the console's "rows" query.
-		return []runtime.Capability{storageplugin.TableRowsQueryKey.Capability()}
-	}
-	return nil
-}
+func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 
 // SourceID returns the logical Source identity. It is independent from path
 // and Runtime Component identity.
@@ -138,8 +132,20 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		store = opened
 		closeStore = opened.Close
 		if c.tableCfg.Exposer {
-			if err := runtime.Provide(ctx, storageplugin.TableRowsQueryKey, storage.RowsQuery(opened)); err != nil {
+			// 暴露 = 把自己的 sink 登记到进程级注册表：多源共享同一入库
+			// 画像时各自登记（能力独占模型不允许重复提供者），控制台的
+			// rows 查询按 source 路由、缺省聚合。卸载时注销。
+			removeSink := storageplugin.DefaultSinks().Put(storageplugin.NamedSink{
+				SourceID: string(c.sourceID),
+				Table:    c.tableCfg.Table,
+				Identity: c.tableCfg.Driver + "|" + c.tableCfg.DSN + "|" + c.tableCfg.Table + "|" + c.tableCfg.FileTable,
+				Rows:     storage.RowsQuery(opened),
+			})
+			if err := ctx.Effect(func() (func() error, error) {
+				return func() error { removeSink(); return nil }, nil
+			}); err != nil {
 				_ = opened.Close()
+				removeSink()
 				return nil, err
 			}
 		}
