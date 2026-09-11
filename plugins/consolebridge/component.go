@@ -282,7 +282,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 		_ = journal.Append(record)
-		hubRegistry.Publish(hub.Observation(record))
+		hubRegistry.Publish(hub.Observation{
+		Type:      record.Type,
+		SourceID:  record.SourceID,
+		Timestamp: record.Timestamp,
+	})
 	})
 	if err != nil {
 		return nil, err

@@ -69,6 +69,7 @@ id = "quality-source"
 path = "./data/quality"
 profiles = ["csv_machine", "typed_sqlite"]
 
+
 [[sources.path_metadata]]
 name = "product"
 from = "filename"

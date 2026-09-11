@@ -91,9 +91,22 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
 
+	// Reconciliation failures flow to the console observation stream: the
+	// event feed shows WHY an apply failed, not just a silent rollback.
+	app.Host.SetReconcileFailureSink(func(err error) {
+		logger.Error("reconcile failed", "error", err.Error())
+		if ui != nil {
+			ui.PublishObservation("composition.failed", "config", err.Error())
+		}
+	})
+
 	// Config watch loop runs beside the HTTP server: TOML edits reconcile
 	// the live composition without restarting the process.
-	go func() { _ = app.Run(ctx) }()
+	go func() {
+		if rerr := app.Run(ctx); rerr != nil {
+			logger.Error("config watch loop stopped", "error", rerr.Error())
+		}
+	}()
 
 	httpServer := &http.Server{Addr: addr, Handler: srv}
 	go func() {

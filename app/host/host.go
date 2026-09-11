@@ -40,6 +40,10 @@ type Host struct {
 	// The config file stays the source of truth; the overlay persists these
 	// decisions across restarts and is re-applied on every reconcile.
 	overlayPath string
+	// reconcileFailureSink is invoked whenever an apply or readiness failure
+	// escapes reconciliation: the application forwards it to the console
+	// observation stream so operators see WHY, not just that it failed.
+	reconcileFailureSink func(err error)
 	removed     map[string]config.ComponentConfig
 	removedIDs  []string
 	modified    map[string]config.ComponentConfig
@@ -70,9 +74,23 @@ func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("application config validation: %w", err)
 	}
 	if err := h.ctrl.Reconcile(ctx, cfg); err != nil {
+		h.notifyReconcileFailure(err)
 		return err
 	}
 	return h.PostReconcile(ctx, cfg)
+}
+
+// SetReconcileFailureSink installs the callback invoked with every
+// reconciliation failure (apply error or readiness timeout). Callers typically
+// publish it onto the console observation stream.
+func (h *Host) SetReconcileFailureSink(fn func(err error)) {
+	h.reconcileFailureSink = fn
+}
+
+func (h *Host) notifyReconcileFailure(err error) {
+	if h.reconcileFailureSink != nil {
+		h.reconcileFailureSink(err)
+	}
 }
 
 // readyTimeout 是组件就绪检查的上限：Fiber.Ready 会无限等待，超出这个
@@ -104,9 +122,14 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 			st := "nil"
 			if o.Fiber != nil {
 				st = o.Fiber.State().String()
+				if o.Fiber.Err() != nil {
+					h.log.Error("fiber failure", "id", o.ID, "state", st, "error", o.Fiber.Err().Error())
+				} else {
+					h.log.Error("fiber not ready", "id", o.ID, "state", st)
+				}
 			}
-			h.log.Error("fiber not ready", "id", o.ID, "state", st)
 		}
+		h.notifyReconcileFailure(err)
 		return err
 	}
 	if h.explorer != nil {
