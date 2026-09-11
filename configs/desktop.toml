@@ -254,6 +254,14 @@ filters = [
   { key = "sourceId", label = "数据源", optionsQuery = "sources", optionKey = "id", optionLabel = "name", required = true },
   { key = "date", label = "日期", type = "date", required = true, default = "$yesterday" },
 ]
+# 不声明 columns 时控制台用响应列名作表头；这里显式挑选展示列。
+columns = [
+  { key = "row_number", title = "行号" },
+  { key = "ts", title = "时间" },
+  { key = "temperature", title = "温度" },
+  { key = "unit", title = "单位" },
+  { key = "product", title = "产品" },
+]
 
 [[components.config.views]]
 kind = "kv"
