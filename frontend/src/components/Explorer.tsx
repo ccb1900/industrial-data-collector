@@ -1,71 +1,230 @@
 import React, { useCallback, useEffect, useState } from "react";
+import {
+  Alert, Button, Descriptions, Divider, Empty, Form, Input, InputNumber,
+  Popconfirm, Skeleton, Space, Switch, Table, Tabs, Tag, Tooltip, Typography,
+} from "antd";
+import { UndoOutlined } from "@ant-design/icons";
 import { commands, onObservation, queries } from "../api/client";
 import { ExplorerControlResult, ExplorerPlugin } from "../models/types";
-import { Button, Input, Space, Typography } from "antd";
-import { Chip, EmptyState, ErrorNote, LoadingState, StatusChip } from "./Lists";
-import { PulseIcon } from "./Icons";
 
-// The Plugin Console: Runtime truth, never optimistic. Rows come from
-// Controller-owned fibers; a control action returns Accepted/Rejected/Failed
-// and the view re-reads Runtime afterwards instead of flipping a boolean.
-// 配置编辑器：查看/编辑组件配置（JSON），保存即校验 + reconcile。
+// 插件页：运行时真相，从不乐观更新。行来自 Controller 持有的 fibers；
+// 控制动作返回 Accepted/Rejected/Failed 后重新读取运行时，而不是翻转布尔。
+// 配置编辑：表单按值类型生成控件（布尔→开关、数字→数字输入、长文本→多行、
+// 嵌套→每键 JSON），JSON 页保留整段编辑后门；保存即校验 + reconcile。
+
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+function stateTag(state: string) {
+  const label =
+    state === "Active" ? "活跃" : state === "Gone" ? "已移除" : state === "Failed" ? "失败" : state;
+  const color =
+    state === "Active" ? "success" : state === "Gone" ? "default" : state === "Failed" ? "error" : "processing";
+  return <Tag color={color}>{label}</Tag>;
+}
+
+// 嵌套值的每键 JSON 编辑：本地暂存文本，失焦时解析回报。
+function JsonField({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+  const [text, setText] = useState(() => JSON.stringify(value, null, 2));
+  const [bad, setBad] = useState(false);
+  return (
+    <>
+      <Input.TextArea
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setBad(false);
+        }}
+        onBlur={() => {
+          try {
+            onChange(JSON.parse(text));
+          } catch {
+            setBad(true);
+          }
+        }}
+        autoSize={{ minRows: 2, maxRows: 10 }}
+        style={{ fontFamily: "monospace", fontSize: 12 }}
+        status={bad ? "error" : undefined}
+      />
+      {bad && <Typography.Text type="danger" style={{ fontSize: 12 }}>JSON 解析失败，未应用</Typography.Text>}
+    </>
+  );
+}
+
 function ConfigEditor({ pluginId }: { pluginId: string }) {
-  const [text, setText] = useState<string>("");
-  const [loaded, setLoaded] = useState(false);
+  const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
+  const [raw, setRaw] = useState("");
+  const [tab, setTab] = useState("form");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
   useEffect(() => {
-    setText("");
-    setLoaded(false);
+    setDraft(null);
+    setRaw("");
+    setTab("form");
     setSavedAt(null);
-    setError(null);
+    setSaveError(null);
+    setLoadError(null);
     queries
       .pluginConfig(pluginId)
-      .then((cfg) => setText(JSON.stringify(cfg, null, 2)))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .then((cfg) => {
+        const obj = cfg ?? {};
+        setDraft(obj);
+        setRaw(JSON.stringify(obj, null, 2));
+      })
+      .catch((e) => setLoadError(errText(e)));
   }, [pluginId]);
+
+  const setField = (k: string, v: unknown) => setDraft((d) => ({ ...d!, [k]: v }));
+
+  const switchTab = (next: string) => {
+    if (next === "json") {
+      setRaw(JSON.stringify(draft ?? {}, null, 2));
+      setSaveError(null);
+      setTab(next);
+      return;
+    }
+    // 回到表单：JSON 文本必须能解析回对象，否则留在 JSON 页。
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("配置必须是 JSON 对象");
+      }
+      setDraft(parsed);
+      setSaveError(null);
+      setTab(next);
+    } catch (e) {
+      setSaveError(errText(e));
+    }
+  };
 
   const save = async () => {
     setSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
-      const cfg = JSON.parse(text);
-      await queries.setPluginConfig(pluginId, cfg);
+      let cfg = draft;
+      if (tab === "json") {
+        const parsed = JSON.parse(raw);
+        if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("配置必须是 JSON 对象");
+        }
+        cfg = parsed;
+        setDraft(parsed);
+      }
+      await queries.setPluginConfig(pluginId, cfg as Record<string, unknown>);
       setSavedAt(new Date().toLocaleTimeString());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setSaveError(errText(e));
     } finally {
       setSaving(false);
     }
   };
 
-  if (error && !text) {
-    return <ErrorNote>{error}</ErrorNote>;
+  if (loadError) {
+    return (
+      <>
+        <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑</Divider>
+        <Alert type="error" showIcon message={loadError} />
+      </>
+    );
   }
+  if (!draft) {
+    return (
+      <>
+        <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑</Divider>
+        <Skeleton active title={false} paragraph={{ rows: 3 }} />
+      </>
+    );
+  }
+
+  const keys = Object.keys(draft).sort();
+  const wide = new Set(keys.filter((k) => {
+    const v = draft[k];
+    return typeof v === "string" && (v.length > 60 || v.includes("\n"));
+  }));
+
   return (
-    <div style={{ marginTop: 14 }}>
-      <Space align="center" style={{ marginBottom: 6 }}>
-        <Typography.Text strong>配置编辑</Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-          保存即校验并 reconcile；失败自动回滚
-        </Typography.Text>
-        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 11 }}>已保存 {savedAt}</Typography.Text>}
-      </Space>
-      <Input.TextArea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={Math.min(18, Math.max(6, text.split("\n").length + 1))}
-        style={{ fontFamily: "monospace", fontSize: 12 }}
+    <>
+      <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑 · 保存即校验并 reconcile，失败自动回滚</Divider>
+      <Tabs
+        size="small"
+        activeKey={tab}
+        onChange={switchTab}
+        items={[
+          {
+            key: "form",
+            label: "表单",
+            children:
+              keys.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该组件暂无配置项" />
+              ) : (
+                <Form layout="vertical" size="small" component={false}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "0 16px" }}>
+                    {keys.map((k) => {
+                      const v = draft[k];
+                      const span = wide.has(k) ? { gridColumn: "1 / -1" } : undefined;
+                      if (typeof v === "boolean") {
+                        return (
+                          <Form.Item key={k} label={k} style={span}>
+                            <Switch checked={v} onChange={(c) => setField(k, c)} />
+                          </Form.Item>
+                        );
+                      }
+                      if (typeof v === "number") {
+                        return (
+                          <Form.Item key={k} label={k} style={span}>
+                            <InputNumber style={{ width: "100%" }} value={v} onChange={(n) => setField(k, n ?? 0)} />
+                          </Form.Item>
+                        );
+                      }
+                      if (typeof v === "string") {
+                        return (
+                          <Form.Item key={k} label={k} style={span}>
+                            {wide.has(k) ? (
+                              <Input.TextArea
+                                value={v}
+                                autoSize={{ minRows: 2, maxRows: 8 }}
+                                onChange={(e) => setField(k, e.target.value)}
+                              />
+                            ) : (
+                              <Input value={v} onChange={(e) => setField(k, e.target.value)} />
+                            )}
+                          </Form.Item>
+                        );
+                      }
+                      return (
+                        <Form.Item key={k} label={`${k}（JSON）`} style={span}>
+                          <JsonField value={v} onChange={(n) => setField(k, n)} />
+                        </Form.Item>
+                      );
+                    })}
+                  </div>
+                </Form>
+              ),
+          },
+          {
+            key: "json",
+            label: "JSON",
+            children: (
+              <Input.TextArea
+                value={raw}
+                onChange={(e) => setRaw(e.target.value)}
+                rows={Math.min(18, Math.max(6, raw.split("\n").length + 1))}
+                style={{ fontFamily: "monospace", fontSize: 12 }}
+              />
+            ),
+          },
+        ]}
       />
-      <div style={{ marginTop: 8 }}>
+      <Space align="center" style={{ marginTop: 8 }}>
         <Button size="small" type="primary" loading={saving} onClick={() => void save()}>
           保存配置
         </Button>
-      </div>
-      {error && <ErrorNote>{error}</ErrorNote>}
-    </div>
+        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>已保存 {savedAt}</Typography.Text>}
+      </Space>
+      {saveError && <Alert style={{ marginTop: 8 }} type="error" showIcon message={saveError} />}
+    </>
   );
 }
 
@@ -91,8 +250,7 @@ export function PluginExplorer() {
         .catch(() => setRemoved([]));
       setError(null);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setError(message);
+      setError(errText(e));
     } finally {
       setLoading(false);
     }
@@ -103,8 +261,7 @@ export function PluginExplorer() {
     return onObservation(() => void refresh());
   }, [refresh]);
 
-  const selected =
-    plugins.find((plugin) => plugin.id === selectedId) ?? plugins[0] ?? null;
+  const selected = plugins.find((p) => p.id === selectedId) ?? plugins[0] ?? null;
 
   const uninstall = useCallback(
     async (plugin: ExplorerPlugin) => {
@@ -114,7 +271,7 @@ export function PluginExplorer() {
         await queries.uninstallPlugin(plugin.id);
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errText(e));
       } finally {
         setBusyId(null);
       }
@@ -130,7 +287,7 @@ export function PluginExplorer() {
         await queries.installPlugin(id);
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errText(e));
       } finally {
         setBusyId(null);
       }
@@ -150,11 +307,10 @@ export function PluginExplorer() {
         });
         setOutcome(result);
         if (result.rejected || result.failed) {
-          setError(result.error || "Runtime control was not accepted");
+          setError(result.error || "运行时未接受该控制请求");
         }
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        setError(message);
+        setError(errText(e));
       } finally {
         setBusyId(null);
         await refresh();
@@ -163,210 +319,154 @@ export function PluginExplorer() {
     [refresh]
   );
 
-  if (loading && plugins.length === 0) {
-    return <LoadingState label="Reading Runtime fibers" />;
-  }
-
   const active = plugins.filter((p) => p.state === "Active").length;
 
-  // The Explorer page can be composed (contributed by a ui-page) while the
-  // plugin-explorer component that serves Runtime data is not active — say
-  // so plainly instead of rendering an empty shell.
-  if (plugins.length === 0 && !loading) {
+  // Explorer 页面可以由 ui-page 组合出来，而提供运行时数据的
+  // plugin-explorer 组件并未激活——明说，而不是渲染空壳。
+  if (!loading && plugins.length === 0) {
     return (
-      <>
-        <div className="page-hero">
-          <div className="page-hero-text">
-            <h1>Plugins</h1>
-            <p>
-              This page renders the Runtime plugin inventory, but the
-              plugin-explorer component is not active in the current
-              composition, so there is no data source behind it.
-            </p>
-          </div>
-        </div>
-        <div className="explorer-detail">
-          {error && <ErrorNote>{error}</ErrorNote>}
-          <EmptyState>
-            Activate a plugin-explorer component (configuration +
-            reconciliation) to inspect and control plugins here.
-          </EmptyState>
-        </div>
-      </>
+      <section className="card" style={{ padding: "20px 22px" }}>
+        <h1 style={{ margin: 0, fontSize: 22 }}>插件</h1>
+        <p style={{ color: "#99a2b6" }}>
+          此页面渲染运行时插件清单，但当前组合未激活 plugin-explorer 组件，背后没有数据源。
+        </p>
+        {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+        <Empty description="激活 plugin-explorer 组件后即可在此查看与控制插件" />
+      </section>
     );
   }
 
   return (
-    <>
-      <div className="page-hero">
-        <div className="page-hero-text">
-          <h1>Plugins</h1>
-          <p>
-            Every feature on this console is a component activation. Deactivating
-            one reverts its effects — its pages and panels leave the UI — while
-            the rest of the system keeps running.
+    <section className="card" style={{ padding: "20px 22px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22 }}>插件</h1>
+          <p style={{ color: "#99a2b6", marginBottom: 0 }}>
+            控制台上的每个功能都是一次组件激活；停用即回滚其全部副作用，其余系统继续运行。
           </p>
         </div>
-        <div className="hero-actions">
-          <Chip tone="accent">
-            <PulseIcon size={11} />
-            {active}/{plugins.length} active
-          </Chip>
-        </div>
+        <Tag color="blue">{active}/{plugins.length} 活跃</Tag>
       </div>
-      <div className="explorer">
-        <Table
-          size="small"
-          rowKey="id"
-          dataSource={plugins}
-          pagination={false}
-          rowClassName={(p) => selected?.id === p.id ? "row-selected" : ""}
-          onRow={(p) => ({ onClick: () => setSelectedId(p) })}
-          columns={[
-            { title: "名称", dataIndex: "name", key: "name" },
-            { title: "类型", dataIndex: "type", key: "type", ellipsis: true },
-            { title: "状态", dataIndex: "state", key: "state", width: 80,
-              render: (s: string) => <Tag color={s === "Active" ? "success" : s === "Gone" ? "default" : s === "Failed" ? "error" : "processing"}>{s}</Tag> },
-          ]} />
-        <div className="explorer-detail">
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 340px", minWidth: 300 }}>
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={plugins}
+            loading={loading && plugins.length === 0}
+            pagination={{ pageSize: 12, hideOnSinglePage: true, size: "small" }}
+            rowClassName={(p) => (selected?.id === p.id ? "ant-table-row-selected" : "")}
+            onRow={(p) => ({ onClick: () => setSelectedId(p.id), style: { cursor: "pointer" } })}
+            columns={[
+              { title: "名称", dataIndex: "name", key: "name", ellipsis: true },
+              { title: "类型", dataIndex: "type", key: "type", ellipsis: true, width: 140,
+                render: (t: string) => <Typography.Text code style={{ fontSize: 12 }}>{t}</Typography.Text> },
+              { title: "状态", dataIndex: "state", key: "state", width: 84,
+                render: (s: string) => stateTag(s) },
+            ]}
+          />
+        </div>
+        <div style={{ flex: "1.4 1 380px", minWidth: 320 }}>
           {selected ? (
             <>
-              <div className="explorer-detail-head">
-                <div>
-                  <h3>{selected.name}</h3>
-                  <p className="plugin-id">{selected.id}</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <Typography.Title level={5} style={{ margin: 0 }}>{selected.name}</Typography.Title>
+                  <Typography.Text type="secondary" copyable style={{ fontSize: 12 }}>{selected.id}</Typography.Text>
                 </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Space wrap>
                   {selected.controllable &&
-                  (selected.state === "Active" ||
-                    selected.state === "Gone" ||
-                    selected.state === "Failed") ? (
-                    <button
-                      className={
-                        selected.state === "Active" ? "btn danger" : "btn activate"
-                      }
-                      disabled={busyId === selected.id}
-                      onClick={() => void toggle(selected, selected.state !== "Active")}
-                    >
-                      {busyId === selected.id
-                        ? "Working"
-                        : selected.state === "Active"
-                        ? "Deactivate"
-                        : "Activate"}
-                    </button>
+                  (selected.state === "Active" || selected.state === "Gone" || selected.state === "Failed") ? (
+                    selected.state === "Active" ? (
+                      <Button size="small" danger loading={busyId === selected.id}
+                        onClick={() => void toggle(selected, false)}>
+                        停用
+                      </Button>
+                    ) : (
+                      <Button size="small" type="primary" loading={busyId === selected.id}
+                        onClick={() => void toggle(selected, true)}>
+                        激活
+                      </Button>
+                    )
                   ) : null}
                   {selected.controllable && selected.state === "Active" ? (
                     CONSOLE_CRITICAL.has(selected.type) ? (
-                      <span className="badge-protected" title="控制台基础设施，不能卸载">受保护</span>
+                      <Tooltip title="控制台基础设施，不能卸载">
+                        <Tag color="gold">受保护</Tag>
+                      </Tooltip>
                     ) : (
-                      <button
-                        className="btn danger"
-                        disabled={busyId === selected.id}
-                        title="从期望配置中移除该组件并回滚其全部副作用"
-                        onClick={() => void uninstall(selected)}
+                      <Popconfirm
+                        title="卸载该组件？"
+                        description="从期望配置中移除并回滚其全部副作用，可通过安装恢复。"
+                        okText="卸载" cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => void uninstall(selected)}
                       >
-                        卸载
-                      </button>
+                        <Button size="small" danger loading={busyId === selected.id}>卸载</Button>
+                      </Popconfirm>
                     )
                   ) : null}
-                </div>
+                </Space>
               </div>
               {outcome && outcome.accepted && !error && (
-                <p className="card-sub" style={{ marginTop: 0 }}>
-                  Runtime accepted the request — state below re-read from fibers.
-                </p>
+                <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+                  运行时已接受请求 — 以下状态重新读取自 fibers。
+                </Typography.Text>
               )}
-              {error && <ErrorNote>{error}</ErrorNote>}
-              <dl className="fact-grid">
-                <div className="fact-row">
-                  <dt>Type</dt>
-                  <dd>
-                    <Chip>{selected.type}</Chip>
-                  </dd>
-                </div>
-                <div className="fact-row">
-                  <dt>State</dt>
-                  <dd>
-                    <StatusChip value={selected.state} />
-                  </dd>
-                </div>
-                <div className="fact-row">
-                  <dt>Components</dt>
-                  <dd>
-                    {selectedComponentsOrEmpty(selected)}
-                  </dd>
-                </div>
-                <div className="fact-row">
-                  <dt>Capabilities</dt>
-                  <dd>
-                    {selected.capabilities.length ? (
-                      selected.capabilities.map((cap) => (
-                        <Chip key={cap} tone="accent">
-                          {cap}
-                        </Chip>
-                      ))
-                    ) : (
-                      <span className="card-sub">none</span>
-                    )}
-                  </dd>
-                </div>
+              <Descriptions size="small" bordered column={1}>
+                <Descriptions.Item label="类型">
+                  <Typography.Text code>{selected.type}</Typography.Text>
+                </Descriptions.Item>
+                <Descriptions.Item label="状态">{stateTag(selected.state)}</Descriptions.Item>
+                <Descriptions.Item label="组件">
+                  {selected.components.length ? (
+                    <Space size={4} wrap>
+                      {selected.components.map((c) => <Tag key={c} style={{ fontFamily: "monospace", fontSize: 11 }}>{c}</Tag>)}
+                    </Space>
+                  ) : "—"}
+                </Descriptions.Item>
+                <Descriptions.Item label="能力">
+                  {selected.capabilities.length ? (
+                    <Space size={4} wrap>
+                      {selected.capabilities.map((cap) => <Tag key={cap} color="blue">{cap}</Tag>)}
+                    </Space>
+                  ) : "—"}
+                </Descriptions.Item>
                 {selected.config && Object.keys(selected.config).length > 0 && (
-                  <div className="fact-row">
-                    <dt>Config</dt>
-                    <dd>
-                      {Object.keys(selected.config)
-                        .sort()
-                        .map((k) => (
-                          <Chip key={k}>
-                            {k}={selected.config![k]}
-                          </Chip>
-                        ))}
-                    </dd>
-                  </div>
+                  <Descriptions.Item label="配置">
+                    <Space size={4} wrap>
+                      {Object.keys(selected.config).sort().map((k) => (
+                        <Tag key={k} style={{ fontFamily: "monospace", fontSize: 11 }}>
+                          {k}={String(selected.config![k])}
+                        </Tag>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
                 )}
-              </dl>
+              </Descriptions>
               <ConfigEditor key={selected.id} pluginId={selected.id} />
               {removed.length > 0 && (
                 <>
-                  <p className="nav-label" style={{ marginTop: 18 }}>
-                    已卸载 — 安装可恢复
-                  </p>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>已卸载 — 安装可恢复</Divider>
+                  <Space size={8} wrap>
                     {removed.map((r) => (
-                      <button
-                        key={r.id}
-                        className="btn activate"
+                      <Button key={r.id} size="small" icon={<UndoOutlined />}
                         disabled={busyId === r.id}
-                        onClick={() => {
-                          setBusyId(r.id);
-                          queries
-                            .installPlugin(r.id)
-                            .then(refresh)
-                            .catch((e) =>
-                              setError(e instanceof Error ? e.message : String(e))
-                            )
-                            .finally(() => setBusyId(null));
-                        }}
-                      >
-                        Install {r.name || r.id}
-                      </button>
+                        loading={busyId === r.id}
+                        onClick={() => void install(r.id)}>
+                        安装 {r.name || r.id}
+                      </Button>
                     ))}
-                  </div>
+                  </Space>
                 </>
               )}
             </>
           ) : (
-            <LoadingState label="No plugins discovered" />
+            <Skeleton active />
           )}
         </div>
       </div>
-    </>
+    </section>
   );
-}
-
-function selectedComponentsOrEmpty(plugin: ExplorerPlugin): React.ReactNode {
-  if (!plugin.components.length) {
-    return <span className="card-sub">none</span>;
-  }
-  return plugin.components.map((c) => <Chip key={c}>{c}</Chip>);
 }

@@ -99,7 +99,7 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
       columns={cols}
       rowClassName={(record) =>
-        ctx.focus && record["sourceId"] === ctx.focus.sourceId && record["date"] === ctx.focus.date ? "row-selected" : ""
+        ctx.focus && record["sourceId"] === ctx.focus.sourceId && record["date"] === ctx.focus.date ? "ant-table-row-selected" : ""
       }
       onRow={(record) => ({
         onClick: () => {

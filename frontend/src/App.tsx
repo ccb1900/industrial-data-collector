@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import "./styles.css";
 import { Layout, Menu, Switch, Typography, Badge, Tabs } from "antd";
-import { onObservation, onStreamStatus } from "@gocordis/console-client";
+import {
+  ApiOutlined, BlockOutlined, DashboardOutlined, DatabaseOutlined,
+  FileTextOutlined, FolderOutlined, ProfileOutlined, SearchOutlined,
+} from "@ant-design/icons";import { onObservation, onStreamStatus } from "@gocordis/console-client";
 import type { UIObservation, UIPage, UIPanel } from "./models/types";
 import type { StreamStatus } from "@gocordis/console-client";
 import { usePath, navigate } from "./router";
@@ -12,11 +16,13 @@ import { useComposition } from "./hooks/useComposition";
 const { Sider, Content } = Layout;
 
 const MENU_ICONS: Record<string, React.ReactNode> = {
-  "/collections": "📋",
-  "/files": "📁",
-  "/sources": "🔌",
-  "/data": "🔍",
-  "/plugins": "🧩",
+  "/overview": <DashboardOutlined />,
+  "/collections": <ProfileOutlined />,
+  "/files": <FolderOutlined />,
+  "/sources": <ApiOutlined />,
+  "/data": <SearchOutlined />,
+  "/plugins": <BlockOutlined />,
+  "/readings": <DatabaseOutlined />,
 };
 
 // 应用外壳：组合投影驱动导航，观察流只失效不拥有状态。
@@ -88,31 +94,33 @@ export default function App() {
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Layout.Sider width={220} theme="dark" style={{ position: "sticky", top: 0, height: "100vh", overflow: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px 14px" }}>
-          <div style={{
-            width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center",
-            background: "linear-gradient(135deg, #4d6bfe, #7b5bff)", color: "#fff", fontWeight: 700, fontSize: 14,
-          }}>采</div>
-          <div>
-            <Typography.Text strong style={{ display: "block", fontSize: 13, color: "#e8ebf3" }}>工业数据采集</Typography.Text>
-            <Typography.Text style={{ display: "block", fontSize: 11, fontFamily: "monospace", color: "#626b80" }}>cordis console</Typography.Text>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px 14px" }}>
+            <div style={{
+              width: 30, height: 30, borderRadius: 9, display: "grid", placeItems: "center",
+              background: "linear-gradient(135deg, #4d6bfe, #7b5bff)", color: "#fff", fontWeight: 700, fontSize: 14,
+            }}>采</div>
+            <div>
+              <Typography.Text strong style={{ display: "block", fontSize: 13, color: "#e8ebf3" }}>工业数据采集</Typography.Text>
+              <Typography.Text style={{ display: "block", fontSize: 11, fontFamily: "monospace", color: "#626b80" }}>cordis console</Typography.Text>
+            </div>
           </div>
-        </div>
-        <Menu
-          theme="dark" mode="inline"
-          selectedKeys={active ? [active.route] : []}
-          items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route] ?? null, label: p.title }))}
-          onClick={({ key }) => navigate(key)}
-        />
-        <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
-          <Badge status={stream as any} text={<span style={{ fontSize: 12, color: "#99a2b6" }}>{streamLabel}</span>} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 12, color: "#626b80" }}>暗色主题</span>
-            <Switch size="small" checked={isDark} onChange={toggle} />
+          <Menu
+            theme="dark" mode="inline"
+            selectedKeys={active ? [active.route] : []}
+            items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route] ?? <FileTextOutlined />, label: p.title }))}
+            onClick={({ key }) => navigate(key)}
+          />
+          <div style={{ marginTop: "auto", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+            <Badge status={stream as any} text={<span style={{ fontSize: 12, color: "#99a2b6" }}>{streamLabel}</span>} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: "#626b80" }}>暗色主题</span>
+              <Switch size="small" checked={isDark} onChange={toggle} />
+            </div>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {pages.length} 页 · {composition.panels.length} 板
+            </Typography.Text>
           </div>
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {pages.length} 页 · {composition.panels.length} 板
-          </Typography.Text>
         </div>
       </Layout.Sider>
       <Layout>
