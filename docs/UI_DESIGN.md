@@ -24,8 +24,9 @@ visual/interaction design built on top of them.
 DeepSeek-harness lineage: a calm industrial dark theme with one accent
 (DeepSeek blue `#4d6bfe`), hairline structure, monospace data, generous
 whitespace, subtle motion (pulse/spinner only, `prefers-reduced-motion`
-respected). Tokens live in `frontend/src/styles.css` as CSS custom
-properties; components never hard-code colors.
+respected). Tokens live in the shared console's `web/console/src/styles.css`
+(go-cordis) as CSS custom properties with light-theme variable overrides;
+components never hard-code colors.
 
 ```text
 ┌────────────┬──────────────────────────────────┬────────────┐
@@ -55,23 +56,25 @@ properties; components never hard-code colors.
 
 ## Interaction contracts kept
 
-- Transport-agnostic: Wails and HTTP+SSE drive the same api layer
-  (`frontend/src/api/`); components never know the transport. The SSE
-  connection is shared between observation events and boundary status.
-- React never registers or disposes composition; it only reads
-  `ListPages`/`ListPanels` DTOs and re-fetches on `composition.changed`.
-- Renderer identities are static host capabilities (`pageRenderers` /
-  `panelRenderers` maps); a contributed page with an unknown renderer
-  renders an explanatory empty state instead of crashing.
+- The console lives in the framework (`go-cordis/web/console`); this
+  application contributes only composition (TOML pages/panels/views) and
+  hub queries/commands. Pages declare `renderer = "views"` view stacks;
+  the only built-in page renderer is `plugin-explorer`, and the only
+  built-in panel renderer is `event-feed` (console infrastructure).
+- Transport: the shared console speaks HTTP+SSE against the hub contract
+  (`/api/ui/*`, `/api/query/<name>`, `/api/command/<name>`,
+  `/api/plugins*`, `/api/stream`); components never call fetch directly.
+- React never registers or disposes composition; it only reads the
+  pages/panels DTOs and re-queries when observations invalidate.
+- A view block with an unknown `kind` renders an explanatory empty state
+  instead of crashing; dependent views stay dormant (explicit hint) until
+  the referenced `$focus.*` selection exists.
 
-## Developing without the Go backend
+## Developing without touching the application
 
-`npm run dev:mock` serves `frontend/dist` plus a synthetic `/api` surface
-(`frontend/mock/server.mjs`) with the same DTO shapes as
-`internal/webui`, including SSE observations and plugin control that
-mutates the composition. This is possible precisely because the console is
-a second application: the host is replaceable. Build first
-(`npm run build`), then open `http://localhost:5175`.
+The console is replaceable by construction: `vite dev` in
+`go-cordis/web/console` proxies `/api` to any running application host.
+Rebuild the embedded assets with `./scripts/build-console.sh`.
 
 ## Files
 

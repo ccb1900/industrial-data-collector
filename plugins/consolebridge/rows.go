@@ -45,7 +45,13 @@ func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		if serr != nil {
 			return nil, &hub.Error{Code: "error", Message: serr.Error()}
 		}
-		return stats, nil
+		// Flat key/value shape so the console's generic kv block can render
+		// connectivity plus one row-count field per typed table.
+		out := map[string]any{"connected": stats.Connected}
+		for _, ts := range stats.Tables {
+			out[ts.Table] = ts.Rows
+		}
+		return out, nil
 	})
 	if err != nil {
 		return nil, err

@@ -242,9 +242,14 @@ func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
 	}
 	view, _ := json.Marshal(m["view"])
 	views, _ := json.Marshal(m["views"])
+	actions, _ := json.Marshal(m["actions"])
 	def := appui.PageDefinition{ID: id, Title: title, Route: route, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
+	if description, ok := m["description"].(string); ok {
+		def.Description = description
+	}
 	def.View = view
 	def.Views = views
+	def.Actions = actions
 	return def, nil
 }
 
@@ -266,6 +271,9 @@ func panelFromMap(m map[string]any) (appui.PanelDefinition, error) {
 		return appui.PanelDefinition{}, err
 	}
 	def := appui.PanelDefinition{ID: id, Title: title, Renderer: renderer, Order: optionalMapInt(m, "order", 0)}
+	if views, ok := m["views"]; ok {
+		def.Views, _ = json.Marshal(views)
+	}
 	if raw, ok := m["pages"]; ok {
 		if arr, isArr := raw.([]any); isArr {
 			for _, item := range arr {
