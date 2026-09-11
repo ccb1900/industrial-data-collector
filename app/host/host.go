@@ -65,7 +65,14 @@ func New(log *slog.Logger) (*Host, error) {
 	}
 	ctrl := config.NewController(rt, reg)
 	explorer.SetOwned(ctrl.Owned)
-	return &Host{rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log}, nil
+	return &Host{
+		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
+		// overlay maps must exist before the first console-driven edit:
+		// with no overlay file on disk they were nil, and the first
+		// SetComponentConfig / UninstallComponent panicked.
+		removed:  map[string]config.ComponentConfig{},
+		modified: map[string]config.ComponentConfig{},
+	}, nil
 }
 
 func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
