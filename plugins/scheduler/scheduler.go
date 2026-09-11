@@ -10,6 +10,7 @@ import (
 	"dynamic-runtime/extensions/event"
 	rtscheduler "dynamic-runtime/extensions/scheduler"
 	"dynamic-runtime/runtime"
+	cronsched "github.com/robfig/cron/v3"
 
 	"gocordis-csv-collector/plugins/internal/configutil"
 
@@ -39,6 +40,8 @@ type SchedulerComponent struct {
 	emitCtx  *runtime.Context
 	ext      *rtscheduler.Scheduler
 	lastTrig atomic.Value // time.Time
+	cronExpr string       // non-empty when using cron format
+	cron     *cronsched.Cron
 }
 
 func (c *SchedulerComponent) Name() string                 { return "scheduler:" + c.typ }
@@ -92,6 +95,9 @@ func (c *SchedulerComponent) Trigger(ctx context.Context, req model.CollectionRe
 func (c *SchedulerComponent) Info() map[string]any {
 	now := time.Now()
 	out := map[string]any{"schedule": c.typ, "time": c.clock}
+	if c.cronExpr != "" {
+		out["cron"] = c.cronExpr
+	}
 	if anchor, err := appschedule.DailyAnchor(c.clock, now); err == nil {
 		next := anchor
 		if now.After(next) {
@@ -105,9 +111,14 @@ func (c *SchedulerComponent) Info() map[string]any {
 // NewScheduler creates the scheduler Component from configuration.
 func NewScheduler(cc config.ComponentConfig) (*SchedulerComponent, error) {
 	kind := configutil.OptionalString(cc, "schedule", "daily")
-	if kind != "daily" {
-		return nil, fmt.Errorf("%w: only schedule=\"daily\" is supported in v0.1", errs.ErrInvalidConfig)
-	}
 	clock := configutil.OptionalString(cc, "time", "02:00")
+	cronExpr := configutil.OptionalString(cc, "cron", "")
+	if cronExpr != "" {
+		parser := cronsched.NewParser(cronsched.Minute | cronsched.Hour | cronsched.Dom | cronsched.Month | cronsched.Dow)
+		if _, err := parser.Parse(cronExpr); err != nil {
+			return nil, fmt.Errorf("%w: invalid cron expression %q: %v", errs.ErrInvalidConfig, cronExpr, err)
+		}
+		return &SchedulerComponent{typ: "cron", clock: clock, cronExpr: cronExpr}, nil
+	}
 	return &SchedulerComponent{typ: kind, clock: clock}, nil
 }

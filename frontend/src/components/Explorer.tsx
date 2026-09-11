@@ -215,22 +215,19 @@ export function PluginExplorer() {
         </div>
       </div>
       <div className="explorer">
-        <div className="explorer-index" role="list" aria-label="Plugins">
-          {plugins.map((plugin) => (
-            <button
-              key={plugin.id}
-              role="listitem"
-              className={
-                selected?.id === plugin.id ? "explorer-row selected" : "explorer-row"
-              }
-              onClick={() => setSelectedId(plugin.id)}
-            >
-              <span className="explorer-row-name">{plugin.name}</span>
-              <StatusChip value={plugin.state} />
-              <span className="explorer-row-type">{plugin.id}</span>
-            </button>
-          ))}
-        </div>
+        <Table
+          size="small"
+          rowKey="id"
+          dataSource={plugins}
+          pagination={false}
+          rowClassName={(p) => selected?.id === p.id ? "row-selected" : ""}
+          onRow={(p) => ({ onClick: () => setSelectedId(p) })}
+          columns={[
+            { title: "名称", dataIndex: "name", key: "name" },
+            { title: "类型", dataIndex: "type", key: "type", ellipsis: true },
+            { title: "状态", dataIndex: "state", key: "state", width: 80,
+              render: (s: string) => <Tag color={s === "Active" ? "success" : s === "Gone" ? "default" : s === "Failed" ? "error" : "processing"}>{s}</Tag> },
+          ]} />
         <div className="explorer-detail">
           {selected ? (
             <>

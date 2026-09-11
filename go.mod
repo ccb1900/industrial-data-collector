@@ -6,6 +6,7 @@ require (
 	dynamic-runtime v0.0.0-20260910224321-5c2c6789b64f
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/text v0.29.0
 	modernc.org/sqlite v1.34.5
 )
