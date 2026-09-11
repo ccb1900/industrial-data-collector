@@ -9,6 +9,9 @@ pattern = "*.csv"
 file_stable_window_seconds = 0
 date_policy = "specific"
 specific_date = "2026-09-08"
+# 与生产配置一致：停机/缺勤后第一次触发最多回看 7 天补齐缺口；
+# 已成功的批次因幂等写入不会重复。
+catchup_days = 7
 batch_size = 1000
 
 [profiles.typed_sqlite]
