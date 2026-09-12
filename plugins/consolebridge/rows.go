@@ -11,8 +11,8 @@ import (
 	consolehost "dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/hub"
 
-	storageplugin "gocordis-csv-collector/plugins/storage"
 	appstorage "gocordis-csv-collector/app/storage"
+	storageplugin "gocordis-csv-collector/plugins/storage"
 )
 
 // RowsComponent exposes the typed table sink's read side as the "rows"

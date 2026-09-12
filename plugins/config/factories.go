@@ -14,8 +14,9 @@ import (
 
 	explorerplugin "dynamic-runtime/extensions/console/explorer"
 	uiplugin "dynamic-runtime/extensions/console/host"
-	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
 	collectorplugin "gocordis-csv-collector/plugins/collector"
+	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
+	"gocordis-csv-collector/plugins/internal/pluginkit"
 	metadataplugin "gocordis-csv-collector/plugins/metadata"
 	parserplugin "gocordis-csv-collector/plugins/parser"
 	queryplugin "gocordis-csv-collector/plugins/query"
@@ -26,7 +27,6 @@ import (
 	storageplugin "gocordis-csv-collector/plugins/storage"
 	uicontrib "gocordis-csv-collector/plugins/ui-contrib"
 	watchtrigger "gocordis-csv-collector/plugins/watchtrigger"
-	"gocordis-csv-collector/plugins/internal/pluginkit"
 )
 
 // RegisterFactories composes every component type the application ships.

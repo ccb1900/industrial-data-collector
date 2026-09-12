@@ -41,18 +41,37 @@ import (
 func main() {
 	configPath := flag.String("config", "configs/desktop.toml", "application TOML configuration")
 	addr := flag.String("addr", ":8080", "listen address")
+	dumpConfig := flag.Bool("dump-config", false, "print the effective configuration (patches applied, validated) and exit without starting")
+	var patches multiFlag
+	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
 
 	logStore := logstore.Default()
 	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
 	logger := slog.New(logStore.NewHandler(os.Stderr))
-	if err := run(logger, *configPath, *addr); err != nil {
+	if *dumpConfig {
+		if err := apphost.DumpEffectiveConfig(*configPath, patches, *configPath+".removed.json", os.Stdout); err != nil {
+			logger.Error("dump-config failed", "error", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(logger, *configPath, *addr, patches); err != nil {
 		logger.Error("web-ui failed", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger, configPath, addr string) error {
+// multiFlag collects repeated --patch values.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return fmt.Sprint([]string(*m)) }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+func run(logger *slog.Logger, configPath, addr string, patchPaths []string) error {
 	// WatchHost = config watch + reconciliation: TOML edits hot-apply to the
 	// running composition (loader semantics), no restart.
 	app, err := apphost.NewWatchHost(configPath, logger)
@@ -60,6 +79,14 @@ func run(logger *slog.Logger, configPath, addr string) error {
 		return err
 	}
 	defer app.Close(context.Background())
+	// Desired-state patches: console overlay file plus read-only operator
+	// layers, re-applied on every reconcile in the documented order.
+	app.SetOverlayPath(configPath + ".removed.json")
+	if len(patchPaths) > 0 {
+		if err := app.SetPatchPaths(patchPaths); err != nil {
+			return fmt.Errorf("patch files: %w", err)
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -85,8 +112,8 @@ func run(logger *slog.Logger, configPath, addr string) error {
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
-	// Desired-state editing: uninstall/install persist to the overlay file.
-	app.SetOverlayPath(configPath + ".removed.json")
+	// Desired-state editing: uninstall/install persist to the patch file
+	// (loaded before Sync so restarts converge to the persisted decisions).
 	srv.SetPluginLifecycle(lifecycleAdapter{h: app.Host})
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))

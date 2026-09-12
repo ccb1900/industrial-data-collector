@@ -26,9 +26,14 @@ func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, 
 	if err != nil {
 		return config.Config{}, err
 	}
-	// 期望状态 overlay 在每次热加载时先行应用：控制台的卸载/配置编辑
-	// 决策不被文件内容覆盖。
-	p.host.applyOverlay(&cfg)
+	// Snapshot the raw parsed composition first: it is the base the patch
+	// layers apply to, and install/restore re-reconciles from it.
+	p.host.setBaseDesired(cfg)
+	// 期望状态 patch 在每次热加载时先行应用：控制台的卸载/配置编辑决策
+	// 不被文件内容覆盖；补丁与基础文件的形状冲突在此显式失败。
+	if err := p.host.applyOverlay(&cfg); err != nil {
+		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
+	}
 	if err := appconfig.Validate(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
 	}

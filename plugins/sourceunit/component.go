@@ -68,8 +68,8 @@ type job struct {
 	done chan error
 }
 
-func (c *SourceUnitComponent) Name() string                 { return "source-unit:" + string(c.sourceID) }
-func (c *SourceUnitComponent) Inject() []runtime.Dependency { return nil }
+func (c *SourceUnitComponent) Name() string                  { return "source-unit:" + string(c.sourceID) }
+func (c *SourceUnitComponent) Inject() []runtime.Dependency  { return nil }
 func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 
 // SourceID returns the logical Source identity. It is independent from path

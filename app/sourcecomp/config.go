@@ -358,4 +358,3 @@ func sourceDefinitions(sources []*ResolvedSource) []any {
 func SourceComponentID(sourceID string) string {
 	return SourceComponentPrefix + strings.TrimSpace(sourceID)
 }
-

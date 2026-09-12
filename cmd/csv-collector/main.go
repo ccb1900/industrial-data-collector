@@ -20,15 +20,25 @@ import (
 func main() {
 	configPath := flag.String("config", "configs/example.toml", "TOML configuration file")
 	once := flag.Bool("once", false, "run one collection pass (configuration reconciliation, startup recovery, target date) and exit; for external schedulers such as Windows Task Scheduler")
+	dumpConfig := flag.Bool("dump-config", false, "print the effective configuration (patches applied, validated) and exit without starting")
+	var patches multiFlag
+	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
 	logStore := logstore.Default()
 	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
 	logger := slog.New(logStore.NewHandler(os.Stderr))
+	if *dumpConfig {
+		if err := host.DumpEffectiveConfig(*configPath, patches, *configPath+".removed.json", os.Stdout); err != nil {
+			logger.Error("dump-config failed", "error", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 	var err error
 	if *once {
-		err = runOnce(logger, *configPath)
+		err = runOnce(logger, *configPath, patches)
 	} else {
-		err = runResident(logger, *configPath)
+		err = runResident(logger, *configPath, patches)
 	}
 	if err != nil {
 		logger.Error("csv-collector failed", "error", err.Error())
@@ -36,14 +46,40 @@ func main() {
 	}
 }
 
+// multiFlag collects repeated --patch values.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return fmt.Sprint([]string(*m)) }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+// loadDesiredPatches converges the headless runner with the console:
+// persisted uninstall/config decisions and operator patch layers apply to
+// every entry point, not just the web UI.
+func loadDesiredPatches(app interface {
+	SetOverlayPath(string)
+	SetPatchPaths([]string) error
+}, configPath string, patchPaths []string) error {
+	app.SetOverlayPath(configPath + ".removed.json")
+	if len(patchPaths) > 0 {
+		return app.SetPatchPaths(patchPaths)
+	}
+	return nil
+}
+
 // runResident keeps the process alive: configuration watching plus the daily
 // scheduler drive every collection through Runtime events.
-func runResident(logger *slog.Logger, configPath string) error {
+func runResident(logger *slog.Logger, configPath string, patchPaths []string) error {
 	app, err := host.NewWatchHost(configPath, logger)
 	if err != nil {
 		return err
 	}
 	defer app.Close(context.Background())
+	if err := loadDesiredPatches(app.Host, configPath, patchPaths); err != nil {
+		return fmt.Errorf("patch files: %w", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -68,7 +104,7 @@ func runResident(logger *slog.Logger, configPath string) error {
 // reverts every Effect the activation installed — workers, subscriptions,
 // scheduler jobs, and storage connections — through the same Runtime cleanup
 // path a resident shutdown uses.
-func runOnce(logger *slog.Logger, configPath string) error {
+func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error {
 	if _, err := os.Stat(configPath); err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
@@ -77,6 +113,9 @@ func runOnce(logger *slog.Logger, configPath string) error {
 		return err
 	}
 	defer func() { _ = app.Close(context.Background()) }()
+	if err := loadDesiredPatches(app, configPath, patchPaths); err != nil {
+		return fmt.Errorf("patch files: %w", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

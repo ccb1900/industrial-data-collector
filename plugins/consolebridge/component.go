@@ -45,12 +45,23 @@ type Component struct {
 	// units 是采集应用的源单元集合：宿主在 reconcile 后注入，
 	// "plan" 命名查询按需调用它们的补采规划器。
 	units []*sourceunitplugin.SourceUnitComponent
+	// configSource 由宿主注入：返回当前生效组合（补丁已应用）的快照，
+	// "effective-config" 命名查询据此作答——控制台能看到运行时真正
+	// 收敛到的那棵组件树，而不是靠猜。
+	configSource func() any
 }
 
 // SetUnits 注入源单元集合（宿主在每次 reconcile 后调用）。
 func (c *Component) SetUnits(units []*sourceunitplugin.SourceUnitComponent) {
 	c.mu.Lock()
 	c.units = units
+	c.mu.Unlock()
+}
+
+// SetConfigSource 注入生效组合快照的来源（宿主在 reconcile 后调用）。
+func (c *Component) SetConfigSource(fn func() any) {
+	c.mu.Lock()
+	c.configSource = fn
 	c.mu.Unlock()
 }
 
@@ -230,6 +241,19 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("effective-config", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			c.mu.Lock()
+			fn := c.configSource
+			c.mu.Unlock()
+			if fn == nil {
+				return map[string]any{"components": []any{}}, nil
+			}
+			return fn(), nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
 		return hubRegistry.RegisterCommand("trigger", owner, func(ctx context.Context, body json.RawMessage) error {
 			var req model.CollectionRequested
 			req.Reason = "ui"
@@ -283,10 +307,10 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		}
 		_ = journal.Append(record)
 		hubRegistry.Publish(hub.Observation{
-		Type:      record.Type,
-		SourceID:  record.SourceID,
-		Timestamp: record.Timestamp,
-	})
+			Type:      record.Type,
+			SourceID:  record.SourceID,
+			Timestamp: record.Timestamp,
+		})
 	})
 	if err != nil {
 		return nil, err

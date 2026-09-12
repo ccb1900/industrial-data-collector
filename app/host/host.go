@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,19 +36,24 @@ type Host struct {
 	explorer *explorerplugin.Service
 	log      *slog.Logger
 
-	// desired-state overlay: console-driven changes to the desired
-	// configuration — uninstall decisions AND per-component config edits.
-	// The config file stays the source of truth; the overlay persists these
-	// decisions across restarts and is re-applied on every reconcile.
-	overlayPath string
 	// reconcileFailureSink is invoked whenever an apply or readiness failure
 	// escapes reconciliation: the application forwards it to the console
 	// observation stream so operators see WHY, not just that it failed.
 	reconcileFailureSink func(err error)
-	removed     map[string]config.ComponentConfig
-	removedIDs  []string
-	modified    map[string]config.ComponentConfig
-	modifiedIDs []string
+	// Desired-state patches: ordered row-level edits over the base
+	// configuration — uninstall decisions AND per-component config edits.
+	// The config file stays the source of truth; the patch list persists
+	// across restarts and re-applies on every reconcile. patches is the
+	// console-writable overlay (applied first); patchLayers are read-only
+	// operator layers (--patch files, applied last with the final word).
+	patchPath   string
+	patchLayers [][]Patch
+	patches     []Patch
+	// lastDesired is the BASE composition as last parsed — before any patch
+	// layer. Patches apply on top of it at every reconcile; install/restore
+	// re-reconciles from it. (Storing the post-patch set here would make an
+	// uninstall permanent: restore would reconcile a set that no longer
+	// contains the row.)
 	lastDesired config.Config
 	mu          sync.Mutex
 }
@@ -67,16 +73,21 @@ func New(log *slog.Logger) (*Host, error) {
 	explorer.SetOwned(ctrl.Owned)
 	return &Host{
 		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
-		// overlay maps must exist before the first console-driven edit:
-		// with no overlay file on disk they were nil, and the first
-		// SetComponentConfig / UninstallComponent panicked.
-		removed:  map[string]config.ComponentConfig{},
-		modified: map[string]config.ComponentConfig{},
 	}, nil
 }
 
+// setBaseDesired snapshots the raw parsed composition (before patches).
+func (h *Host) setBaseDesired(cfg config.Config) {
+	h.mu.Lock()
+	h.lastDesired = config.Config{Components: append([]config.ComponentConfig(nil), cfg.Components...)}
+	h.mu.Unlock()
+}
+
 func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
-	h.applyOverlay(&cfg)
+	h.setBaseDesired(cfg)
+	if err := h.applyOverlay(&cfg); err != nil {
+		return fmt.Errorf("apply desired-state patches: %w", err)
+	}
 	if err := appconfig.Validate(cfg); err != nil {
 		return fmt.Errorf("application config validation: %w", err)
 	}
@@ -142,104 +153,121 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 	if h.explorer != nil {
 		h.explorer.SetDesired(cfg)
 	}
-	h.lastDesired = cfg
 	h.attachStateProjection()
 	return nil
 }
 
-// applyOverlay applies the console-driven desired-state overlay to a fresh
-// configuration: uninstalled components are dropped, edited components are
-// replaced by their edited definition. Order of the declared composition is
-// preserved.
-func (h *Host) applyOverlay(cfg *config.Config) {
+// applyOverlay applies the desired-state patch layers to a fresh
+// configuration: the console-writable overlay first, then the read-only
+// --patch operator layers (dsh semantics — the per-invocation operator
+// layer has the final word, so a fleet-wide fix defeats stale console
+// edits). Order of the declared composition is otherwise preserved
+// (replace swaps in place, remove drops, insert appends).
+func (h *Host) applyOverlay(cfg *config.Config) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.removed) == 0 && len(h.modified) == 0 {
-		return
+	layers := make([][]Patch, 0, len(h.patchLayers)+1)
+	layers = append(layers, h.patches)
+	layers = append(layers, h.patchLayers...)
+	h.mu.Unlock()
+	// Patch application removes/swaps rows in place: isolate the caller's
+	// backing array first, or the base snapshot's elements shift underneath
+	// it (duplicate rows on the next reconcile).
+	work := config.Config{Components: append([]config.ComponentConfig(nil), cfg.Components...)}
+	if err := ApplyPatches(&work, layers...); err != nil {
+		return err
 	}
-	out := make([]config.ComponentConfig, 0, len(cfg.Components))
-	for _, cc := range cfg.Components {
-		if _, gone := h.removed[cc.ID]; gone {
-			continue
-		}
-		if edited, editedOK := h.modified[cc.ID]; editedOK {
-			out = append(out, edited)
-			continue
-		}
-		out = append(out, cc)
-	}
-	cfg.Components = out
+	*cfg = work
+	return nil
 }
 
-// SetOverlayPath loads a persisted uninstall overlay and stores the path for
-// future persistence.
+// SetOverlayPath loads the persisted console-writable patch file and stores
+// the path for future persistence. The legacy map-based overlay format is
+// still readable (converted on load) so existing deployments migrate
+// silently.
 func (h *Host) SetOverlayPath(path string) {
-	h.overlayPath = path
-	data, err := os.ReadFile(path)
+	h.patchPath = path
+	patches, err := LoadPatchFile(path)
 	if err != nil {
-		return
-	}
-	var snap struct {
-		Removed  []config.ComponentConfig `json:"removed"`
-		Modified []config.ComponentConfig `json:"modified"`
-	}
-	if err := json.Unmarshal(data, &snap); err != nil {
-		h.log.Warn("overlay file unreadable; ignoring", "path", path, "error", err.Error())
+		if !errors.Is(err, os.ErrNotExist) {
+			h.log.Warn("patch file unreadable; ignoring", "path", path, "error", err.Error())
+		}
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.removed = map[string]config.ComponentConfig{}
-	h.removedIDs = nil
-	for _, cc := range snap.Removed {
-		if cc.ID == "" {
-			continue
+	h.patches = patches
+	h.mu.Unlock()
+}
+
+// SetPatchPaths installs read-only operator patch layers (--patch files).
+// They apply after the console-writable overlay on every reconcile, so an
+// operator-provided layer overrides stale console decisions.
+func (h *Host) SetPatchPaths(paths []string) error {
+	layers := make([][]Patch, 0, len(paths))
+	for _, path := range paths {
+		patches, err := LoadPatchFile(path)
+		if err != nil {
+			return err
 		}
-		h.removed[cc.ID] = cc
-		h.removedIDs = append(h.removedIDs, cc.ID)
+		layers = append(layers, patches)
 	}
-	h.modified = map[string]config.ComponentConfig{}
-	h.modifiedIDs = nil
-	for _, cc := range snap.Modified {
-		if cc.ID == "" {
-			continue
-		}
-		h.modified[cc.ID] = cc
-		h.modifiedIDs = append(h.modifiedIDs, cc.ID)
-	}
+	h.mu.Lock()
+	h.patchLayers = layers
+	h.mu.Unlock()
+	return nil
 }
 
 func (h *Host) persistOverlay() error {
-	if h.overlayPath == "" {
+	if h.patchPath == "" {
 		return nil
 	}
 	h.mu.Lock()
-	removed := make([]config.ComponentConfig, 0, len(h.removedIDs))
-	for _, id := range h.removedIDs {
-		removed = append(removed, h.removed[id])
-	}
-	modified := make([]config.ComponentConfig, 0, len(h.modifiedIDs))
-	for _, id := range h.modifiedIDs {
-		modified = append(modified, h.modified[id])
-	}
+	doc := patchDoc{Version: patchVersion, Patches: append([]Patch(nil), h.patches...)}
 	h.mu.Unlock()
-	data, err := json.MarshalIndent(map[string]any{
-		"removed":  removed,
-		"modified": modified,
-	}, "", "  ")
+	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(h.overlayPath, data, 0o644)
+	return os.WriteFile(h.patchPath, data, 0o644)
+}
+
+// setPatchLocked replaces the last patch with the same op+id in place, or
+// appends. Position stability keeps the persisted file readable and makes
+// repeated edits of one component not grow the list.
+func (h *Host) setPatchLocked(p Patch) {
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].Op == p.Op && h.patches[i].ID == p.ID {
+			h.patches[i] = p
+			return
+		}
+	}
+	h.patches = append(h.patches, p)
+}
+
+// EffectiveConfig returns the last desired configuration with all patch
+// layers applied — what the runtime actually converges to. ok is false
+// before the first successful reconciliation.
+func (h *Host) EffectiveConfig() (config.Config, bool) {
+	h.mu.Lock()
+	base := h.lastDesired
+	h.mu.Unlock()
+	if len(base.Components) == 0 {
+		return config.Config{}, false
+	}
+	if err := h.applyOverlay(&base); err != nil {
+		return config.Config{}, false
+	}
+	return base, true
 }
 
 // ComponentConfig returns the effective configuration of one desired
-// component (console edits applied).
+// component (patches applied).
 func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if edited, ok := h.modified[id]; ok {
-		return edited.Config, nil
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].ID == id && h.patches[i].Op == PatchReplace {
+			return h.patches[i].Component.Config, nil
+		}
 	}
 	for _, cc := range h.lastDesired.Components {
 		if cc.ID == id {
@@ -254,8 +282,8 @@ func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 }
 
 // SetComponentConfig replaces the configuration of one desired component.
-// The edit persists to the overlay and is applied by reconciliation; a
-// failed reconciliation rolls the edit back so the overlay never holds a
+// The edit persists to the patch file and is applied by reconciliation; a
+// failed reconciliation rolls the edit back so the patch list never holds a
 // configuration the runtime rejected.
 func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string]any) error {
 	h.mu.Lock()
@@ -268,20 +296,35 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 			break
 		}
 	}
+	if !found {
+		// The edit may target an inserted component, not just base rows.
+		for _, p := range h.patches {
+			if p.Op == PatchInsert && p.ID == id {
+				def = *p.Component
+				found = true
+				break
+			}
+		}
+	}
+	var prev Patch
+	hadPrev := false
+	if found {
+		edited := def
+		edited.ID = id
+		edited.Config = cfg
+		for i := len(h.patches) - 1; i >= 0; i-- {
+			if h.patches[i].Op == PatchReplace && h.patches[i].ID == id {
+				prev = h.patches[i]
+				hadPrev = true
+				break
+			}
+		}
+		h.setPatchLocked(Patch{Op: PatchReplace, ID: id, Component: &edited})
+	}
 	h.mu.Unlock()
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
-
-	h.mu.Lock()
-	prev, hadPrev := h.modified[id]
-	edited := def
-	edited.Config = cfg
-	h.modified[id] = edited
-	if !hadPrev {
-		h.modifiedIDs = append(h.modifiedIDs, id)
-	}
-	h.mu.Unlock()
 
 	if err := h.persistOverlay(); err != nil {
 		return err
@@ -290,9 +333,14 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 		// roll the edit back — the runtime rejected the new configuration.
 		h.mu.Lock()
 		if hadPrev {
-			h.modified[id] = prev
+			h.setPatchLocked(prev)
 		} else {
-			delete(h.modified, id)
+			for i := len(h.patches) - 1; i >= 0; i-- {
+				if h.patches[i].Op == PatchReplace && h.patches[i].ID == id {
+					h.patches = append(h.patches[:i], h.patches[i+1:]...)
+					break
+				}
+			}
 		}
 		h.mu.Unlock()
 		_ = h.persistOverlay()
@@ -301,9 +349,10 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	return nil
 }
 
-// UninstallComponent removes one component from the desired configuration and
-// persists the decision. The component's effects are reverted by the Runtime
-// during reconciliation; the definition is kept so Install can restore it.
+// UninstallComponent removes one component from the desired configuration
+// (a remove patch) and persists the decision. The component's effects are
+// reverted by the Runtime during reconciliation; the definition is kept in
+// the patch so Install can restore it.
 func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	var def config.ComponentConfig
 	found := false
@@ -315,20 +364,23 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 		}
 	}
 	if !found {
+		h.mu.Lock()
+		for _, p := range h.patches {
+			if (p.Op == PatchReplace || p.Op == PatchInsert) && p.ID == id {
+				def = *p.Component
+				found = true
+			}
+		}
+		h.mu.Unlock()
+	}
+	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
 	if appconfig.ConsoleCritical(def.Type) {
 		return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
 	}
 	h.mu.Lock()
-	if h.removed == nil {
-		h.removed = map[string]config.ComponentConfig{}
-	}
-	if _, exists := h.removed[id]; !exists {
-		h.removedIDs = append(h.removedIDs, id)
-	}
-	h.removed[id] = def
-	_ = def
+	h.setPatchLocked(Patch{Op: PatchRemove, ID: id, Component: &def})
 	h.mu.Unlock()
 	if err := h.persistOverlay(); err != nil {
 		return err
@@ -336,21 +388,22 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	return h.Reconcile(ctx, h.lastDesired)
 }
 
-// InstallComponent restores a previously uninstalled component.
+// InstallComponent restores a previously uninstalled component by dropping
+// its remove patches; replace patches (config edits) stay in force.
 func (h *Host) InstallComponent(ctx context.Context, id string) error {
 	h.mu.Lock()
-	_, ok := h.removed[id]
-	if ok {
-		delete(h.removed, id)
-		for i, rid := range h.removedIDs {
-			if rid == id {
-				h.removedIDs = append(h.removedIDs[:i], h.removedIDs[i+1:]...)
-				break
-			}
+	kept := h.patches[:0]
+	dropped := false
+	for _, p := range h.patches {
+		if p.Op == PatchRemove && p.ID == id {
+			dropped = true
+			continue
 		}
+		kept = append(kept, p)
 	}
+	h.patches = kept
 	h.mu.Unlock()
-	if !ok {
+	if !dropped {
 		return fmt.Errorf("component %q was not uninstalled", id)
 	}
 	if err := h.persistOverlay(); err != nil {
@@ -359,15 +412,29 @@ func (h *Host) InstallComponent(ctx context.Context, id string) error {
 	return h.Reconcile(ctx, h.lastDesired)
 }
 
-// RemovedComponents lists uninstalled component definitions (oldest first).
+// RemovedComponents lists uninstalled component definitions (patch order,
+// oldest first).
 func (h *Host) RemovedComponents() []config.ComponentConfig {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make([]config.ComponentConfig, 0, len(h.removedIDs))
-	for _, id := range h.removedIDs {
-		out = append(out, h.removed[id])
+	out := make([]config.ComponentConfig, 0, len(h.patches))
+	for _, p := range h.patches {
+		if p.Op != PatchRemove || p.Component == nil {
+			continue
+		}
+		out = append(out, *p.Component)
 	}
 	return out
+}
+
+// EffectiveSnapshot renders the effective composition (patches applied) in
+// the shape the console's "effective-config" named query serves.
+func (h *Host) EffectiveSnapshot() map[string]any {
+	cfg, ok := h.EffectiveConfig()
+	if !ok {
+		return map[string]any{"components": []any{}}
+	}
+	return renderEffective(cfg)
 }
 
 // attachStateProjection feeds the durable state of every source unit (and of
@@ -398,14 +465,17 @@ func (h *Host) attachStateProjection() {
 			bridge = comp
 		}
 	}
+	// The bridge carries composition truth to the console regardless of the
+	// query provider's presence this reconcile.
+	if bridge != nil {
+		bridge.SetUnits(unitComps)
+		bridge.SetConfigSource(func() any { return h.EffectiveSnapshot() })
+	}
 	if qp == nil || len(units) == 0 {
 		return
 	}
 	if err := qp.AttachUnits(units); err != nil {
 		h.log.Warn("state projection attach failed", "error", err.Error())
-	}
-	if bridge != nil {
-		bridge.SetUnits(unitComps)
 	}
 }
 

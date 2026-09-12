@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"dynamic-runtime/extensions/console/configutil"
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/console/configutil"
 
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
