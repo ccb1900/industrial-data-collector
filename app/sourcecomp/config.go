@@ -8,6 +8,8 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	extconfig "dynamic-runtime/extensions/config"
+
+	appbundle "gocordis-csv-collector/app/bundle"
 )
 
 const (
@@ -29,6 +31,8 @@ type ParseResult struct {
 
 // Parse decodes the extended TOML document:
 //
+//	bundles = ["collector-core", "collector-console"]
+//
 //	[profiles.csv_machine]
 //	...
 //
@@ -37,8 +41,10 @@ type ParseResult struct {
 //	path = "\\\\machine001\\data"
 //	profiles = ["csv_machine"]
 //
-// Existing [[components]] tables are preserved unchanged. Legacy top-level
-// [source.xxx] tables are migrated to anonymous sources.
+// Named bundles expand into their component rows first; explicit
+// [[components]] rows replace a bundle row with the same id in place
+// (whole-row replace) or append. Legacy top-level [source.xxx] tables are
+// migrated to anonymous sources.
 func Parse(data []byte) (*ParseResult, error) {
 	doc := map[string]any{}
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -57,18 +63,29 @@ func Parse(data []byte) (*ParseResult, error) {
 		return nil, err
 	}
 	compDefs = append(compDefs, legacy...)
+	bundleNames, err := parseBundleNames(doc["bundles"])
+	if err != nil {
+		return nil, err
+	}
 	for k := range doc {
 		switch k {
-		case "components", "profiles", "sources", "source":
+		case "bundles", "components", "profiles", "sources", "source":
 			continue
 		default:
 			return nil, fmt.Errorf("unsupported top-level key/table %q", k)
 		}
 	}
+	// Bundles are the preset layer: they expand first so explicit rows can
+	// override them by id (same layering as patches over the base file).
+	presetRows, err := appbundle.Expand(bundleNames)
+	if err != nil {
+		return nil, err
+	}
 	components, err := parseComponents(doc["components"])
 	if err != nil {
 		return nil, err
 	}
+	components = appbundle.MergeRows(presetRows, components)
 	resolver, err := NewResolver(profiles)
 	if err != nil {
 		return nil, err
@@ -99,6 +116,28 @@ func Expand(data []byte) (extconfig.Config, error) {
 		return extconfig.Config{}, err
 	}
 	return result.Config, nil
+}
+
+// parseBundleNames reads the `bundles = ["name", ...]` preset references.
+// The key is optional; an explicit empty array is allowed and expands
+// nothing.
+func parseBundleNames(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("bundles must be an array of preset names")
+	}
+	out := make([]string, 0, len(list))
+	for i, item := range list {
+		name, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("bundles #%d must be a string", i)
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 func parseProfiles(raw any) (map[string]Profile, error) {

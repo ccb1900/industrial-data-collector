@@ -85,6 +85,16 @@ runbook and failure-mode checklist. The `database/sql` driver packages must
 be registered in the binary; this application keeps database target selection
 in the Storage plugin and does not embed vendor-specific Collector logic.
 
+`configs/desktop.toml` is the bundle-based shape: named bundles
+(`app/bundle`, `collector-core` + `collector-console`) emit the runtime
+backbone and the standard declarative console, and the deployment file keeps
+only shared profiles, sources, and whole-row overrides. `--dump-config`
+prints the expanded effective tree (bundles expanded, patches applied,
+validated) without booting; the same shape is served live by the
+`effective-config` hub query. Console-driven edits and uninstall decisions
+persist as ordered patches in `configs/desktop.toml.removed.json`; operator
+`--patch` files apply after the console overlay and have the final word.
+
 ## Verify
 
 ```bash

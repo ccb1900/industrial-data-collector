@@ -1,14 +1,33 @@
-# Desktop configuration: composition-shape demo (profiles + sources).
-# Single-machine demo with typed relational sink (pure-Go SQLite) and the
-# full console (pages/panels contributed by independent components).
+# Desktop configuration: composition-shape demo.
+# The deployment-independent composition lives in named bundles (app/bundle):
+#   collector-core     — scheduler, console bridge/rows, query provider, ui,
+#                        plugin explorer (the runtime backbone)
+#   collector-console  — the standard pages/panels as declarative view stacks
+# This file declares what is specific to THIS deployment: shared profiles
+# and sources. An explicit [[components]] row replaces the bundle row with
+# the same id wholesale — e.g. to retune the schedule:
+#
+#   [[components]]
+#   id = "scheduler"
+#   type = "scheduler"
+#
+#   [components.config]
+#   cron = "0 */6 * * *"        # every 6 hours; cron 与 schedule/time 二选一
+#
+# `--dump-config` (and the "effective-config" hub query) prints the expanded
+# effective tree — what actually runs, patches applied.
+# NOTE: top-level keys must precede every table in TOML — keep this line here.
+bundles = ["collector-core", "collector-console"]
 
+# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
+
+# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
+# 第一次触发最多回看 7 天补齐缺口，已成功的批次因幂等写入不会重复。
 [profiles.csv_machine]
 parser = "csv"
 header = true
 pattern = "*.csv"
 file_stable_window_seconds = 0
-# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
-# 第一次触发最多回看 7 天补齐缺口，已成功的批次因幂等写入不会重复。
 date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
@@ -128,322 +147,8 @@ id = "quality-source"
 path = "./data/quality"
 profiles = ["csv_machine", "typed_sqlite"]
 
-
 [[sources.path_metadata]]
 name = "product"
 from = "filename"
 pattern = "{product}.csv"
 required = true
-
-# 定时采集：默认每日锚点（schedule + time）；也可给 cron 表达式接管时间线，
-# 例如 cron = "0 */6 * * *"（每 6 小时）。cron 与 schedule/time 二选一。
-[[components]]
-id = "scheduler"
-type = "scheduler"
-
-[components.config]
-cron = "23 3 * * *"
-
-[[components]]
-id = "console-bridge"
-type = "console-bridge"
-
-[[components]]
-id = "console-rows"
-type = "console-rows"
-
-[[components]]
-id = "query-provider"
-type = "query-provider"
-
-[[components]]
-id = "ui"
-type = "ui"
-
-# ------------------------------------------------------------
-# Console composition: every page/panel is a declarative view stack.
-# The shared console (go-cordis/web/console) interprets the schema —
-# this application ships zero frontend code.
-# ------------------------------------------------------------
-
-[[components]]
-id = "ui-page-overview"
-type = "ui-page"
-
-[components.config]
-page_id = "overview"
-title = "概览"
-route = "/overview"
-description = "采集运行情况总览：由读模型投影，观察流失效后自动重查。"
-renderer = "views"
-order = 0
-
-[[components.config.actions]]
-label = "立即采集"
-command = "trigger"
-datePicker = true
-
-[[components.config.views]]
-kind = "stats"
-items = [
-  { label = "数据源", query = "sources", op = "count" },
-  { label = "采集任务", query = "collections", op = "count" },
-  { label = "累计记录", query = "collections", op = "sum", field = "records" },
-  { label = "失败文件", query = "collections", op = "sum", field = "filesFailed", warn = true },
-]
-
-[[components.config.views]]
-kind = "trend"
-title = "按日采集量"
-query = "collections"
-dateKey = "date"
-series = [
-  { key = "records", label = "采集" },
-  { key = "filesFailed", label = "失败" },
-]
-
-[[components.config.views]]
-kind = "table"
-query = "collections"
-pageSize = 8
-columns = [
-  { key = "sourceId", title = "数据源" },
-  { key = "date", title = "采集日期" },
-  { key = "files", title = "文件进度", format = "{filesCompleted}/{filesTotal}" },
-  { key = "records", title = "记录数" },
-  { key = "status", title = "状态" },
-]
-
-[[components]]
-id = "ui-page-collections"
-type = "ui-page"
-
-[components.config]
-page_id = "collections"
-title = "采集任务"
-route = "/collections"
-description = "按数据源与采集日期列出任务；选择行后联动文件视图。"
-renderer = "views"
-order = 10
-
-[[components.config.actions]]
-label = "立即采集"
-command = "trigger"
-datePicker = true
-
-[[components.config.views]]
-kind = "kv"
-query = "schedule"
-fields = [
-  { key = "schedule", label = "调度策略" },
-  { key = "time", label = "触发时间" },
-  { key = "cron", label = "Cron 表达式" },
-  { key = "last", label = "上次触发" },
-  { key = "next", label = "下次触发" },
-]
-
-[[components.config.views]]
-kind = "list"
-query = "plan"
-titleKey = "sourceId"
-rowActions = [{ label = "采集", command = "trigger", args = { sourceId = "$row.sourceId", date = "$row.date" } }]
-
-[[components.config.views]]
-kind = "table"
-query = "collections"
-selectFocus = true
-pageSize = 10
-columns = [
-  { key = "sourceId", title = "数据源" },
-  { key = "date", title = "采集日期" },
-  { key = "files", title = "文件进度", format = "{filesCompleted}/{filesTotal}" },
-  { key = "records", title = "记录数" },
-  { key = "status", title = "状态" },
-]
-
-[[components]]
-id = "ui-page-files"
-type = "ui-page"
-
-[components.config]
-page_id = "files"
-title = "文件"
-route = "/files"
-description = "聚焦采集的文件清单；展开行查看开放键值元数据。"
-renderer = "views"
-order = 20
-
-[[components.config.views]]
-kind = "table"
-query = "files"
-expand = "metadata"
-pageSize = 20
-params = { sourceId = "$focus.sourceId", date = "$focus.date" }
-columns = [
-  { key = "name", title = "文件" },
-  { key = "path", title = "路径" },
-  { key = "records", title = "记录数" },
-  { key = "status", title = "状态" },
-]
-
-[[components]]
-id = "ui-page-sources"
-type = "ui-page"
-
-[components.config]
-page_id = "sources"
-title = "数据源"
-route = "/sources"
-description = "由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。"
-renderer = "views"
-order = 30
-
-[[components.config.views]]
-kind = "table"
-query = "sources"
-pageSize = 20
-rowActions = [{ label = "采集", command = "trigger", args = { sourceId = "$row.sourceId" } }]
-columns = [
-  { key = "name", title = "数据源" },
-  { key = "path", title = "路径" },
-  { key = "status", title = "状态" },
-]
-
-[[components]]
-id = "ui-page-data"
-type = "ui-page"
-
-[components.config]
-page_id = "data"
-title = "数据查询"
-route = "/data"
-description = "类型化入库数据的分页查询与存储洞察。"
-renderer = "views"
-order = 35
-
-[[components.config.views]]
-kind = "query-table"
-title = "记录查询"
-query = "rows"
-pageSize = 20
-filters = [
-  { key = "sourceId", label = "数据源", optionsQuery = "sources", optionKey = "id", optionLabel = "name", required = true },
-  # 日期留空 = 跨批次查询该数据源的全部数据（默认给昨天）。
-  { key = "date", label = "日期", type = "date", default = "$yesterday" },
-]
-# 不声明 columns 时控制台用响应列名作表头；这里显式挑选展示列。
-columns = [
-  { key = "collection_date", title = "采集日" },
-  { key = "row_number", title = "行号" },
-  { key = "ts", title = "时间" },
-  { key = "temperature", title = "温度" },
-  { key = "unit", title = "单位" },
-  { key = "product", title = "产品" },
-]
-
-[[components.config.views]]
-kind = "kv"
-title = "存储洞察"
-query = "storage"
-fields = [
-  { key = "connected", label = "连接" },
-  { key = "readings", label = "读数行数" },
-  { key = "source_files", label = "文件行数" },
-]
-
-[[components]]
-id = "ui-panel-logs"
-type = "ui-panel"
-
-[components.config]
-panel_id = "logs"
-pages = ["overview"]
-title = "日志"
-position = "bottom"
-renderer = "views"
-order = 25
-
-[[components.config.views]]
-kind = "table"
-query = "logs"
-params = { limit = "100" }
-pageSize = 8
-columns = [
-  { key = "time", title = "时间" },
-  { key = "level", title = "级别" },
-  { key = "msg", title = "消息" },
-]
-
-[[components]]
-id = "ui-panel-event-feed"
-type = "ui-panel"
-
-[components.config]
-panel_id = "event-feed"
-pages = ["overview", "collections"]
-title = "事件流"
-position = "bottom"
-renderer = "event-feed"
-order = 20
-
-[[components]]
-id = "ui-panel-failures"
-type = "ui-panel"
-
-[components.config]
-panel_id = "failures"
-pages = ["overview", "collections"]
-title = "失败账本"
-position = "bottom"
-renderer = "views"
-order = 30
-
-[[components.config.views]]
-kind = "table"
-query = "failures"
-pageSize = 8
-columns = [
-  { key = "name", title = "文件" },
-  { key = "attempts", title = "次数" },
-  { key = "error", title = "错误" },
-]
-
-[[components]]
-id = "ui-panel-collection-detail"
-type = "ui-panel"
-
-[components.config]
-panel_id = "collection-detail"
-pages = ["files"]
-title = "采集详情"
-position = "right"
-renderer = "views"
-order = 10
-
-[[components.config.views]]
-kind = "kv"
-query = "collection"
-params = { sourceId = "$focus.sourceId", date = "$focus.date" }
-fields = [
-  { key = "sourceId", label = "数据源" },
-  { key = "date", label = "采集日期" },
-  { key = "status", label = "状态" },
-  { key = "records", label = "记录数" },
-  { key = "filesCompleted", label = "完成文件" },
-  { key = "filesFailed", label = "失败文件" },
-]
-
-# 每一个页面都是「零前端代码」的声明式视图栈：WASM / 进程外插件
-# 贡献同样的 views 契约即可获得同等的页面能力。
-
-# Plugin Explorer is itself an ordinary plugin: it contributes this Console
-# page and exposes Runtime inspection/control through the application bridge.
-[[components]]
-id = "plugin-explorer"
-type = "plugin-explorer"
-
-[components.config]
-page_id = "plugins"
-title = "插件"
-route = "/plugins"
-order = 40
