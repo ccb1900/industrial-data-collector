@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"gocordis-csv-collector/app/errs"
 	datepolicy "gocordis-csv-collector/app/date"
+	"gocordis-csv-collector/app/errs"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/parser"
