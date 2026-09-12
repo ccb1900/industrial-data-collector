@@ -90,7 +90,21 @@ func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionK
 		return nil, err
 	}
 	planner := recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays}
-	return planner.Plan(ctx, c.sourceID, target)
+	keys, err := planner.Plan(ctx, c.sourceID, target)
+	if err != nil {
+		return nil, err
+	}
+	// The plan is the actionable work list: a date already closed as
+	// Skipped (checked, no data) is history, not a task — even though the
+	// planner still re-checks it inside the catch-up window.
+	out := make([]model.CollectionKey, 0, len(keys))
+	for _, k := range keys {
+		if status, ok, err := c.stateSvc.StatusOf(ctx, k); err == nil && ok && status == model.StatusSkipped {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out, nil
 }
 
 // Projection builds the durable UI projection of this unit: collection

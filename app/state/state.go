@@ -303,6 +303,17 @@ func (s *MemoryState) LastCompleted(ctx context.Context, sourceID model.SourceID
 	return last, found, nil
 }
 
+// StatusOf returns the persisted status of one collection key.
+func (s *MemoryState) StatusOf(_ context.Context, key model.CollectionKey) (model.Status, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.collections[stateKey(key)]
+	if !ok {
+		return "", false, nil
+	}
+	return rec.Status, true, nil
+}
+
 func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceID, until model.CollectionDate, staleAfter time.Duration) ([]model.CollectionKey, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -312,7 +323,12 @@ func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceI
 	now := s.nowTime()
 	var out []model.CollectionKey
 	for _, rec := range s.collections {
-		if rec.Key.SourceID != sourceID || rec.Status == model.StatusSucceeded {
+		// Succeeded and Skipped are not work: succeeded is done, skipped is
+		// a checked-and-absent past day (terminal for the task list). The
+		// planner re-derives calendar gaps each run anyway, so genuinely
+		// late deliveries inside the window are still attempted — they just
+		// never appear as "plan" tasks while absent.
+		if rec.Key.SourceID != sourceID || rec.Status == model.StatusSucceeded || rec.Status == model.StatusSkipped {
 			continue
 		}
 		if rec.Key.Date.After(until) {

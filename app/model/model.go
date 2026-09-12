@@ -260,6 +260,9 @@ type CollectionState interface {
 	RecordSources(ctx context.Context) ([]SourceID, error)
 	LastCompleted(ctx context.Context, sourceID SourceID, before CollectionDate) (CollectionDate, bool, error)
 	ListIncomplete(ctx context.Context, sourceID SourceID, until CollectionDate, staleAfter time.Duration) ([]CollectionKey, error)
+	// StatusOf returns the persisted status of one collection key (false if
+	// never attempted).
+	StatusOf(ctx context.Context, key CollectionKey) (Status, bool, error)
 	Close() error
 }
 
