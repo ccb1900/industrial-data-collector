@@ -47,6 +47,7 @@ var knownTypes = map[string]TypeInfo{
 	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
 	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
 	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
+	"proc-plugin":        {Kind: "console-plugin", Capability: "proc-plugin", Name: "Out-of-Process Plugin"},
 	"console-bridge":     {Kind: "console-bridge", Capability: "console-bridge", Name: "Console Bridge"},
 	"console-rows":       {Kind: "console-bridge", Capability: "console-rows", Name: "Console Rows"},
 }

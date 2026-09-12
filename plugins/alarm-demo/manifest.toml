@@ -1,0 +1,26 @@
+# 报警示例插件：目录即插件。框架自发现本文件并生成组件行——
+#   alarm-demo            proc-plugin（进程外后端，本清单的 backend）
+#   alarm-demo:client     ui-client（前端模块，本清单的 client）
+#   alarm-demo:page:*     ui-page（本清单声明的页面）
+# 全部出现在插件页中：可卸载、可禁用、随调和生效。
+
+name = "alarm-demo"
+title = "报警示例"
+
+# 进程外后端：独立 OS 进程，经 stdin/stdout 的行分隔 JSON-RPC 提供契约。
+# 源码 main.go 用 go-cordis 的 proc.Serve 编写；发布前先构建：
+#   go build -o alarm-demo .
+backend = "./alarm-demo"
+queries = ["alarms", "alarm-stats"]
+commands = ["ack-alarm"]
+
+# 前端模块：与后端同目录，由 @gocordis/plugin-kit 自打包。
+client = "ui.js"
+
+[[pages]]
+id = "alarms-demo"
+title = "报警示例"
+route = "/alarms-demo"
+description = "完全自定义的插件页面：数据来自进程外插件，渲染来自插件前端模块。"
+renderer = "alarm-console"
+order = 50

@@ -124,11 +124,11 @@ func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error 
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := sourcecomp.Expand(data)
+	parsed, err := sourcecomp.ExpandWithPlugins(data, sourcecomp.PluginDirFor(configPath))
 	if err != nil {
 		return fmt.Errorf("config expand: %w", err)
 	}
-	if err := app.Reconcile(ctx, parsed); err != nil {
+	if err := app.Reconcile(ctx, parsed.Config); err != nil {
 		return fmt.Errorf("config reconcile: %w", err)
 	}
 	logger.Info("configuration active; running one collection pass", "config", configPath)

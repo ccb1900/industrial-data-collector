@@ -16,16 +16,20 @@ import (
 	"gocordis-csv-collector/app/sourcecomp"
 )
 
-type validatingParser struct{ host *Host }
+type validatingParser struct {
+	host      *Host
+	pluginDir string
+}
 
 func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
 	if err := ctx.Err(); err != nil {
 		return config.Config{}, err
 	}
-	cfg, err := sourcecomp.Expand(data)
+	parsed, err := sourcecomp.ExpandWithPlugins(data, p.pluginDir)
 	if err != nil {
 		return config.Config{}, err
 	}
+	cfg := parsed.Config
 	// Snapshot the raw parsed composition first: it is the base the patch
 	// layers apply to, and install/restore re-reconciles from it.
 	p.host.setBaseDesired(cfg)
@@ -70,7 +74,7 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		configwatch.Source{ID: "config", Path: path, Format: configwatch.FormatTOML},
 		h.ctrl,
 		w,
-		configwatch.WithParser(&validatingParser{host: h}),
+		configwatch.WithParser(&validatingParser{host: h, pluginDir: sourcecomp.PluginDirFor(path)}),
 		configwatch.WithPostReconcile(h.PostReconcile),
 		// 一次 reconcile（含应用层收尾）以 readyTimeout 兜底：组件永远
 		// 不就绪时返回明确错误，而不是把处理循环和调用方一起挂死。

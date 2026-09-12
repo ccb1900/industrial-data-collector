@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ func chdirRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(testWD) })
+	ensureAlarmBackend(t)
 }
 
 // TestDesktopCompositionSync guards the shipped demo composition: the whole
@@ -163,4 +166,23 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// ensureAlarmBackend builds the demo plugin's out-of-process backend when
+// missing — booting the shipped composition launches it via discovery.
+var ensureBackendOnce sync.Once
+
+func ensureAlarmBackend(t *testing.T) {
+	t.Helper()
+	ensureBackendOnce.Do(func() {
+		const bin = "plugins/alarm-demo/alarm-demo"
+		if _, err := os.Stat(filepath.Join(testWD, "..", bin)); err == nil {
+			return
+		}
+		cmd := exec.Command("go", "build", "-o", "alarm-demo", ".")
+		cmd.Dir = filepath.Join(testWD, "..", "plugins", "alarm-demo")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build alarm backend: %v\n%s", err, out)
+		}
+	})
 }

@@ -19,28 +19,8 @@
 # NOTE: top-level keys must precede every table in TOML — keep this line here.
 bundles = ["collector-core", "collector-console"]
 
-# 前端模块是组合治理的一等公民：ui-client 组件声明它——出现在插件
-# 页（可卸载/禁用），enabled 开关生效，卸载即从清单移除、不再下发。
-# 约定只负责默认路径：plugins/alarm-demo/ui.js（与后端工件同目录）。
-[[components]]
-id = "alarm-demo"
-type = "ui-client"
-
-# 完全自定义的插件页面：renderer 指向插件前端模块注册的渲染器，
-# 没有 views —— 渲染全权在模块里。
-[[components]]
-id = "ui-page-alarm-demo"
-type = "ui-page"
-
-[components.config]
-page_id = "alarms-demo"
-title = "报警示例"
-route = "/alarms-demo"
-description = "完全自定义的插件页面：渲染器由插件前端模块注册。"
-renderer = "alarm-console"
-order = 50
-
-# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
+# 报警示例插件不再在此声明：plugins/alarm-demo/manifest.toml 由框架自
+# 发现并生成组件行（进程外后端 + 前端模块 + 页面），同样受组合治理。
 
 # 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
 # 第一次触发最多回看 7 天补齐缺口，已成功的批次因幂等写入不会重复。

@@ -45,11 +45,21 @@ type ParseResult struct {
 //	path = "\\\\machine001\\data"
 //	profiles = ["csv_machine"]
 //
-// Named bundles expand into their component rows first; explicit
-// [[components]] rows replace a bundle row with the same id in place
-// (whole-row replace) or append. Legacy top-level [source.xxx] tables are
-// migrated to anonymous sources.
+// Named bundles expand into their component rows first, then discovered
+// plugins/<name>/manifest.toml rows (self-contained plugins), then explicit
+// [[components]] rows — each layer replacing the previous layer's rows with
+// the same id in place (whole-row replace) or appending. Legacy top-level
+// [source.xxx] tables are migrated to anonymous sources.
 func Parse(data []byte) (*ParseResult, error) {
+	return parseWithPlugins(data, "")
+}
+
+// ExpandWithPlugins is Parse with plugin discovery rooted at pluginsDir.
+func ExpandWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
+	return parseWithPlugins(data, pluginsDir)
+}
+
+func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
 	doc := map[string]any{}
 	if err := toml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("toml parse: %w", err)
@@ -85,11 +95,15 @@ func Parse(data []byte) (*ParseResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	discovered, err := DiscoverPlugins(pluginsDir)
+	if err != nil {
+		return nil, err
+	}
 	components, err := parseComponents(doc["components"])
 	if err != nil {
 		return nil, err
 	}
-	components = bundle.MergeRows(presetRows, components)
+	components = bundle.MergeRows(bundle.MergeRows(presetRows, discovered), components)
 	resolver, err := NewResolver(profiles)
 	if err != nil {
 		return nil, err

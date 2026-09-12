@@ -13,6 +13,7 @@ import (
 	"dynamic-runtime/runtime"
 
 	explorerplugin "dynamic-runtime/extensions/console/explorer"
+	procplugin "dynamic-runtime/extensions/console/procplugin"
 	uiplugin "dynamic-runtime/extensions/console/host"
 	collectorplugin "gocordis-csv-collector/plugins/collector"
 	bridgeplugin "gocordis-csv-collector/plugins/consolebridge"
@@ -84,6 +85,13 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	// visible in the explorer, honoring enabled, removed on uninstall.
 	if err := pluginkit.Bind(reg, "ui-client", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return uiplugin.NewClientModuleComponent(cc)
+	}); err != nil {
+		return err
+	}
+	// proc-plugin runs a self-contained out-of-process plugin backend and
+	// forwards its declared hub queries/commands.
+	if err := pluginkit.Bind(reg, "proc-plugin", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return procplugin.NewComponent(cc)
 	}); err != nil {
 		return err
 	}

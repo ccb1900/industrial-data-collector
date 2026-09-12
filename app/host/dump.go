@@ -23,10 +23,11 @@ func DumpEffectiveConfig(configPath string, patchPaths []string, overlayPath str
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	cfg, err := sourcecomp.Expand(data)
+	parsed, err := sourcecomp.ExpandWithPlugins(data, sourcecomp.PluginDirFor(configPath))
 	if err != nil {
 		return fmt.Errorf("expand %s: %w", configPath, err)
 	}
+	cfg := parsed.Config
 	var layers [][]Patch
 	if overlayPath != "" {
 		overlay, err := LoadPatchFile(overlayPath)

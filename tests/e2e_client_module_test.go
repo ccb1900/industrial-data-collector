@@ -32,12 +32,12 @@ func TestDesktopClientModuleGovernance(t *testing.T) {
 
 	modules := ui.HostAdapter().ListClientModules()
 	if len(modules) != 1 || modules[0].Name != "alarm-demo" {
-		t.Fatalf("declared module must be listed, got %+v", modules)
+		t.Fatalf("discovered module must be listed, got %+v", modules)
 	}
 
-	// Uninstall the ui-client component: the module leaves the manifest
-	// even though plugins/alarm-demo/ui.js is still on disk.
-	if err := h.UninstallComponent(ctx, "alarm-demo"); err != nil {
+	// Uninstall the discovered ui-client component: the module leaves the
+	// manifest even though plugins/alarm-demo/ui.js is still on disk.
+	if err := h.UninstallComponent(ctx, "alarm-demo:client"); err != nil {
 		t.Fatalf("uninstall ui-client: %v", err)
 	}
 	if modules = ui.HostAdapter().ListClientModules(); len(modules) != 0 {
@@ -48,7 +48,7 @@ func TestDesktopClientModuleGovernance(t *testing.T) {
 	}
 
 	// Install back: declared again, served again.
-	if err := h.InstallComponent(ctx, "alarm-demo"); err != nil {
+	if err := h.InstallComponent(ctx, "alarm-demo:client"); err != nil {
 		t.Fatalf("install ui-client: %v", err)
 	}
 	if modules = ui.HostAdapter().ListClientModules(); len(modules) != 1 || modules[0].Name != "alarm-demo" {

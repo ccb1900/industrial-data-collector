@@ -95,6 +95,15 @@ validated) without booting; the same shape is served live by the
 persist as ordered patches in `configs/desktop.toml.removed.json`; operator
 `--patch` files apply after the console overlay and have the final word.
 `configs/desktop.toml` also demonstrates a fully custom plugin page.
+A console plugin is fully self-contained: `plugins/<name>/` holds a
+`manifest.toml` (discovered by the framework — it generates the
+component rows: out-of-process backend, frontend module, pages), an
+out-of-process backend (`main.go` speaking the proc JSON-RPC contract
+via go-cordis `proc.Serve`, prebuilt to the declared binary), and the
+frontend (`src/ui.tsx` + `npm run build`). Uninstalling the plugin
+stops the process and withdraws its hub vocabulary. The demo's alarm
+page consumes data served by the plugin's own process.
+
 A console plugin is a standard npm package deployed as `plugins/<name>/`:
 `package.json` declares its frontend dependencies (the demo uses ECharts),
 `src/ui.tsx` imports them with bare specifiers, and `npm run build`

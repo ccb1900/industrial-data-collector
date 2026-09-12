@@ -66,12 +66,11 @@ function AlarmConsole({ m }: { m: any }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([m.api.hubQuery("failures"), m.api.hubQuery("collections"), m.api.hubQuery("schedule")])
-      .then(([failures, cols, sched]) => {
+    Promise.all([m.api.hubQuery("alarms"), m.api.hubQuery("collections"), m.api.hubQuery("schedule")])
+      .then(([alarmsFromPlugin, cols, sched]) => {
         setAlarms(
-          (Array.isArray(failures) ? failures : []).map((f: Row, i: number) => ({
-            key: String(i),
-            level: Number(f.attempts ?? 0) >= 3 ? "critical" : "warning",
+          (Array.isArray(alarmsFromPlugin) ? alarmsFromPlugin : []).map((f: Row, i: number) => ({
+            key: f.id ?? String(i),
             ...f,
           }))
         );
@@ -95,6 +94,8 @@ function AlarmConsole({ m }: { m: any }) {
   const counts = { critical: 0, warning: 0 };
   for (const a of alarms) counts[a.level] = (counts[a.level] ?? 0) + 1;
 
+  const ack = (id: string) => m.api.hubCommand("ack-alarm", { id }).catch(() => undefined);
+
   const columns = [
     {
       title: "级别", dataIndex: "level", key: "level", width: 90,
@@ -102,10 +103,16 @@ function AlarmConsole({ m }: { m: any }) {
         <span style={{ color: LEVELS[v]?.color, fontWeight: 600 }}>{LEVELS[v]?.label ?? v}</span>
       ),
     },
-    { title: "文件", dataIndex: "name", key: "name" },
-    { title: "数据源", dataIndex: "sourceId", key: "sourceId" },
-    { title: "重试次数", dataIndex: "attempts", key: "attempts", width: 90 },
-    { title: "错误", dataIndex: "error", key: "error", ellipsis: true },
+    { title: "编号", dataIndex: "id", key: "id", width: 80 },
+    { title: "设备", dataIndex: "device", key: "device" },
+    { title: "描述", dataIndex: "message", key: "message", ellipsis: true },
+    { title: "时间", dataIndex: "at", key: "at", width: 90 },
+    {
+      title: "", key: "ack", width: 70,
+      render: (_: unknown, row: Row) => (
+        <Button size="small" onClick={() => ack(String(row.id))}>确认</Button>
+      ),
+    },
   ];
 
   return (
