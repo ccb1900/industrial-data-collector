@@ -9,14 +9,15 @@
     "renderer": "alarm-console"
   },
   "scripts": {
-    "build": "esbuild src/ui.tsx --bundle --format=esm --minify --jsx=automatic --alias:react=./shims/react.js --alias:react/jsx-runtime=./shims/react-jsx-runtime.js --alias:antd=./shims/antd.js --outfile=ui.js",
+    "build": "gocordis-plugin-build",
     "prepack": "npm run build"
   },
   "dependencies": {
     "echarts": "^5.5.1"
   },
   "devDependencies": {
-    "esbuild": "^0.23.1",
-    "@types/react": "^18.3.0"
+    "@gocordis/plugin-kit": "file:../../../go-cordis/web/plugin-kit",
+    "@types/react": "^18.3.0",
+    "esbuild": "^0.23.0"
   }
 }
