@@ -32,6 +32,10 @@ file_stable_window_seconds = 0
 date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
+# 采集台账持久化（与生产一致）：重启后采集历史/失败账本/补采链都在，
+# 不再是内存态即忘。
+state_type = "file-state"
+state_dir = "./state"
 
 # 遗留导出的独立入库表：不同格式的文件写到不同的表。
 [profiles.legacy_sink]
@@ -131,6 +135,8 @@ file_stable_window_seconds = 0
 date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
 
 [[sources]]
 id = "legacy-source"
