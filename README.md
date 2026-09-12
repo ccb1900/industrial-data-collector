@@ -100,7 +100,10 @@ one directory — a plugin deploys as `plugins/<name>/` holding its backend
 artifact and its `ui.js` frontend side by side (no config row); the module is
 served same-origin, loaded by the console at boot, and registers the
 `alarm-console` page renderer — plugin pages need not use the declarative
-palette at all.
+palette at all. Frontend libraries are vendored by the plugin and imported
+relatively (`plugins/alarm-demo/lib/echarts.esm.min.js`, imported as
+`./lib/...` from the directory-shaped entry URL): offline, same-origin, no
+CDN, no import map. The demo renders a live ECharts trend from the hub.
 
 ## Verify
 

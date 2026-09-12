@@ -5,8 +5,14 @@
 // 渲染器注册表），即可注册完全自定义的页面、面板与视图块——后端无论
 // 是进程内 Go、进程外可执行文件还是 WASM，前端一视同仁。
 //
-// 本示例把失败账本当作报警源演示完全自定义渲染：严重度卡片 + 自定义
-// 表格 + 操作按钮。真实报警插件会注册自己的 hub 查询/命令。
+// 前端库按「插件自带」使用：本目录 lib/ 下 vendor 的 ECharts 以普通相对
+// 导入加载（入口 URL 是目录形状，相对路径解析在插件目录内），离线可用、
+// 无需 import map、不依赖 CDN。
+//
+// 本示例把失败账本当作报警源演示完全自定义渲染：严重度卡片、ECharts
+// 按日采集量趋势、自定义表格与操作按钮。
+import * as echarts from './lib/echarts.esm.min.js';
+
 export default function register(m) {
   const { React, antd, api, registerPageRenderer } = m;
   const e = React.createElement;
@@ -16,8 +22,52 @@ export default function register(m) {
     warning: { label: "警告", color: "#f2b544" },
   };
 
+  // ECharts 趋势图：数据来自 hub 命名查询，纯插件自己的渲染。
+  function TrendChart({ rows }) {
+    const ref = React.useRef(null);
+    const chartRef = React.useRef(null);
+
+    React.useEffect(() => {
+      chartRef.current = echarts.init(ref.current);
+      const onResize = () => chartRef.current && chartRef.current.resize();
+      window.addEventListener("resize", onResize);
+      return () => {
+        window.removeEventListener("resize", onResize);
+        chartRef.current && chartRef.current.dispose();
+      };
+    }, []);
+
+    React.useEffect(() => {
+      const byDate = new Map();
+      for (const r of rows) {
+        const d = String(r.date ?? "");
+        const agg = byDate.get(d) ?? { records: 0, failed: 0 };
+        agg.records += Number(r.records ?? 0) || 0;
+        agg.failed += Number(r.filesFailed ?? 0) || 0;
+        byDate.set(d, agg);
+      }
+      const dates = Array.from(byDate.keys()).sort();
+      chartRef.current &&
+        chartRef.current.setOption({
+          animation: false,
+          tooltip: { trigger: "axis" },
+          legend: { data: ["采集记录", "失败文件"] },
+          grid: { left: 40, right: 16, top: 36, bottom: 28 },
+          xAxis: { type: "category", data: dates },
+          yAxis: [{ type: "value" }, { type: "value" }],
+          series: [
+            { name: "采集记录", type: "line", smooth: true, data: dates.map((d) => byDate.get(d).records) },
+            { name: "失败文件", type: "bar", yAxisIndex: 1, data: dates.map((d) => byDate.get(d).failed) },
+          ],
+        });
+    }, [rows]);
+
+    return e("div", { ref, style: { height: 260 } });
+  }
+
   function AlarmConsole() {
     const [alarms, setAlarms] = React.useState([]);
+    const [collections, setCollections] = React.useState([]);
     const [schedule, setSchedule] = React.useState({});
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState(null);
@@ -25,14 +75,15 @@ export default function register(m) {
 
     const load = React.useCallback(() => {
       setLoading(true);
-      Promise.all([api.hubQuery("failures"), api.hubQuery("schedule")])
-        .then(([failures, sched]) => {
+      Promise.all([api.hubQuery("failures"), api.hubQuery("collections"), api.hubQuery("schedule")])
+        .then(([failures, cols, sched]) => {
           const rows = (Array.isArray(failures) ? failures : []).map((f, i) => ({
             key: String(i),
             level: Number(f.attempts ?? 0) >= 3 ? "critical" : "warning",
             ...f,
           }));
           setAlarms(rows);
+          setCollections(Array.isArray(cols) ? cols : []);
           setSchedule(sched ?? {});
           setError(null);
         })
@@ -69,11 +120,13 @@ export default function register(m) {
     return e("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
       e("div", { style: { display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" } },
         e(antd.Typography.Text, { type: "secondary", style: { fontSize: 12 } },
-          "完全自定义渲染：本页由插件前端模块注册（非声明式调色板）")),
+          "完全自定义渲染：插件前端模块 + 自带 ECharts（相对导入，离线可用）")),
       e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } },
         card("c", "严重报警", counts.critical, LEVELS.critical.color),
         card("w", "警告", counts.warning, LEVELS.warning.color),
         card("n", "下次采集", (schedule.next ?? "—").replace("T", " ").slice(0, 16), "#4d6bfe")),
+      e("div", { style: { border: "1px solid var(--line-soft, #d9dee8)", borderRadius: 10, padding: "8px 10px" } },
+        e(TrendChart, { rows: collections })),
       e("div", null,
         e(antd.Space, null,
           e(antd.Button, { size: "small", onClick: load, loading }, "刷新"),
