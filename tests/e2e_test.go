@@ -14,7 +14,7 @@ import (
 
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
-	storageplugin "gocordis-csv-collector/plugins/storage"
+	storageplugin "gocordis-csv-collector/components/storage"
 )
 
 func discardLog() *slog.Logger {

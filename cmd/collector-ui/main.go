@@ -21,8 +21,8 @@ import (
 
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/sourcecomp"
-	explorerplugin "gocordis-csv-collector/plugins/explorer"
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	explorerplugin "gocordis-csv-collector/components/explorer"
+	uiplugin "gocordis-csv-collector/components/ui"
 )
 
 func main() {

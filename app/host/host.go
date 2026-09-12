@@ -18,12 +18,12 @@ import (
 	appconfig "gocordis-csv-collector/app/config"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
-	configplugin "gocordis-csv-collector/plugins/config"
-	consolebridge "gocordis-csv-collector/plugins/consolebridge"
-	queryplugin "gocordis-csv-collector/plugins/query"
-	schedulerplugin "gocordis-csv-collector/plugins/scheduler"
-	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
-	stateplugin "gocordis-csv-collector/plugins/state"
+	configplugin "gocordis-csv-collector/components/config"
+	consolebridge "gocordis-csv-collector/components/consolebridge"
+	queryplugin "gocordis-csv-collector/components/query"
+	schedulerplugin "gocordis-csv-collector/components/scheduler"
+	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
+	stateplugin "gocordis-csv-collector/components/state"
 )
 
 type Host struct {

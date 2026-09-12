@@ -8,8 +8,8 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"gocordis-csv-collector/app/host"
-	explorerplugin "gocordis-csv-collector/plugins/explorer"
-	uiplugin "gocordis-csv-collector/plugins/ui"
+	explorerplugin "gocordis-csv-collector/components/explorer"
+	uiplugin "gocordis-csv-collector/components/ui"
 )
 
 // App is the Wails transport boundary. It only forwards React RPCs to the

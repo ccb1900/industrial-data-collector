@@ -1,0 +1,36 @@
+# 组件包自描述：本包提供的组件类型元数据（分类/能力/显示名）。
+# 经 go:embed 在包 init 时注册进 internal/pluginmeta——中心类型表由
+# 各包聚合生成，不手工维护。
+name = "storage"
+title = "Storage Targets"
+
+[[types]]
+name = "memory-storage"
+kind = "storage"
+capability = "storage"
+title = "Memory Storage"
+
+[[types]]
+name = "mysql-storage"
+kind = "storage"
+capability = "storage"
+title = "MySQL Storage"
+
+[[types]]
+name = "postgresql-storage"
+kind = "storage"
+capability = "storage"
+title = "PostgreSQL Storage"
+
+[[types]]
+name = "oracle-storage"
+kind = "storage"
+capability = "storage"
+title = "Oracle Storage"
+
+[[types]]
+name = "sqlite-storage"
+kind = "storage"
+capability = "storage"
+title = "SQLite Storage"
+

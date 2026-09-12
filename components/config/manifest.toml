@@ -1,0 +1,30 @@
+# 组件包自描述：本包提供的组件类型元数据（分类/能力/显示名）。
+# 经 go:embed 在包 init 时注册进 internal/pluginmeta——中心类型表由
+# 各包聚合生成，不手工维护。
+name = "console-host"
+title = "Console Host Bindings"
+
+[[types]]
+name = "ui"
+kind = "ui-host"
+capability = "ui"
+title = "UI Host"
+
+[[types]]
+name = "ui-client"
+kind = "ui-contribution"
+capability = "ui-client"
+title = "UI Client Module"
+
+[[types]]
+name = "proc-plugin"
+kind = "console-plugin"
+capability = "proc-plugin"
+title = "Out-of-Process Plugin"
+
+[[types]]
+name = "plugin-explorer"
+kind = "ui-console-plugin"
+capability = "plugin-explorer"
+title = "Plugin Explorer"
+

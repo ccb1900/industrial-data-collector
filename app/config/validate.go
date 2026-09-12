@@ -11,52 +11,26 @@ import (
 
 	extconfig "dynamic-runtime/extensions/config"
 
+	"gocordis-csv-collector/internal/pluginmeta"
+
 	appencoding "gocordis-csv-collector/app/encoding"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	appparser "gocordis-csv-collector/app/parser"
 )
 
-type TypeInfo struct {
-	Kind       string
-	Capability string
-	Name       string
-}
-
-var knownTypes = map[string]TypeInfo{
-	"local-file-source":  {Kind: "source", Capability: "filesource", Name: "Local File Source"},
-	"unc-file-source":    {Kind: "source", Capability: "filesource", Name: "UNC File Source"},
-	"csv-parser":         {Kind: "parser", Capability: "csvparser", Name: "CSV Parser"},
-	"text-parser":        {Kind: "parser", Capability: "csvparser", Name: "Text Parser"},
-	"single-file-source": {Kind: "source", Capability: "filesource", Name: "Single File Source"},
-	"watch-file-trigger": {Kind: "watch-trigger", Capability: "watch-trigger", Name: "File Watch Trigger"},
-	"memory-storage":     {Kind: "storage", Capability: "storage", Name: "Memory Storage"},
-	"mysql-storage":      {Kind: "storage", Capability: "storage", Name: "MySQL Storage"},
-	"postgresql-storage": {Kind: "storage", Capability: "storage", Name: "PostgreSQL Storage"},
-	"oracle-storage":     {Kind: "storage", Capability: "storage", Name: "Oracle Storage"},
-	"sqlite-storage":     {Kind: "storage", Capability: "storage", Name: "SQLite Storage"},
-	"memory-state":       {Kind: "state", Capability: "state", Name: "Memory State"},
-	"file-state":         {Kind: "state", Capability: "state", Name: "File State"},
-	"scheduler":          {Kind: "scheduler", Capability: "trigger", Name: "Scheduler"},
-	"csv-collector":      {Kind: "collector", Capability: "collector", Name: "CSV Collector"},
-	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor", Name: "Path Metadata"},
-	"query-provider":     {Kind: "query", Capability: "query", Name: "Query Provider"},
-	"ui":                 {Kind: "ui-host", Capability: "ui", Name: "UI Host"},
-	"ui-client":          {Kind: "ui-contribution", Capability: "ui-client", Name: "UI Client Module"},
-	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page", Name: "UI Page Contribution"},
-	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel", Name: "UI Panel Contribution"},
-	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
-	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
-	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
-	"proc-plugin":        {Kind: "console-plugin", Capability: "proc-plugin", Name: "Out-of-Process Plugin"},
-	"console-bridge":     {Kind: "console-bridge", Capability: "console-bridge", Name: "Console Bridge"},
-	"console-rows":       {Kind: "console-bridge", Capability: "console-rows", Name: "Console Rows"},
+// knownTypes aggregates the per-package manifests: every built-in component
+// package embeds its own manifest.toml (go:embed, registered in the
+// package's init into internal/pluginmeta), so this table is generated from
+// the packages — never hand-maintained.
+func knownTypes() map[string]pluginmeta.TypeInfo {
+	return pluginmeta.Types()
 }
 
 // DisplayName returns the human-facing plugin label for a known component
 // type. Unknown/empty values fall back to the raw type.
 func DisplayName(typ string) string {
-	if ti, ok := knownTypes[typ]; ok && ti.Name != "" {
-		return ti.Name
+	if ti, ok := pluginmeta.DisplayName(typ); ok {
+		return ti
 	}
 	return typ
 }
@@ -72,7 +46,7 @@ func Validate(cfg extconfig.Config) error {
 			return fmt.Errorf("duplicate component id %q", cc.ID)
 		}
 		byID[cc.ID] = cc
-		ti, ok := knownTypes[cc.Type]
+		ti, ok := knownTypes()[cc.Type]
 		if !ok {
 			return fmt.Errorf("unknown component type %q", cc.Type)
 		}
@@ -99,7 +73,7 @@ func Validate(cfg extconfig.Config) error {
 			if !ok {
 				return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
 			}
-			if knownTypes[target.Type].Kind != "source" && knownTypes[target.Type].Kind != "source-unit" {
+			if knownTypes()[target.Type].Kind != "source" && knownTypes()[target.Type].Kind != "source-unit" {
 				return fmt.Errorf("metadata component %q source %q must reference a source component", id, ref)
 			}
 			targetRoot := str(target.Config, "root")
@@ -129,7 +103,7 @@ func Validate(cfg extconfig.Config) error {
 				"storage": "storage",
 				"state":   "state",
 			}[field]
-			if knownTypes[target.Type].Kind != want {
+			if knownTypes()[target.Type].Kind != want {
 				return fmt.Errorf("collector %q field %s must reference a %s component", id, field, want)
 			}
 		}
@@ -146,7 +120,7 @@ func Validate(cfg extconfig.Config) error {
 	return nil
 }
 
-func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti TypeInfo) error {
+func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginmeta.TypeInfo) error {
 	switch ti.Kind {
 	case "source":
 		if cc.Type == "single-file-source" {

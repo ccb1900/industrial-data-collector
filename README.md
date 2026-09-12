@@ -16,7 +16,7 @@ app/sourcecomp/    Profile/Source Composition Resolver (config before Runtime)
 app/metadata/      Pure path/filename metadata extraction engine
 app/parser/        Streaming CSV parser + structured CSV Document metadata
 app/query/         UI Query/Observation/Command capability contracts + read model
-plugins/consolebridge/  registers collector vocabulary into the console hub
+components/consolebridge/  registers collector vocabulary into the console hub
 app/ui/            UI Composition contract + owner-aware composition Registry
 app/explorer/      Plugin Explorer inspection/control boundary (Application layer)
 app/source/        Local and UNC file source (recursive below <root>/<date>)
@@ -30,11 +30,11 @@ app/events/        Application event definitions (file outcomes carry Metadata)
 app/config/        TOML-compatible configuration validation
 app/host/          Runtime/Config-Controller host
 plugins/           GOCORDIS Components, capability keys, and factories
-plugins/sourceunit/ Per-Source Runtime Component produced by Composition
-plugins/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
-plugins/query/     Application Query provider + Observation adapter (UI-facing)
+components/sourceunit/ Per-Source Runtime Component produced by Composition
+components/metadata/  PathMetadata GOCORDIS Component (MetadataExtractor provider)
+components/query/     Application Query provider + Observation adapter (UI-facing)
 plugins/ui/        UI Host GOCORDIS Component (Composition Registry provider + Wails/React bridge)
-plugins/ui-contrib/Independent UI Contribution GOCORDIS Components (single or multi Page/Panel)
+components/ui-contrib/Independent UI Contribution GOCORDIS Components (single or multi Page/Panel)
 console/ (go-cordis)  reusable console platform (Go): registry, hub, host, explorer, webui
 web/console/ (go-cordis) THE shared console app (antd): shell, declarative view
                       renderers (table/kv/list/stats/trend/query-table), plugin
@@ -49,9 +49,9 @@ tests/             Runtime E2E scenarios
 ```
 
 Each business capability has one plugin package under `plugins/`:
-`plugins/source`, `plugins/parser`, `plugins/storage`, `plugins/state`,
-`plugins/scheduler`, `plugins/metadata`, `plugins/collector`, and
-`plugins/config` (factory registration). Application-only logic lives under
+`components/source`, `components/parser`, `components/storage`, `components/state`,
+`components/scheduler`, `components/metadata`, `components/collector`, and
+`components/config` (factory registration). Application-only logic lives under
 `app/` and never starts a second lifecycle. See
 [`docs/METADATA.md`](docs/METADATA.md) for the file business metadata feature,
 [`docs/CSV_STRUCTURED_METADATA.md`](docs/CSV_STRUCTURED_METADATA.md) for CSV

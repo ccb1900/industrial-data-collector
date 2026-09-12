@@ -10,7 +10,7 @@ import (
 
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/sourcecomp"
-	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
+	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
 )
 
 // The watch scenarios prove change-triggered collection: a plain-text file
