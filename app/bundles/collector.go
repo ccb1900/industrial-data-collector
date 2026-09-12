@@ -3,21 +3,16 @@
 // as declarative view stacks — still zero frontend code, still editable
 // through console patches, still visible in --dump-config). Deployment
 // files keep what is specific to them: profiles, sources, overrides.
-package bundle
+package bundles
 
 import (
+	bundle "dynamic-runtime/extensions/bundle"
 	extconfig "dynamic-runtime/extensions/config"
 )
 
 func init() {
-	mustRegister("collector-core", coreRows)
-	mustRegister("collector-console", consoleRows)
-}
-
-func mustRegister(name string, emit func() []extconfig.ComponentConfig) {
-	if err := Register(name, emit); err != nil {
-		panic(err)
-	}
+	bundle.MustRegister("collector-core", coreRows)
+	bundle.MustRegister("collector-console", consoleRows)
 }
 
 // collector-core: the runtime backbone every deployment needs. The
@@ -25,14 +20,14 @@ func mustRegister(name string, emit func() []extconfig.ComponentConfig) {
 // declaring an explicit scheduler row (whole-row replace).
 func coreRows() []extconfig.ComponentConfig {
 	return []extconfig.ComponentConfig{
-		Row("scheduler", "scheduler", map[string]any{
+		bundle.Row("scheduler", "scheduler", map[string]any{
 			"cron": "23 3 * * *",
 		}),
-		Row("console-bridge", "console-bridge", nil),
-		Row("console-rows", "console-rows", nil),
-		Row("query-provider", "query-provider", nil),
-		Row("ui", "ui", nil),
-		Row("plugin-explorer", "plugin-explorer", map[string]any{
+		bundle.Row("console-bridge", "console-bridge", nil),
+		bundle.Row("console-rows", "console-rows", nil),
+		bundle.Row("query-provider", "query-provider", nil),
+		bundle.Row("ui", "ui", nil),
+		bundle.Row("plugin-explorer", "plugin-explorer", map[string]any{
 			"page_id": "plugins",
 			"title":   "插件",
 			"route":   "/plugins",
@@ -47,7 +42,7 @@ func coreRows() []extconfig.ComponentConfig {
 // (camelCase contract); do not rename them here.
 func consoleRows() []extconfig.ComponentConfig {
 	rows := []extconfig.ComponentConfig{
-		Row("ui-page-overview", "ui-page", map[string]any{
+		bundle.Row("ui-page-overview", "ui-page", map[string]any{
 			"page_id":     "overview",
 			"title":       "概览",
 			"route":       "/overview",
@@ -86,7 +81,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-page-collections", "ui-page", map[string]any{
+		bundle.Row("ui-page-collections", "ui-page", map[string]any{
 			"page_id":     "collections",
 			"title":       "采集任务",
 			"route":       "/collections",
@@ -125,7 +120,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-page-files", "ui-page", map[string]any{
+		bundle.Row("ui-page-files", "ui-page", map[string]any{
 			"page_id":     "files",
 			"title":       "文件",
 			"route":       "/files",
@@ -145,7 +140,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-page-sources", "ui-page", map[string]any{
+		bundle.Row("ui-page-sources", "ui-page", map[string]any{
 			"page_id":     "sources",
 			"title":       "数据源",
 			"route":       "/sources",
@@ -166,7 +161,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-page-data", "ui-page", map[string]any{
+		bundle.Row("ui-page-data", "ui-page", map[string]any{
 			"page_id":     "data",
 			"title":       "数据查询",
 			"route":       "/data",
@@ -201,7 +196,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-panel-logs", "ui-panel", map[string]any{
+		bundle.Row("ui-panel-logs", "ui-panel", map[string]any{
 			"panel_id": "logs",
 			"pages":    []any{"overview"},
 			"title":    "日志",
@@ -219,7 +214,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-panel-event-feed", "ui-panel", map[string]any{
+		bundle.Row("ui-panel-event-feed", "ui-panel", map[string]any{
 			"panel_id": "event-feed",
 			"pages":    []any{"overview", "collections"},
 			"title":    "事件流",
@@ -227,7 +222,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"renderer": "event-feed",
 			"order":    20,
 		}),
-		Row("ui-panel-failures", "ui-panel", map[string]any{
+		bundle.Row("ui-panel-failures", "ui-panel", map[string]any{
 			"panel_id": "failures",
 			"pages":    []any{"overview", "collections"},
 			"title":    "失败账本",
@@ -245,7 +240,7 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		Row("ui-panel-collection-detail", "ui-panel", map[string]any{
+		bundle.Row("ui-panel-collection-detail", "ui-panel", map[string]any{
 			"panel_id": "collection-detail",
 			"pages":    []any{"files"},
 			"title":    "采集详情",

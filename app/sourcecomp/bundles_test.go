@@ -4,13 +4,12 @@ import (
 	"strings"
 	"testing"
 
+	bundle "dynamic-runtime/extensions/bundle"
 	extconfig "dynamic-runtime/extensions/config"
-
-	appbundle "gocordis-csv-collector/app/bundle"
 )
 
 func init() {
-	_ = appbundle.Register("test-bundle-rows", func() []extconfig.ComponentConfig {
+	_ = bundle.Register("test-bundle-rows", func() []extconfig.ComponentConfig {
 		return []extconfig.ComponentConfig{
 			{ID: "preset-scheduler", Type: "scheduler", Config: map[string]any{"cron": "0 0 * * *"}},
 			{ID: "preset-extra", Type: "ui"},

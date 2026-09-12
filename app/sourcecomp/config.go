@@ -7,9 +7,13 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"dynamic-runtime/extensions/bundle"
 	extconfig "dynamic-runtime/extensions/config"
 
-	appbundle "gocordis-csv-collector/app/bundle"
+	// The collector's preset definitions register at init time; linking
+	// them here keeps every parse context (watch host, csv-collector,
+	// --dump-config) aware of them.
+	_ "gocordis-csv-collector/app/bundles"
 )
 
 const (
@@ -77,7 +81,7 @@ func Parse(data []byte) (*ParseResult, error) {
 	}
 	// Bundles are the preset layer: they expand first so explicit rows can
 	// override them by id (same layering as patches over the base file).
-	presetRows, err := appbundle.Expand(bundleNames)
+	presetRows, err := bundle.Expand(bundleNames)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +89,7 @@ func Parse(data []byte) (*ParseResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	components = appbundle.MergeRows(presetRows, components)
+	components = bundle.MergeRows(presetRows, components)
 	resolver, err := NewResolver(profiles)
 	if err != nil {
 		return nil, err
