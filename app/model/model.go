@@ -145,6 +145,11 @@ const (
 	StatusRunning   Status = "Running"
 	StatusSucceeded Status = "Succeeded"
 	StatusFailed    Status = "Failed"
+	// StatusSkipped is a TERMINAL outcome for a business date whose source
+	// directory does not exist and whose day has fully passed: the absence
+	// is permanent (time is irreversible), which is a different fact from
+	// "not collected yet" (Pending). Skipped rows are not retried.
+	StatusSkipped Status = "Skipped"
 )
 
 // FileResult reports the outcome of one input file.

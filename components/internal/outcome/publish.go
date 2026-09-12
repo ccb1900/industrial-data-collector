@@ -47,5 +47,9 @@ func Publish(ctx context.Context, emitCtx *runtime.Context, res *model.Collectio
 		_ = event.Serial(ctx, emitCtx, events.CollectionPending, events.CollectionPendingPayload{
 			Key: res.Key, Note: res.Error, At: res.EndedAt,
 		})
+	case model.StatusSkipped:
+		_ = event.Serial(ctx, emitCtx, events.CollectionSkipped, events.CollectionSkippedPayload{
+			Key: res.Key, Note: res.Error, At: res.EndedAt,
+		})
 	}
 }

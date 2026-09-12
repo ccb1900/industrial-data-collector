@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	datepolicy "gocordis-csv-collector/app/date"
 	appmetadata "gocordis-csv-collector/app/metadata"
@@ -102,19 +103,47 @@ func TestCollectorPartialFileFailureSkipsCompletedFiles(t *testing.T) {
 	}
 }
 
-func TestMissingDirectoryStaysPending(t *testing.T) {
+func TestMissingDirectoryForPastDaySkips(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
+	// A past day whose directory does not exist can never have data: the
+	// outcome is the terminal Skipped, not an eternal Pending.
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 1 || res[0].Status != model.StatusPending {
-		t.Fatalf("result = %#v", res)
+	if len(res) != 1 || res[0].Status != model.StatusSkipped {
+		t.Fatalf("result = %#v, want Skipped", res)
 	}
-	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 1 {
+	// Skipped stays in the catchup scan (cheap re-check, late delivery still
+	// collects), but a re-run over the same missing directory re-skips.
+	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2) != 1 || res2[0].Status != model.StatusSkipped {
+		t.Fatalf("re-run = %#v, want Skipped", res2)
+	}
+}
+
+func TestMissingDirectoryTodayStaysPending(t *testing.T) {
+	root := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	// Today's directory may still appear during the day: Pending stands and
+	// the date stays listed for recovery.
+	today := model.NewCollectionDate(time.Now())
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(today)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusPending {
+		t.Fatalf("result = %#v, want Pending", res)
+	}
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 1 {
 		t.Fatal("pending date must be listed for recovery")
 	}
 }
