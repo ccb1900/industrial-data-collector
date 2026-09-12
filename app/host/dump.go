@@ -8,6 +8,9 @@ import (
 	"os"
 
 	"dynamic-runtime/extensions/config"
+	procplugin "dynamic-runtime/extensions/console/procplugin"
+
+	"dynamic-runtime/extensions/patch"
 
 	appconfig "gocordis-csv-collector/app/config"
 	"gocordis-csv-collector/app/sourcecomp"
@@ -23,14 +26,14 @@ func DumpEffectiveConfig(configPath string, patchPaths []string, overlayPath str
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := sourcecomp.ExpandWithPlugins(data, sourcecomp.PluginDirFor(configPath))
+	parsed, err := sourcecomp.ExpandWithPlugins(data, procplugin.PluginsDirForConfig(configPath))
 	if err != nil {
 		return fmt.Errorf("expand %s: %w", configPath, err)
 	}
 	cfg := parsed.Config
-	var layers [][]Patch
+	var layers [][]patch.Patch
 	if overlayPath != "" {
-		overlay, err := LoadPatchFile(overlayPath)
+		overlay, err := patch.LoadPatchFile(overlayPath)
 		if err == nil {
 			layers = append(layers, overlay)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -38,13 +41,13 @@ func DumpEffectiveConfig(configPath string, patchPaths []string, overlayPath str
 		}
 	}
 	for _, path := range patchPaths {
-		patches, err := LoadPatchFile(path)
+		patches, err := patch.LoadPatchFile(path)
 		if err != nil {
 			return err
 		}
 		layers = append(layers, patches)
 	}
-	if err := ApplyPatches(&cfg, layers...); err != nil {
+	if err := patch.ApplyPatches(&cfg, layers...); err != nil {
 		return err
 	}
 	if err := appconfig.Validate(cfg); err != nil {

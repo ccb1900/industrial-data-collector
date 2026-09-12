@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/patch"
 	"dynamic-runtime/runtime"
 
 	consoleexplorer "dynamic-runtime/extensions/console/explorer"
@@ -47,8 +48,8 @@ type Host struct {
 	// console-writable overlay (applied first); patchLayers are read-only
 	// operator layers (--patch files, applied last with the final word).
 	patchPath   string
-	patchLayers [][]Patch
-	patches     []Patch
+	patchLayers [][]patch.Patch
+	patches     []patch.Patch
 	// lastDesired is the BASE composition as last parsed — before any patch
 	// layer. Patches apply on top of it at every reconcile; install/restore
 	// re-reconciles from it. (Storing the post-patch set here would make an
@@ -165,7 +166,7 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 // (replace swaps in place, remove drops, insert appends).
 func (h *Host) applyOverlay(cfg *config.Config) error {
 	h.mu.Lock()
-	layers := make([][]Patch, 0, len(h.patchLayers)+1)
+	layers := make([][]patch.Patch, 0, len(h.patchLayers)+1)
 	layers = append(layers, h.patches)
 	layers = append(layers, h.patchLayers...)
 	h.mu.Unlock()
@@ -173,7 +174,7 @@ func (h *Host) applyOverlay(cfg *config.Config) error {
 	// backing array first, or the base snapshot's elements shift underneath
 	// it (duplicate rows on the next reconcile).
 	work := config.Config{Components: append([]config.ComponentConfig(nil), cfg.Components...)}
-	if err := ApplyPatches(&work, layers...); err != nil {
+	if err := patch.ApplyPatches(&work, layers...); err != nil {
 		return err
 	}
 	*cfg = work
@@ -186,7 +187,7 @@ func (h *Host) applyOverlay(cfg *config.Config) error {
 // silently.
 func (h *Host) SetOverlayPath(path string) {
 	h.patchPath = path
-	patches, err := LoadPatchFile(path)
+	patches, err := patch.LoadPatchFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			h.log.Warn("patch file unreadable; ignoring", "path", path, "error", err.Error())
@@ -202,9 +203,9 @@ func (h *Host) SetOverlayPath(path string) {
 // They apply after the console-writable overlay on every reconcile, so an
 // operator-provided layer overrides stale console decisions.
 func (h *Host) SetPatchPaths(paths []string) error {
-	layers := make([][]Patch, 0, len(paths))
+	layers := make([][]patch.Patch, 0, len(paths))
 	for _, path := range paths {
-		patches, err := LoadPatchFile(path)
+		patches, err := patch.LoadPatchFile(path)
 		if err != nil {
 			return err
 		}
@@ -221,7 +222,7 @@ func (h *Host) persistOverlay() error {
 		return nil
 	}
 	h.mu.Lock()
-	doc := patchDoc{Version: patchVersion, Patches: append([]Patch(nil), h.patches...)}
+	doc := patch.Doc{Version: patch.Version, Patches: append([]patch.Patch(nil), h.patches...)}
 	h.mu.Unlock()
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -233,7 +234,7 @@ func (h *Host) persistOverlay() error {
 // setPatchLocked replaces the last patch with the same op+id in place, or
 // appends. Position stability keeps the persisted file readable and makes
 // repeated edits of one component not grow the list.
-func (h *Host) setPatchLocked(p Patch) {
+func (h *Host) setPatchLocked(p patch.Patch) {
 	for i := len(h.patches) - 1; i >= 0; i-- {
 		if h.patches[i].Op == p.Op && h.patches[i].ID == p.ID {
 			h.patches[i] = p
@@ -265,7 +266,7 @@ func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i := len(h.patches) - 1; i >= 0; i-- {
-		if h.patches[i].ID == id && h.patches[i].Op == PatchReplace {
+		if h.patches[i].ID == id && h.patches[i].Op == patch.PatchReplace {
 			return h.patches[i].Component.Config, nil
 		}
 	}
@@ -299,27 +300,27 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	if !found {
 		// The edit may target an inserted component, not just base rows.
 		for _, p := range h.patches {
-			if p.Op == PatchInsert && p.ID == id {
+			if p.Op == patch.PatchInsert && p.ID == id {
 				def = *p.Component
 				found = true
 				break
 			}
 		}
 	}
-	var prev Patch
+	var prev patch.Patch
 	hadPrev := false
 	if found {
 		edited := def
 		edited.ID = id
 		edited.Config = cfg
 		for i := len(h.patches) - 1; i >= 0; i-- {
-			if h.patches[i].Op == PatchReplace && h.patches[i].ID == id {
+			if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
 				prev = h.patches[i]
 				hadPrev = true
 				break
 			}
 		}
-		h.setPatchLocked(Patch{Op: PatchReplace, ID: id, Component: &edited})
+		h.setPatchLocked(patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited})
 	}
 	h.mu.Unlock()
 	if !found {
@@ -336,7 +337,7 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 			h.setPatchLocked(prev)
 		} else {
 			for i := len(h.patches) - 1; i >= 0; i-- {
-				if h.patches[i].Op == PatchReplace && h.patches[i].ID == id {
+				if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
 					h.patches = append(h.patches[:i], h.patches[i+1:]...)
 					break
 				}
@@ -366,7 +367,7 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	if !found {
 		h.mu.Lock()
 		for _, p := range h.patches {
-			if (p.Op == PatchReplace || p.Op == PatchInsert) && p.ID == id {
+			if (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) && p.ID == id {
 				def = *p.Component
 				found = true
 			}
@@ -380,7 +381,7 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 		return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
 	}
 	h.mu.Lock()
-	h.setPatchLocked(Patch{Op: PatchRemove, ID: id, Component: &def})
+	h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: id, Component: &def})
 	h.mu.Unlock()
 	if err := h.persistOverlay(); err != nil {
 		return err
@@ -395,7 +396,7 @@ func (h *Host) InstallComponent(ctx context.Context, id string) error {
 	kept := h.patches[:0]
 	dropped := false
 	for _, p := range h.patches {
-		if p.Op == PatchRemove && p.ID == id {
+		if p.Op == patch.PatchRemove && p.ID == id {
 			dropped = true
 			continue
 		}
@@ -419,7 +420,7 @@ func (h *Host) RemovedComponents() []config.ComponentConfig {
 	defer h.mu.Unlock()
 	out := make([]config.ComponentConfig, 0, len(h.patches))
 	for _, p := range h.patches {
-		if p.Op != PatchRemove || p.Component == nil {
+		if p.Op != patch.PatchRemove || p.Component == nil {
 			continue
 		}
 		out = append(out, *p.Component)

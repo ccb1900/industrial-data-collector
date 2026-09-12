@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	procplugin "dynamic-runtime/extensions/console/procplugin"
+
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
@@ -124,7 +126,7 @@ func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error 
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := sourcecomp.ExpandWithPlugins(data, sourcecomp.PluginDirFor(configPath))
+	parsed, err := sourcecomp.ExpandWithPlugins(data, procplugin.PluginsDirForConfig(configPath))
 	if err != nil {
 		return fmt.Errorf("config expand: %w", err)
 	}

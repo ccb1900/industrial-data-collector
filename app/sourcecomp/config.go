@@ -1,14 +1,13 @@
 package sourcecomp
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
-	toml "github.com/pelletier/go-toml/v2"
-
-	"dynamic-runtime/extensions/bundle"
 	extconfig "dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/configwatch"
 
 	// The collector's preset definitions register at init time; linking
 	// them here keeps every parse context (watch host, csv-collector,
@@ -33,6 +32,12 @@ type ParseResult struct {
 	Sources []*ResolvedSource
 }
 
+// The file-collection domain joins the composition pipeline as one Layer:
+// it consumes the profiles/sources tables and contributes source-unit rows
+// plus provider enrichment. Layering itself (bundles, plugin discovery,
+// explicit rows, merge order) is the framework pipeline's job — this package
+// never re-implements it.
+//
 // Parse decodes the extended TOML document:
 //
 //	bundles = ["collector-core", "collector-console"]
@@ -45,25 +50,56 @@ type ParseResult struct {
 //	path = "\\\\machine001\\data"
 //	profiles = ["csv_machine"]
 //
-// Named bundles expand into their component rows first, then discovered
-// plugins/<name>/manifest.toml rows (self-contained plugins), then explicit
-// [[components]] rows — each layer replacing the previous layer's rows with
-// the same id in place (whole-row replace) or appending. Legacy top-level
-// [source.xxx] tables are migrated to anonymous sources.
+// ExpandWithPlugins is Parse with plugin discovery rooted at pluginsDir.
 func Parse(data []byte) (*ParseResult, error) {
 	return parseWithPlugins(data, "")
 }
 
-// ExpandWithPlugins is Parse with plugin discovery rooted at pluginsDir.
 func ExpandWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
 	return parseWithPlugins(data, pluginsDir)
 }
 
-func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
-	doc := map[string]any{}
-	if err := toml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("toml parse: %w", err)
+// Expand returns only the Runtime Component Config (no plugin discovery).
+// It is used by command-line paths before application validation.
+func Expand(data []byte) (extconfig.Config, error) {
+	res, err := Parse(data)
+	if err != nil {
+		return extconfig.Config{}, err
 	}
+	return res.Config, nil
+}
+
+func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
+	layer := NewSourcesLayer()
+	cfg, err := configwatch.ComposeDocument(context.Background(), data, configwatch.ComposeOptions{
+		PluginDir: pluginsDir,
+		Layers:    []configwatch.Layer{layer.Layer()},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ParseResult{Config: cfg, Sources: layer.resolved}, nil
+}
+
+// SourcesLayer is the file-collection domain layer.
+type SourcesLayer struct {
+	resolved []*ResolvedSource
+}
+
+// NewSourcesLayer creates the layer; after a successful compose, the
+// resolved sources are available for the Explorer/UI seed.
+func NewSourcesLayer() *SourcesLayer { return &SourcesLayer{} }
+
+func (l *SourcesLayer) Layer() configwatch.Layer {
+	return configwatch.Layer{
+		Name:         "sources",
+		ConsumedKeys: []string{"profiles", "sources", "source"},
+		Expand:       l.expand,
+		PostMerge:    l.postMerge,
+	}
+}
+
+func (l *SourcesLayer) expand(_ context.Context, doc map[string]any) ([]extconfig.ComponentConfig, error) {
 	profiles, err := parseProfiles(doc["profiles"])
 	if err != nil {
 		return nil, err
@@ -77,33 +113,7 @@ func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
 		return nil, err
 	}
 	compDefs = append(compDefs, legacy...)
-	bundleNames, err := parseBundleNames(doc["bundles"])
-	if err != nil {
-		return nil, err
-	}
-	for k := range doc {
-		switch k {
-		case "bundles", "components", "profiles", "sources", "source":
-			continue
-		default:
-			return nil, fmt.Errorf("unsupported top-level key/table %q", k)
-		}
-	}
-	// Bundles are the preset layer: they expand first so explicit rows can
-	// override them by id (same layering as patches over the base file).
-	presetRows, err := bundle.Expand(bundleNames)
-	if err != nil {
-		return nil, err
-	}
-	discovered, err := DiscoverPlugins(pluginsDir)
-	if err != nil {
-		return nil, err
-	}
-	components, err := parseComponents(doc["components"])
-	if err != nil {
-		return nil, err
-	}
-	components = bundle.MergeRows(bundle.MergeRows(presetRows, discovered), components)
+
 	resolver, err := NewResolver(profiles)
 	if err != nil {
 		return nil, err
@@ -122,40 +132,43 @@ func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
 		resolved = append(resolved, rs)
 	}
 	sort.Slice(resolved, func(i, j int) bool { return resolved[i].ID < resolved[j].ID })
-	components = expandSources(components, resolved)
-	return &ParseResult{Config: extconfig.Config{Components: components}, Sources: resolved}, nil
+	l.resolved = resolved
+	return nil, nil
 }
 
-// Expand returns only the Runtime Component Config. It is used by command-line
-// and WatchHost parsers before application validation.
-func Expand(data []byte) (extconfig.Config, error) {
-	result, err := Parse(data)
-	if err != nil {
-		return extconfig.Config{}, err
+// postMerge enriches the composition's query provider with the discovered
+// source definitions and appends one source-unit row per resolved source —
+// after the full merge, so it enriches whichever row (preset, discovered or
+// explicit) actually won.
+func (l *SourcesLayer) postMerge(cfg *extconfig.Config) error {
+	if len(l.resolved) == 0 {
+		return nil
 	}
-	return result.Config, nil
-}
-
-// parseBundleNames reads the `bundles = ["name", ...]` preset references.
-// The key is optional; an explicit empty array is allowed and expands
-// nothing.
-func parseBundleNames(raw any) ([]string, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("bundles must be an array of preset names")
-	}
-	out := make([]string, 0, len(list))
-	for i, item := range list {
-		name, ok := item.(string)
-		if !ok {
-			return nil, fmt.Errorf("bundles #%d must be a string", i)
+	definitions := sourceDefinitions(l.resolved)
+	for i := range cfg.Components {
+		if cfg.Components[i].Type == "query-provider" {
+			if cfg.Components[i].Config == nil {
+				cfg.Components[i].Config = map[string]any{}
+			}
+			cfg.Components[i].Config["source_definitions"] = definitions
 		}
-		out = append(out, name)
 	}
-	return out, nil
+	for _, rs := range l.resolved {
+		rowCfg := make(map[string]any, len(rs.Config)+5)
+		for k, v := range rs.Config {
+			rowCfg[k] = v
+		}
+		rowCfg["source_id"] = rs.ID
+		rowCfg["path"] = rs.Path
+		rowCfg["metadata"] = rs.Metadata
+		rowCfg["profiles"] = append([]string(nil), rs.Profiles...)
+		cfg.Components = append(cfg.Components, extconfig.ComponentConfig{
+			ID:     SourceComponentPrefix + rs.ID,
+			Type:   SourceUnitType,
+			Config: rowCfg,
+		})
+	}
+	return nil
 }
 
 func parseProfiles(raw any) (map[string]Profile, error) {
@@ -176,7 +189,6 @@ func parseProfiles(raw any) (map[string]Profile, error) {
 	}
 	return out, nil
 }
-
 func parseSources(raw any) ([]SourceConfig, error) {
 	if raw == nil {
 		return nil, nil
@@ -199,7 +211,6 @@ func parseSources(raw any) ([]SourceConfig, error) {
 	}
 	return out, nil
 }
-
 func parseLegacySources(raw any) ([]SourceConfig, error) {
 	if raw == nil {
 		return nil, nil
@@ -277,116 +288,6 @@ func sourceFromMap(m map[string]any, index int) (SourceConfig, error) {
 	return def, nil
 }
 
-func stringSlice(raw any) ([]string, bool) {
-	switch values := raw.(type) {
-	case []string:
-		return append([]string(nil), values...), true
-	case []any:
-		out := make([]string, 0, len(values))
-		for _, v := range values {
-			s, ok := v.(string)
-			if !ok {
-				return nil, false
-			}
-			out = append(out, s)
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
-func parseComponents(raw any) ([]extconfig.ComponentConfig, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("components must be an array of tables ([[components]])")
-	}
-	out := make([]extconfig.ComponentConfig, 0, len(list))
-	for i, item := range list {
-		m, ok := item.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("component #%d is not a table", i)
-		}
-		cc := extconfig.ComponentConfig{}
-		for key, value := range m {
-			switch key {
-			case "id":
-				if cc.ID, ok = value.(string); !ok {
-					return nil, fmt.Errorf("component #%d id must be a string", i)
-				}
-			case "type":
-				if cc.Type, ok = value.(string); !ok {
-					return nil, fmt.Errorf("component #%d type must be a string", i)
-				}
-			case "config":
-				cfg, ok := value.(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("component #%d config must be a table", i)
-				}
-				if cc.Config == nil {
-					cc.Config = make(map[string]any, len(cfg))
-				}
-				for ck, cv := range cfg {
-					cc.Config[ck] = cv
-				}
-			default:
-				if cc.Config == nil {
-					cc.Config = make(map[string]any)
-				}
-				cc.Config[key] = value
-			}
-		}
-		if cc.ID == "" || cc.Type == "" {
-			return nil, fmt.Errorf("component #%d missing id/type", i)
-		}
-		out = append(out, cc)
-	}
-	return out, nil
-}
-
-func expandSources(components []extconfig.ComponentConfig, sources []*ResolvedSource) []extconfig.ComponentConfig {
-	if len(sources) == 0 {
-		return components
-	}
-	out := append([]extconfig.ComponentConfig(nil), components...)
-	queryIndex := -1
-	for i := range out {
-		if out[i].Type == "query-provider" {
-			queryIndex = i
-			break
-		}
-	}
-	definitions := sourceDefinitions(sources)
-	if queryIndex >= 0 {
-		if out[queryIndex].Config == nil {
-			out[queryIndex].Config = map[string]any{}
-		}
-		out[queryIndex].Config["source_definitions"] = definitions
-	}
-	// 每个声明 expose_console 的源都把自己的 sink 登记到控制台的 sink
-	// 注册表（console-rows 按源路由、缺省聚合），不再有独占提供者冲突；
-	// 不同存储画像可指向不同物理表。
-	for _, rs := range sources {
-		cfg := make(map[string]any, len(rs.Config)+5)
-		for k, v := range rs.Config {
-			cfg[k] = v
-		}
-		cfg["source_id"] = rs.ID
-		cfg["path"] = rs.Path
-		cfg["metadata"] = rs.Metadata
-		cfg["profiles"] = append([]string(nil), rs.Profiles...)
-		out = append(out, extconfig.ComponentConfig{
-			ID:     SourceComponentPrefix + rs.ID,
-			Type:   SourceUnitType,
-			Config: cfg,
-		})
-	}
-	return out
-}
-
 func sourceDefinitions(sources []*ResolvedSource) []any {
 	out := make([]any, 0, len(sources))
 	for _, rs := range sources {
@@ -414,4 +315,23 @@ func sourceDefinitions(sources []*ResolvedSource) []any {
 // state namespace.
 func SourceComponentID(sourceID string) string {
 	return SourceComponentPrefix + strings.TrimSpace(sourceID)
+}
+
+func stringSlice(raw any) ([]string, bool) {
+	switch values := raw.(type) {
+	case []string:
+		return append([]string(nil), values...), true
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, v := range values {
+			s, ok := v.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }

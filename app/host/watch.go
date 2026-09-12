@@ -10,6 +10,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
+	procplugin "dynamic-runtime/extensions/console/procplugin"
 	"dynamic-runtime/extensions/watch"
 
 	appconfig "gocordis-csv-collector/app/config"
@@ -74,7 +75,7 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		configwatch.Source{ID: "config", Path: path, Format: configwatch.FormatTOML},
 		h.ctrl,
 		w,
-		configwatch.WithParser(&validatingParser{host: h, pluginDir: sourcecomp.PluginDirFor(path)}),
+		configwatch.WithParser(&validatingParser{host: h, pluginDir: procplugin.PluginsDirForConfig(path)}),
 		configwatch.WithPostReconcile(h.PostReconcile),
 		// 一次 reconcile（含应用层收尾）以 readyTimeout 兜底：组件永远
 		// 不就绪时返回明确错误，而不是把处理循环和调用方一起挂死。
