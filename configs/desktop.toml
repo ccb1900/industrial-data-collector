@@ -19,19 +19,10 @@
 # NOTE: top-level keys must precede every table in TOML — keep this line here.
 bundles = ["collector-core", "collector-console"]
 
-# 整行覆盖 bundle 里的 ui 行：为控制台挂载插件前端模块（同源提供、
-# 启动加载）。模块注册的 "alarm-console" 页面渲染器让下面的自定义页
-# 获得完全自定义渲染——不走声明式调色板。
-[[components]]
-id = "ui"
-type = "ui"
-
-[[components.config.client_modules]]
-name = "alarm-demo"
-path = "./configs/client-modules/alarm-demo.js"
-
 # 完全自定义的插件页面：renderer 指向插件前端模块注册的渲染器，
-# 没有 views —— 渲染全权在模块里。
+# 没有 views —— 渲染全权在模块里。前端模块按约定放在 plugins/ 下
+# （plugins/alarm-demo.ui.js，与插件后端并排），零配置发现、同源提供、
+# 控制台启动时加载；无需任何 client_modules 登记行。
 [[components]]
 id = "ui-page-alarm-demo"
 type = "ui-page"

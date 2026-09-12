@@ -95,8 +95,10 @@ validated) without booting; the same shape is served live by the
 persist as ordered patches in `configs/desktop.toml.removed.json`; operator
 `--patch` files apply after the console overlay and have the final word.
 `configs/desktop.toml` also demonstrates a fully custom plugin page: the
-`alarm-demo` client module (`configs/client-modules/alarm-demo.js`) is served
-same-origin, loaded by the console at boot, and registers the
+convention-discovered client module `plugins/alarm-demo.ui.js` sits where the
+plugin backend deploys (a plugin ships its backend artifact and its
+`<name>.ui.js` frontend side by side in `plugins/` — no config row), is
+served same-origin, loaded by the console at boot, and registers the
 `alarm-console` page renderer — plugin pages need not use the declarative
 palette at all.
 

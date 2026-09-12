@@ -112,9 +112,13 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
-	// Plugin client modules: same-origin frontend modules registered by
-	// plugins, loaded by the console at boot (full custom pages/kinds).
-	srv.SetClientModules(ui.ClientModules())
+	// Plugin client modules: convention first — plugins/<name>.ui.js sits
+	// next to the plugin backend it belongs to and needs no config. Explicit
+	// client_modules rows on the ui component remain as overrides.
+	srv.SetClientModules(consolehost.MergeClientModules(
+		ui.ClientModules(),
+		consolehost.DiscoverClientModules(consolehost.DefaultPluginsDir),
+	))
 	// Desired-state editing: uninstall/install persist to the patch file
 	// (loaded before Sync so restarts converge to the persisted decisions).
 	srv.SetPluginLifecycle(lifecycleAdapter{h: app.Host})
