@@ -124,7 +124,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"page_id":     "files",
 			"title":       "文件",
 			"route":       "/files",
-			"description": "聚焦采集的文件清单；展开行查看开放键值元数据。",
+			"description": "文件级明细（联动视图）：先到「采集任务」页点选一行任务，这里展示该任务的文件与元数据；展开行查看开放键值信息。",
 			"renderer":    "views",
 			"order":       20,
 			"views": []any{
