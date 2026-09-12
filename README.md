@@ -111,10 +111,15 @@ scripts/install-plugin.sh @scope/my-plugin        # npm registry
 scripts/install-plugin.sh ./my-plugin-0.1.0.tgz   # tarball (air-gapped)
 ```
 
-Shared frontend libraries: the console hands every module its own React,
-antd, and the hub API through the register facade (also exposed as
-`globalThis.__CORDIS_CONSOLE`), so a plugin bundles only what it alone
-needs and hooks keep working against the console's React instance.
+Shared frontend libraries and JSX: the console hands every module its
+own React, jsx-runtime, antd, and the hub API through the register
+facade (also `globalThis.__CORDIS_CONSOLE`). Plugin sources are plain
+TSX — `src/ui.tsx` writes JSX, hooks, and `import { Button } from
+"antd"` — and the build aliases the shared packages to three small
+shims (`shims/react.js`, `shims/react-jsx-runtime.js`,
+`shims/antd.js`) that read the facade, so hooks run on the console's
+single React instance. Only libraries the console does not carry
+(ECharts) get bundled into the plugin artifact.
 
 ## Verify
 

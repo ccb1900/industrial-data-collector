@@ -1,5 +1,5 @@
-github.com/ccb1900/gocordis v0.0.0-20260912014832-b9ce24ecdc0a h1:XyGDIq3AdwWyZV28y49sGHboY8xE/9KI3Va0H89+C/E=
-github.com/ccb1900/gocordis v0.0.0-20260912014832-b9ce24ecdc0a/go.mod h1:nfogDWgJczMoJjTLeOHL6Eys/KJMyY8oSobTyx+/ybw=
+github.com/ccb1900/gocordis v0.0.0-20260912023857-a84c6e0c6bda h1:ytcmwvINdCGPwtjCscs8xbn+SNO7n28Xkb0Q1DU4Ie8=
+github.com/ccb1900/gocordis v0.0.0-20260912023857-a84c6e0c6bda/go.mod h1:nfogDWgJczMoJjTLeOHL6Eys/KJMyY8oSobTyx+/ybw=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
