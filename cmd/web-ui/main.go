@@ -112,8 +112,8 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 	// configuration (host_id / fleet_peers).
 	srv.SetIdentity(ui.HostID())
 	srv.SetFleetPeers(ui.FleetPeers())
-	// Plugin client modules: convention first — plugins/<name>.ui.js sits
-	// next to the plugin backend it belongs to and needs no config. Explicit
+	// Plugin client modules: convention first — plugins/<name>/ui.js sits
+	// beside the plugin backend it belongs to, needs no config. Explicit
 	// client_modules rows on the ui component remain as overrides.
 	srv.SetClientModules(consolehost.MergeClientModules(
 		ui.ClientModules(),

@@ -20,9 +20,9 @@
 bundles = ["collector-core", "collector-console"]
 
 # 完全自定义的插件页面：renderer 指向插件前端模块注册的渲染器，
-# 没有 views —— 渲染全权在模块里。前端模块按约定放在 plugins/ 下
-# （plugins/alarm-demo.ui.js，与插件后端并排），零配置发现、同源提供、
-# 控制台启动时加载；无需任何 client_modules 登记行。
+# 没有 views —— 渲染全权在模块里。前端模块按「一插件一目录」约定
+# 放置：plugins/alarm-demo/ui.js 与该插件的后端工件同目录，零配置
+# 发现、同源提供、控制台启动时加载；无需任何 client_modules 登记行。
 [[components]]
 id = "ui-page-alarm-demo"
 type = "ui-page"
