@@ -94,16 +94,27 @@ validated) without booting; the same shape is served live by the
 `effective-config` hub query. Console-driven edits and uninstall decisions
 persist as ordered patches in `configs/desktop.toml.removed.json`; operator
 `--patch` files apply after the console overlay and have the final word.
-`configs/desktop.toml` also demonstrates a fully custom plugin page: the
-convention-discovered client module `plugins/alarm-demo/ui.js`. One plugin,
-one directory — a plugin deploys as `plugins/<name>/` holding its backend
-artifact and its `ui.js` frontend side by side (no config row); the module is
-served same-origin, loaded by the console at boot, and registers the
+`configs/desktop.toml` also demonstrates a fully custom plugin page.
+A console plugin is a standard npm package deployed as `plugins/<name>/`:
+`package.json` declares its frontend dependencies (the demo uses ECharts),
+`src/ui.js` imports them with bare specifiers, and `npm run build`
+self-bundles everything into one self-contained `ui.js` (esbuild). No config
+row is needed: discovery serves `ui.js` same-origin at a directory-shaped
+URL, the console loads it at boot, and the module registers the
 `alarm-console` page renderer — plugin pages need not use the declarative
-palette at all. Frontend libraries are vendored by the plugin and imported
-relatively (`plugins/alarm-demo/lib/echarts.esm.min.js`, imported as
-`./lib/...` from the directory-shaped entry URL): offline, same-origin, no
-CDN, no import map. The demo renders a live ECharts trend from the hub.
+palette at all. The demo renders a live ECharts trend from the hub.
+
+Install a published plugin offline or from the registry:
+
+```bash
+scripts/install-plugin.sh @scope/my-plugin        # npm registry
+scripts/install-plugin.sh ./my-plugin-0.1.0.tgz   # tarball (air-gapped)
+```
+
+Shared frontend libraries: the console hands every module its own React,
+antd, and the hub API through the register facade (also exposed as
+`globalThis.__CORDIS_CONSOLE`), so a plugin bundles only what it alone
+needs and hooks keep working against the console's React instance.
 
 ## Verify
 

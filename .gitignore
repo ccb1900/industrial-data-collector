@@ -1,6 +1,4 @@
-/state/
-/data/
-frontend/node_modules/
-frontend/dist/
-/csv-collector
-tests/state/
+node_modules/
+data/
+state/
+*.removed.json
