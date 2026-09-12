@@ -80,6 +80,13 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}); err != nil {
 		return err
 	}
+	// ui-client declares one plugin frontend module — composition-governed:
+	// visible in the explorer, honoring enabled, removed on uninstall.
+	if err := pluginkit.Bind(reg, "ui-client", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uiplugin.NewClientModuleComponent(cc)
+	}); err != nil {
+		return err
+	}
 	return pluginkit.Bind(reg, "plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return explorerplugin.NewPlugin(cc, explorerSvc)
 	})

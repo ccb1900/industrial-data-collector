@@ -97,11 +97,14 @@ persist as ordered patches in `configs/desktop.toml.removed.json`; operator
 `configs/desktop.toml` also demonstrates a fully custom plugin page.
 A console plugin is a standard npm package deployed as `plugins/<name>/`:
 `package.json` declares its frontend dependencies (the demo uses ECharts),
-`src/ui.js` imports them with bare specifiers, and `npm run build`
-self-bundles everything into one self-contained `ui.js` (esbuild). No config
-row is needed: discovery serves `ui.js` same-origin at a directory-shaped
-URL, the console loads it at boot, and the module registers the
-`alarm-console` page renderer — plugin pages need not use the declarative
+`src/ui.tsx` imports them with bare specifiers, and `npm run build`
+self-bundles everything into one self-contained `ui.js` (esbuild). The
+frontend is composition-governed like everything else: a `ui-client`
+component declares the module (`id = "alarm-demo"`, type `ui-client`,
+default entry `plugins/alarm-demo/ui.js`), shows up in the plugin explorer,
+honors `enabled`, and uninstalling it removes the module from the manifest —
+a file on disk never loads by itself. The module registers the
+`alarm-console` page renderer; plugin pages need not use the declarative
 palette at all. The demo renders a live ECharts trend from the hub.
 
 Install a published plugin offline or from the registry:

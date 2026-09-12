@@ -19,10 +19,15 @@
 # NOTE: top-level keys must precede every table in TOML — keep this line here.
 bundles = ["collector-core", "collector-console"]
 
+# 前端模块是组合治理的一等公民：ui-client 组件声明它——出现在插件
+# 页（可卸载/禁用），enabled 开关生效，卸载即从清单移除、不再下发。
+# 约定只负责默认路径：plugins/alarm-demo/ui.js（与后端工件同目录）。
+[[components]]
+id = "alarm-demo"
+type = "ui-client"
+
 # 完全自定义的插件页面：renderer 指向插件前端模块注册的渲染器，
-# 没有 views —— 渲染全权在模块里。前端模块按「一插件一目录」约定
-# 放置：plugins/alarm-demo/ui.js 与该插件的后端工件同目录，零配置
-# 发现、同源提供、控制台启动时加载；无需任何 client_modules 登记行。
+# 没有 views —— 渲染全权在模块里。
 [[components]]
 id = "ui-page-alarm-demo"
 type = "ui-page"

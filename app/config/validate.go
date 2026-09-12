@@ -41,6 +41,7 @@ var knownTypes = map[string]TypeInfo{
 	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor", Name: "Path Metadata"},
 	"query-provider":     {Kind: "query", Capability: "query", Name: "Query Provider"},
 	"ui":                 {Kind: "ui-host", Capability: "ui", Name: "UI Host"},
+	"ui-client":          {Kind: "ui-contribution", Capability: "ui-client", Name: "UI Client Module"},
 	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page", Name: "UI Page Contribution"},
 	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel", Name: "UI Panel Contribution"},
 	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
