@@ -23,4 +23,5 @@ title = "报警示例"
 route = "/alarms-demo"
 description = "完全自定义的插件页面：数据来自进程外插件，渲染来自插件前端模块。"
 renderer = "alarm-console"
+icon = "bell"
 order = 50

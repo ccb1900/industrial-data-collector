@@ -247,6 +247,9 @@ func pageFromMap(m map[string]any) (appui.PageDefinition, error) {
 	if description, ok := m["description"].(string); ok {
 		def.Description = description
 	}
+	if icon, ok := m["icon"].(string); ok {
+		def.Icon = icon
+	}
 	def.View = view
 	def.Views = views
 	def.Actions = actions

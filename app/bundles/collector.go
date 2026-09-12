@@ -31,6 +31,7 @@ func coreRows() []extconfig.ComponentConfig {
 			"page_id": "plugins",
 			"title":   "插件",
 			"route":   "/plugins",
+			"icon":    "block",
 			"order":   40,
 		}),
 	}
@@ -48,6 +49,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"route":       "/overview",
 			"description": "采集运行情况总览：由读模型投影，观察流失效后自动重查。",
 			"renderer":    "views",
+			"icon":        "dashboard",
 			"order":       0,
 			"actions": []any{
 				map[string]any{"label": "立即采集", "command": "trigger", "datePicker": true},
@@ -85,8 +87,9 @@ func consoleRows() []extconfig.ComponentConfig {
 			"page_id":     "collections",
 			"title":       "采集任务",
 			"route":       "/collections",
-			"description": "按数据源与采集日期列出任务；选择行后联动文件视图。",
+			"description": "按数据源与采集日期列出任务；点选一行即在下方的文件明细与本侧详情中展示该次采集。",
 			"renderer":    "views",
+			"icon":        "profile",
 			"order":       10,
 			"actions": []any{
 				map[string]any{"label": "立即采集", "command": "trigger", "datePicker": true},
@@ -118,18 +121,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "status", "title": "状态"},
 					},
 				},
-			},
-		}),
-		bundle.Row("ui-page-files", "ui-page", map[string]any{
-			"page_id":     "files",
-			"title":       "文件",
-			"route":       "/files",
-			"description": "文件级明细（联动视图）：先到「采集任务」页点选一行任务，这里展示该任务的文件与元数据；展开行查看开放键值信息。",
-			"renderer":    "views",
-			"order":       20,
-			"views": []any{
 				map[string]any{
-					"kind": "table", "query": "files", "expand": "metadata", "pageSize": 20,
+					"kind": "table", "title": "文件明细", "query": "files",
+					"expand": "metadata", "pageSize": 20,
 					"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
 					"columns": []any{
 						map[string]any{"key": "name", "title": "文件"},
@@ -146,6 +140,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"route":       "/sources",
 			"description": "由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。",
 			"renderer":    "views",
+			"icon":        "api",
 			"order":       30,
 			"views": []any{
 				map[string]any{
@@ -167,6 +162,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"route":       "/data",
 			"description": "类型化入库数据的分页查询与存储洞察。",
 			"renderer":    "views",
+			"icon":        "search",
 			"order":       35,
 			"views": []any{
 				map[string]any{
@@ -242,7 +238,7 @@ func consoleRows() []extconfig.ComponentConfig {
 		}),
 		bundle.Row("ui-panel-collection-detail", "ui-panel", map[string]any{
 			"panel_id": "collection-detail",
-			"pages":    []any{"files"},
+			"pages":    []any{"collections"},
 			"title":    "采集详情",
 			"position": "right",
 			"renderer": "views",
