@@ -18,7 +18,6 @@ import (
 
 	"gocordis-csv-collector/app/collector"
 	"gocordis-csv-collector/app/date"
-	metadataplugin "gocordis-csv-collector/components/metadata"
 	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
@@ -32,6 +31,7 @@ import (
 	"gocordis-csv-collector/app/storage"
 	"gocordis-csv-collector/components/internal/configutil"
 	"gocordis-csv-collector/components/internal/outcome"
+	metadataplugin "gocordis-csv-collector/components/metadata"
 	storageplugin "gocordis-csv-collector/components/storage"
 )
 
@@ -45,21 +45,21 @@ type SourceUnitComponent struct {
 	sourceID model.SourceID
 	path     string
 
-	src               *source.Source
-	parser            model.CSVParser
-	staticMetadata    model.Metadata
-	metadataExtractor    model.MetadataExtractor
+	src                   *source.Source
+	parser                model.CSVParser
+	staticMetadata        model.Metadata
+	metadataExtractor     model.MetadataExtractor
 	metadataFromComponent bool
-	stateSvc          model.CollectionState
-	memState          bool
-	mem               *storage.MemoryStore
-	sqlCfg            *storage.SQLConfig
-	tableCfg          *storage.TableConfig
-	lazyConnect       bool
-	policy            date.Policy
-	batchSize         int
-	catchupDays       int
-	logger            *slog.Logger
+	stateSvc              model.CollectionState
+	memState              bool
+	mem                   *storage.MemoryStore
+	sqlCfg                *storage.SQLConfig
+	tableCfg              *storage.TableConfig
+	lazyConnect           bool
+	policy                date.Policy
+	batchSize             int
+	catchupDays           int
+	logger                *slog.Logger
 
 	emitCtx *runtime.Context
 }
@@ -70,7 +70,7 @@ type job struct {
 	done chan error
 }
 
-func (c *SourceUnitComponent) Name() string                  { return "source-unit:" + string(c.sourceID) }
+func (c *SourceUnitComponent) Name() string { return "source-unit:" + string(c.sourceID) }
 func (c *SourceUnitComponent) Inject() []runtime.Dependency {
 	if c.metadataFromComponent {
 		return []runtime.Dependency{runtime.Requires(metadataplugin.Key)}
@@ -420,16 +420,16 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		staticMetadata:        staticMD,
 		metadataExtractor:     extractor,
 		metadataFromComponent: metadataFromComponent,
-		stateSvc:          stateSvc,
-		memState:          isMemory,
-		mem:               mem,
-		sqlCfg:            sqlCfg,
-		tableCfg:          tableCfg,
-		lazyConnect:       configutil.OptionalBool(cc, "lazy_connect", false),
-		policy:            policy,
-		batchSize:         batch,
-		catchupDays:       catchup,
-		logger:            logger,
+		stateSvc:              stateSvc,
+		memState:              isMemory,
+		mem:                   mem,
+		sqlCfg:                sqlCfg,
+		tableCfg:              tableCfg,
+		lazyConnect:           configutil.OptionalBool(cc, "lazy_connect", false),
+		policy:                policy,
+		batchSize:             batch,
+		catchupDays:           catchup,
+		logger:                logger,
 	}, nil
 }
 

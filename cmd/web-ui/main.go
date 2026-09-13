@@ -17,9 +17,9 @@ package main
 
 import (
 	"context"
+	logstore "dynamic-runtime/extensions/console/logstore"
 	"flag"
 	"fmt"
-	logstore "dynamic-runtime/extensions/console/logstore"
 	"io/fs"
 	"log/slog"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
