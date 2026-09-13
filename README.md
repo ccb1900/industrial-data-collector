@@ -60,6 +60,12 @@ Metadata Section parsing, and
 (UI Plugin Go core through P2.1; batches 3/3.2/3.3/3.4 add dynamic UI
 Composition, runtime lifecycle conformance, and the Plugin Explorer Console).
 
+## 文档
+
+- [用户指南](docs/用户指南.md) —— 面向使用与运维：页面、采集状态语义、配置、插件安装、命令参考
+- [开发者指南](docs/开发者指南.md) —— 面向开发：架构边界、组合管线、控制台扩展、进程外插件契约、测试地图
+- 文档实施**代码级校验**：`docs/verification/verify.sh` 逐条断言文档中的命令/路径/键/端点与源码一致（当前 138/138 通过）
+
 ## Run
 
 ```bash
