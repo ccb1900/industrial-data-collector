@@ -23,6 +23,7 @@ import (
 	consolehost "dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/hub"
 
+	logstore "dynamic-runtime/extensions/console/logstore"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
 	"gocordis-csv-collector/app/model"
@@ -30,7 +31,6 @@ import (
 	queryplugin "gocordis-csv-collector/components/query"
 	schedulerplugin "gocordis-csv-collector/components/scheduler"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
-	"gocordis-csv-collector/internal/logstore"
 	"gocordis-csv-collector/internal/obsjournal"
 )
 
@@ -283,15 +283,10 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 
-	// Named query "logs": the structured application log ring.
+	// Named query "logs": the structured application log ring (framework
+	// logstore provides the ring, the handler and the query contract).
 	if err := register(func() (func() error, error) {
-		return hubRegistry.RegisterQuery("logs", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
-			limit, _ := strconv.Atoi(params.Get("limit"))
-			if limit <= 0 {
-				limit = 200
-			}
-			return logstore.Default().Latest(limit, params.Get("level"), params.Get("contains")), nil
-		})
+		return logstore.RegisterLogsQuery(hubRegistry, logstore.Default())
 	}); err != nil {
 		return nil, err
 	}

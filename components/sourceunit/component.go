@@ -18,6 +18,7 @@ import (
 
 	"gocordis-csv-collector/app/collector"
 	"gocordis-csv-collector/app/date"
+	metadataplugin "gocordis-csv-collector/components/metadata"
 	appencoding "gocordis-csv-collector/app/encoding"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
@@ -47,7 +48,8 @@ type SourceUnitComponent struct {
 	src               *source.Source
 	parser            model.CSVParser
 	staticMetadata    model.Metadata
-	metadataExtractor model.MetadataExtractor
+	metadataExtractor    model.MetadataExtractor
+	metadataFromComponent bool
 	stateSvc          model.CollectionState
 	memState          bool
 	mem               *storage.MemoryStore
@@ -69,7 +71,12 @@ type job struct {
 }
 
 func (c *SourceUnitComponent) Name() string                  { return "source-unit:" + string(c.sourceID) }
-func (c *SourceUnitComponent) Inject() []runtime.Dependency  { return nil }
+func (c *SourceUnitComponent) Inject() []runtime.Dependency {
+	if c.metadataFromComponent {
+		return []runtime.Dependency{runtime.Requires(metadataplugin.Key)}
+	}
+	return nil
+}
 func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 
 // SourceID returns the logical Source identity. It is independent from path
@@ -130,6 +137,14 @@ func (c *SourceUnitComponent) Projection() query.UnitState {
 
 // Apply starts one worker/event-handler activation for this Source.
 func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	// component 装配：提取器来自 path-metadata 组件的 capability。
+	if c.metadataFromComponent {
+		extractorSvc, err := runtime.Require(ctx, metadataplugin.Key)
+		if err != nil {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata component required but not active: %w", c.sourceID, err)
+		}
+		c.metadataExtractor = extractorSvc
+	}
 	store := model.Storage(c.mem)
 	var closeStore func() error
 	switch {
@@ -334,16 +349,29 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if err != nil {
 		return nil, err
 	}
-	rules, err := appmetadata.ParseRules(cc.Config["path_metadata"])
+	// 元数据提取器的两种装配（互斥）：
+	//   inline（默认）—— path_metadata 规则内联在本源配置里；
+	//   component —— 声明消费一个 path-metadata 组件的 MetadataExtractor
+	//                capability（提取器自身成为可替换的 provider）。
+	metadataMode := configutil.OptionalString(cc, "metadata_source", "inline")
+	if metadataMode != "inline" && metadataMode != "component" {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata_source must be inline or component", cc.ID)
+	}
+	var extractor model.MetadataExtractor
+	metadataFromComponent := metadataMode == "component"
+	inlineRules, err := appmetadata.ParseRules(cc.Config["path_metadata"])
 	if err != nil {
 		return nil, err
 	}
-	var extractor model.MetadataExtractor
-	if len(rules) > 0 {
+	if metadataFromComponent {
+		if len(inlineRules) > 0 {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata_source=component conflicts with inline path_metadata rules", cc.ID)
+		}
+	} else if len(inlineRules) > 0 {
 		ex, err := appmetadata.NewExtractor(appmetadata.SourceRuleSet{
 			SourceID: model.SourceID(sourceID),
 			Root:     root,
-			Rules:    rules,
+			Rules:    inlineRules,
 		})
 		if err != nil {
 			return nil, err
@@ -385,12 +413,13 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		logger = slog.Default()
 	}
 	return &SourceUnitComponent{
-		sourceID:          model.SourceID(sourceID),
-		path:              root,
-		src:               src,
-		parser:            parserModel,
-		staticMetadata:    staticMD,
-		metadataExtractor: extractor,
+		sourceID:              model.SourceID(sourceID),
+		path:                  root,
+		src:                   src,
+		parser:                parserModel,
+		staticMetadata:        staticMD,
+		metadataExtractor:     extractor,
+		metadataFromComponent: metadataFromComponent,
 		stateSvc:          stateSvc,
 		memState:          isMemory,
 		mem:               mem,

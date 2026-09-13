@@ -19,7 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"gocordis-csv-collector/internal/logstore"
+	logstore "dynamic-runtime/extensions/console/logstore"
 	"io/fs"
 	"log/slog"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
