@@ -297,13 +297,14 @@ func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 func (h *Host) storedComponentConfig(id string) (config.ComponentConfig, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if idx := indexOfComponent(h.lastDesired.Components, id); idx >= 0 {
-		return h.lastDesired.Components[idx], true
-	}
+	// 补丁优先：编辑后的真实值（含回填的秘密）在补丁里。
 	for i := len(h.patches) - 1; i >= 0; i-- {
 		if h.patches[i].ID == id && (h.patches[i].Op == patch.PatchReplace || h.patches[i].Op == patch.PatchInsert) {
 			return *h.patches[i].Component, true
 		}
+	}
+	if idx := indexOfComponent(h.lastDesired.Components, id); idx >= 0 {
+		return h.lastDesired.Components[idx], true
 	}
 	return config.ComponentConfig{}, false
 }
@@ -313,6 +314,12 @@ func (h *Host) storedComponentConfig(id string) (config.ComponentConfig, bool) {
 // failed reconciliation rolls the edit back so the patch list never holds a
 // configuration the runtime rejected.
 func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string]any) error {
+	// A display copy may carry RedactedSentinel for secrets: restore the
+	// stored values BEFORE the edit is recorded, so a round-trip never
+	// persists the sentinel.
+	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
+		restoreRedacted(cfg, stored.Config)
+	}
 	h.mu.Lock()
 	var def config.ComponentConfig
 	found := false
@@ -352,12 +359,6 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
-	// A display copy may carry RedactedSentinel for secrets: restore the
-	// stored values so a round-trip never persists the sentinel.
-	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
-		restoreRedacted(cfg, stored.Config)
-	}
-
 	if err := h.persistOverlay(); err != nil {
 		return err
 	}

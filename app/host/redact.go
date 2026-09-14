@@ -89,6 +89,9 @@ func restoreRedacted(incoming, stored map[string]any) {
 	}
 }
 
+// restoreRedactedSlice 按位置回填数组元素内的哨兵键。限制：若数组元素
+// 本身承载敏感键且被重排/删除，按位置回填存在串位可能——当前配置模型中
+// 数组（columns/actions/views/filters…）不承载敏感键，敏感键均在顶层。
 func restoreRedactedSlice(incoming, stored []any) {
 	for i := range incoming {
 		if i >= len(stored) {
@@ -114,4 +117,13 @@ func restoreRedactedSlice(incoming, stored []any) {
 			}
 		}
 	}
+}
+
+func storedSliceAt(stored []any, i int) []any {
+	if i < len(stored) {
+		if sl, ok := stored[i].([]any); ok {
+			return sl
+		}
+	}
+	return nil
 }

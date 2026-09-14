@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"gocordis-csv-collector/internal/applock"
 	consoleexplorer "dynamic-runtime/extensions/console/explorer"
 	consolehost "dynamic-runtime/extensions/console/host"
 	consolewebui "dynamic-runtime/extensions/console/webui"
@@ -72,6 +73,13 @@ func (m *multiFlag) Set(v string) error {
 }
 
 func run(logger *slog.Logger, configPath, addr string, patchPaths []string) error {
+	// 单实例守卫：双进程并发写 state/（台账覆盖、SQLite 锁冲突）已在
+	// 运维中实际发生。dump-config 不需要锁（只读）。
+	releaseLock, err := applock.Acquire("state")
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 	// WatchHost = config watch + reconciliation: TOML edits hot-apply to the
 	// running composition (loader semantics), no restart.
 	app, err := apphost.NewWatchHost(configPath, logger)
