@@ -7,7 +7,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "dynamic-runtime/console/host"
+	uiplugin "dynamic-runtime/extensions/console/host"
 	"gocordis-csv-collector/app/host"
 )
 

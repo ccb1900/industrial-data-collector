@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	uiplugin "dynamic-runtime/console/host"
+	uiplugin "dynamic-runtime/extensions/console/host"
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
@@ -18,7 +18,7 @@ import (
 // restarts, Pending dates, and the local failure ledger — through the same
 // Query bridge as everything else, without a second lifecycle.
 
-func projectionDocument(root, stateDir string) string {
+func projectionDocument(root, stateDir, specificDate string) string {
 	return fmt.Sprintf(`
 [profiles.csv_machine]
 parser = "csv"
@@ -26,7 +26,7 @@ header = true
 pattern = "*.csv"
 file_stable_window_seconds = 0
 date_policy = "specific"
-specific_date = "2026-09-07"
+specific_date = %q
 batch_size = 1000
 
 [profiles.memory_sink]
@@ -60,7 +60,7 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
-`, stateDir, root)
+`, specificDate, stateDir, root)
 }
 
 func uiAdapter(h *host.Host) *uiplugin.Host {
@@ -85,7 +85,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	if err := writeDay(root, "2026-09-07", "broken.csv", "id,name\n\"bad,9\n"); err != nil {
 		t.Fatal(err)
 	}
-	doc := projectionDocument(root, stateDir)
+	doc := projectionDocument(root, stateDir, "2026-09-07")
 
 	// Pass 1 (first process): good.csv completes, broken.csv fails.
 	parsed, err := sourcecomp.Parse([]byte(doc))
@@ -151,13 +151,15 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestProjectionPendingDateVisible(t *testing.T) {
+func TestProjectionSkippedDateVisible(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "machine001")
 	stateDir := filepath.Join(base, "state")
-	// No date directory exists yet: the date stays Pending, and the console
-	// must show that "waiting for data" state instead of nothing.
-	doc := projectionDocument(root, stateDir)
+	// A fully passed day whose source directory does not exist is a terminal
+	// "no data" (Skipped) — permanent absence, distinct from Pending — and
+	// the console must still show that state instead of nothing.
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	doc := projectionDocument(root, stateDir, yesterday)
 	parsed, err := sourcecomp.Parse([]byte(doc))
 	if err != nil {
 		t.Fatal(err)
@@ -177,14 +179,14 @@ func TestProjectionPendingDateVisible(t *testing.T) {
 	cols := queryCollections(t, adapter)
 	found := false
 	for _, c := range cols {
-		if c.SourceID == "machine001" && c.Date == "2026-09-07" {
+		if c.SourceID == "machine001" && c.Date == yesterday {
 			found = true
-			if c.Status != "Pending" {
-				t.Fatalf("collection = %#v, want Pending", c)
+			if c.Status != "Skipped" {
+				t.Fatalf("collection = %#v, want Skipped", c)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("pending date invisible in %+#v", cols)
+		t.Fatalf("skipped date invisible in %+#v", cols)
 	}
 }

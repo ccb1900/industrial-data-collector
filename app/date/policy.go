@@ -8,10 +8,11 @@ import (
 	"gocordis-csv-collector/app/model"
 )
 
-// Policy values supported by v0.1.
+// Policy values supported.
 const (
 	PolicyYesterday = "yesterday"
 	PolicySpecific  = "specific"
+	PolicyToday     = "today"
 )
 
 // Policy resolves which business date a normal run should collect.
@@ -29,6 +30,8 @@ func (p Policy) Resolve() (model.CollectionDate, error) {
 	switch p.Type {
 	case "", PolicyYesterday:
 		return model.NewCollectionDate(now).AddDate(0, 0, -1), nil
+	case PolicyToday:
+		return model.NewCollectionDate(now), nil
 	case PolicySpecific:
 		if p.Specific.IsZero() {
 			return model.CollectionDate{}, fmt.Errorf("%w: specific date policy requires a date", errs.ErrInvalidConfig)

@@ -1,3 +1,8 @@
+# NOTE: Oracle requires the CGO-based godror driver, which is not part of the
+# default pure-Go build (CGO_ENABLED=0). To use it, register godror in the
+# host binary and build with CGO enabled + an Oracle Instant Client.
+# Pure-Go alternatives: sqlite-storage (edge/single machine) or
+# postgresql-storage (server).
 [[components]]
 id = "production-source"
 type = "local-file-source"

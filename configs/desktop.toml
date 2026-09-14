@@ -1,147 +1,161 @@
-# Desktop (Wails) configuration for cmd/collector-ui.
-# UI commands (TriggerCollection) drive the Collector through the
-# CollectionRequested Runtime Event; a Scheduler component is optional.
+# Desktop configuration: composition-shape demo.
+# The deployment-independent composition lives in named bundles (app/bundle):
+#   collector-core     — scheduler, console bridge/rows, query provider, ui,
+#                        plugin explorer (the runtime backbone)
+#   collector-console  — the standard pages/panels as declarative view stacks
+# This file declares what is specific to THIS deployment: shared profiles
+# and sources. An explicit [[components]] row replaces the bundle row with
+# the same id wholesale — e.g. to retune the schedule:
+#
+#   [[components]]
+#   id = "scheduler"
+#   type = "scheduler"
+#
+#   [components.config]
+#   cron = "0 */6 * * *"        # every 6 hours; cron 与 schedule/time 二选一
+#
+# `--dump-config` (and the "effective-config" hub query) prints the expanded
+# effective tree — what actually runs, patches applied.
+# NOTE: top-level keys must precede every table in TOML — keep this line here.
+bundles = ["collector-core", "collector-console"]
 
-[[components]]
-id = "production-source"
-type = "local-file-source"
+# 报警示例插件不再在此声明：plugins/alarm-demo/manifest.toml 由框架自
+# 发现并生成组件行（进程外后端 + 前端模块 + 页面），同样受组合治理。
 
-[components.config]
-root = "./data/production"
+# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
+# 第一次触发最多回看 7 天补齐缺口，已成功的批次因幂等写入不会重复。
+[profiles.csv_machine]
+parser = "csv"
+header = true
 pattern = "*.csv"
 file_stable_window_seconds = 0
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 1000
+# 采集台账持久化（与生产一致）：重启后采集历史/失败账本/补采链都在，
+# 不再是内存态即忘。
+state_type = "file-state"
+state_dir = "./state"
 
-[[components]]
-id = "csv-parser"
-type = "csv-parser"
+# 遗留导出的独立入库表：不同格式的文件写到不同的表。
+[profiles.legacy_sink]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/collect.db"
+table = "legacy_readings"
+expose_console = true
+lazy_connect = true
 
-[components.config]
-header = true
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "ts"
+column = "ts"
+type = "timestamp"
+required = true
 
-[[components]]
-id = "memory-storage"
-type = "memory-storage"
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "temperature"
+column = "temperature"
+type = "float"
 
-[[components]]
-id = "collection-state"
-type = "memory-state"
+[[profiles.legacy_sink.columns]]
+from = "csv"
+name = "unit"
+column = "unit"
+type = "text"
 
-[[components]]
-id = "production-metadata"
-type = "path-metadata"
+[[profiles.legacy_sink.columns]]
+from = "metadata"
+name = "product"
+column = "product"
+type = "text"
 
-[components.config]
+[profiles.typed_sqlite]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/collect.db"
+table = "readings"
+file_table = "source_files"
+expose_console = true
+lazy_connect = true
 
-[[components.config.sources]]
-source = "production-source"
-root = "./data/production"
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "ts"
+column = "ts"
+type = "timestamp"
+required = true
 
-[[components.config.sources.metadata]]
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "temperature"
+column = "temperature"
+type = "float"
+
+[[profiles.typed_sqlite.columns]]
+from = "csv"
+name = "unit"
+column = "unit"
+type = "text"
+
+[[profiles.typed_sqlite.columns]]
+from = "metadata"
+name = "product"
+column = "product"
+type = "text"
+
+# 多源同格式：任意多个 source 复用同一组 profiles（同格式、同入库表），
+# 各自展开为独立的 source-unit 组件——独立目录、独立补采链、可单独卸载；
+# 行入库后以 source_id 列区分。
+[[sources]]
+id = "production-source"
+path = "./data/production"
+profiles = ["csv_machine", "typed_sqlite"]
+
+[sources.metadata]
+plant = "demo"
+
+[[sources.path_metadata]]
 name = "product"
 from = "filename"
 pattern = "{product}.csv"
 required = true
 
-[[components]]
-id = "production-collector"
-type = "csv-collector"
-
-[components.config]
-source = "production-source"
-parser = "csv-parser"
-storage = "memory-storage"
-state = "collection-state"
+# 同目录不同格式：legacy-source 与 production-source 共享 ./data/production，
+# 以模式分工——*.dat（GBK 编码的历史导出）归 legacy-source，*.csv 归
+# production-source；行入库后以 source_id 区分。注意：共目录时不要与
+# detect_content = true 的源混用（内容探测会无视扩展名认领所有文件）。
+[profiles.legacy_machine]
+parser = "csv"
+header = true
+pattern = "*.dat"
+encoding = "gbk"
+file_stable_window_seconds = 0
 date_policy = "yesterday"
+catchup_days = 7
 batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
 
-[[components]]
-id = "query-provider"
-type = "query-provider"
+[[sources]]
+id = "legacy-source"
+path = "./data/production"
+profiles = ["legacy_machine", "legacy_sink"]
 
-[[components]]
-id = "console-bridge"
-type = "console-bridge"
+[[sources.path_metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.dat"
+required = true
 
-[[components]]
-id = "ui"
-type = "ui"
+[[sources]]
+id = "quality-source"
+path = "./data/quality"
+profiles = ["csv_machine", "typed_sqlite"]
 
-# UI Composition: pages and panels are contributed by independent components.
-# The UI Host does not know which business plugin contributed them.
-[[components]]
-id = "ui-page-collections"
-type = "ui-page"
-
-[components.config]
-page_id = "collections"
-title = "Collections"
-route = "/collections"
-renderer = "collections"
-order = 10
-
-[[components]]
-id = "ui-page-files"
-type = "ui-page"
-
-[components.config]
-page_id = "files"
-title = "Files"
-route = "/files"
-renderer = "files"
-order = 20
-
-[[components]]
-id = "ui-page-sources"
-type = "ui-page"
-
-[components.config]
-page_id = "sources"
-title = "Sources"
-route = "/sources"
-renderer = "sources"
-order = 30
-
-[[components]]
-id = "ui-panel-metadata"
-type = "ui-panel"
-
-[components.config]
-panel_id = "metadata"
-title = "Metadata"
-position = "right"
-renderer = "metadata"
-order = 10
-
-[[components]]
-id = "ui-panel-event-feed"
-type = "ui-panel"
-
-[components.config]
-panel_id = "event-feed"
-title = "Latest Events"
-position = "bottom"
-renderer = "event-feed"
-order = 20
-
-[[components]]
-id = "ui-panel-failures"
-type = "ui-panel"
-
-[components.config]
-panel_id = "failures"
-title = "Failure Ledger"
-position = "bottom"
-renderer = "failures"
-order = 30
-
-# Plugin Explorer is itself an ordinary plugin: it contributes this Console
-# page and exposes Runtime inspection/control through the application bridge.
-[[components]]
-id = "plugin-explorer"
-type = "plugin-explorer"
-
-[components.config]
-page_id = "plugins"
-title = "Plugins"
-route = "/plugins"
-order = 40
+[[sources.path_metadata]]
+name = "product"
+from = "filename"
+pattern = "{product}.csv"
+required = true

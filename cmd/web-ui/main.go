@@ -19,59 +19,87 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gocordis-csv-collector/internal/logstore"
 	"io/fs"
 	"log/slog"
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
-	consoleexplorer "dynamic-runtime/console/explorer"
-	consolehost "dynamic-runtime/console/host"
-	consolewebui "dynamic-runtime/console/webui"
+	consoleexplorer "dynamic-runtime/extensions/console/explorer"
+	consolehost "dynamic-runtime/extensions/console/host"
+	consolewebui "dynamic-runtime/extensions/console/webui"
+	appconfig "gocordis-csv-collector/app/config"
 	apphost "gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/app/sourcecomp"
 	"gocordis-csv-collector/web"
 )
 
 func main() {
 	configPath := flag.String("config", "configs/desktop.toml", "application TOML configuration")
 	addr := flag.String("addr", ":8080", "listen address")
+	dumpConfig := flag.Bool("dump-config", false, "print the effective configuration (patches applied, validated) and exit without starting")
+	var patches multiFlag
+	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(logger, *configPath, *addr); err != nil {
+	logStore := logstore.Default()
+	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
+	logger := slog.New(logStore.NewHandler(os.Stderr))
+	if *dumpConfig {
+		if err := apphost.DumpEffectiveConfig(*configPath, patches, *configPath+".removed.json", os.Stdout); err != nil {
+			logger.Error("dump-config failed", "error", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(logger, *configPath, *addr, patches); err != nil {
 		logger.Error("web-ui failed", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger, configPath, addr string) error {
-	appHost, err := apphost.New(logger)
+// multiFlag collects repeated --patch values.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return fmt.Sprint([]string(*m)) }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+func run(logger *slog.Logger, configPath, addr string, patchPaths []string) error {
+	// WatchHost = config watch + reconciliation: TOML edits hot-apply to the
+	// running composition (loader semantics), no restart.
+	app, err := apphost.NewWatchHost(configPath, logger)
 	if err != nil {
 		return err
 	}
-	defer appHost.Close(context.Background())
+	defer app.Close(context.Background())
+	// Desired-state patches: console overlay file plus read-only operator
+	// layers, re-applied on every reconcile in the documented order.
+	app.SetOverlayPath(configPath + ".removed.json")
+	if len(patchPaths) > 0 {
+		if err := app.SetPatchPaths(patchPaths); err != nil {
+			return fmt.Errorf("patch files: %w", err)
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("config file: %w", err)
+	if err := app.Sync(ctx); err != nil {
+		return fmt.Errorf("config sync: %w", err)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	// 启动补采：与 csv-collector 常驻模式同一条路——恢复 catchup 窗口内
+	// 的缺失批次，重启后页面立即有完整历史，而不是等手动触发。
+	if err := app.Startup(ctx); err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
 	}
-	parsed, err := sourcecomp.Expand(data)
-	if err != nil {
-		return err
-	}
-	if err := appHost.Reconcile(ctx, parsed); err != nil {
-		return err
-	}
-	ui := findUIComponent(appHost)
+	ui := findUIComponent(app.Host)
 	if ui == nil {
 		return fmt.Errorf("no active ui component in configuration")
 	}
@@ -82,11 +110,35 @@ func run(logger *slog.Logger, configPath, addr string) error {
 		return fmt.Errorf("embedded ui assets: %w", err)
 	}
 	srv := consolewebui.New(ui.HostAdapter(), fs.FS(sub))
-	if exp := findExplorerComponent(appHost); exp != nil && exp.HostAdapter() != nil {
+	if exp := findExplorerComponent(app.Host); exp != nil && exp.HostAdapter() != nil {
 		srv.SetExplorer(exp.HostAdapter())
 	}
+	// Fleet self-description: identity + peer list come from the ui component
+	// configuration (host_id / fleet_peers).
+	srv.SetIdentity(ui.HostID())
+	srv.SetFleetPeers(ui.FleetPeers())
+	// Desired-state editing: uninstall/install persist to the patch file
+	// (loaded before Sync so restarts converge to the persisted decisions).
+	srv.SetPluginLifecycle(lifecycleAdapter{h: app.Host})
 	// Production Observation -> SSE subscribers.
 	ui.SetObservationSink(observationSinkFunc(srv.Publish))
+
+	// Reconciliation failures flow to the console observation stream: the
+	// event feed shows WHY an apply failed, not just a silent rollback.
+	app.Host.SetReconcileFailureSink(func(err error) {
+		logger.Error("reconcile failed", "error", err.Error())
+		if ui != nil {
+			ui.PublishObservation("composition.failed", "config", err.Error())
+		}
+	})
+
+	// Config watch loop runs beside the HTTP server: TOML edits reconcile
+	// the live composition without restarting the process.
+	go func() {
+		if rerr := app.Run(ctx); rerr != nil {
+			logger.Error("config watch loop stopped", "error", rerr.Error())
+		}
+	}()
 
 	httpServer := &http.Server{Addr: addr, Handler: srv}
 	go func() {
@@ -105,6 +157,34 @@ func run(logger *slog.Logger, configPath, addr string) error {
 type observationSinkFunc func(consolehost.UIObservation)
 
 func (f observationSinkFunc) NotifyObservation(ev consolehost.UIObservation) { f(ev) }
+
+// lifecycleAdapter forwards console uninstall/install actions to the host's
+// desired-state overlay.
+type lifecycleAdapter struct{ h *apphost.Host }
+
+func (a lifecycleAdapter) Uninstall(ctx context.Context, id string) error {
+	return a.h.UninstallComponent(ctx, id)
+}
+
+func (a lifecycleAdapter) Install(ctx context.Context, id string) error {
+	return a.h.InstallComponent(ctx, id)
+}
+
+func (a lifecycleAdapter) Removed(ctx context.Context) ([]consolewebui.RemovedPlugin, error) {
+	out := []consolewebui.RemovedPlugin{}
+	for _, cc := range a.h.RemovedComponents() {
+		out = append(out, consolewebui.RemovedPlugin{ID: cc.ID, Name: appconfig.DisplayName(cc.Type)})
+	}
+	return out, nil
+}
+
+func (a lifecycleAdapter) Config(ctx context.Context, id string) (map[string]any, error) {
+	return a.h.ComponentConfig(id)
+}
+
+func (a lifecycleAdapter) SetConfig(ctx context.Context, id string, cfg map[string]any) error {
+	return a.h.SetComponentConfig(ctx, id, cfg)
+}
 
 func findUIComponent(h *apphost.Host) *consolehost.UIComponent {
 	for _, o := range h.Owned() {

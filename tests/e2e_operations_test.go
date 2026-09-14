@@ -17,7 +17,7 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
 	statepkg "gocordis-csv-collector/app/state"
-	sourceunitplugin "gocordis-csv-collector/plugins/sourceunit"
+	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
 )
 
 // The operations scenarios cover the industrial deployment story: a missed

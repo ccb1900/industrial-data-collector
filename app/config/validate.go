@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/robfig/cron/v3"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,45 +11,26 @@ import (
 
 	extconfig "dynamic-runtime/extensions/config"
 
+	"gocordis-csv-collector/internal/pluginmeta"
+
 	appencoding "gocordis-csv-collector/app/encoding"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	appparser "gocordis-csv-collector/app/parser"
 )
 
-type TypeInfo struct {
-	Kind       string
-	Capability string
-	Name       string
-}
-
-var knownTypes = map[string]TypeInfo{
-	"local-file-source":  {Kind: "source", Capability: "filesource", Name: "Local File Source"},
-	"unc-file-source":    {Kind: "source", Capability: "filesource", Name: "UNC File Source"},
-	"csv-parser":         {Kind: "parser", Capability: "csvparser", Name: "CSV Parser"},
-	"memory-storage":     {Kind: "storage", Capability: "storage", Name: "Memory Storage"},
-	"mysql-storage":      {Kind: "storage", Capability: "storage", Name: "MySQL Storage"},
-	"postgresql-storage": {Kind: "storage", Capability: "storage", Name: "PostgreSQL Storage"},
-	"oracle-storage":     {Kind: "storage", Capability: "storage", Name: "Oracle Storage"},
-	"memory-state":       {Kind: "state", Capability: "state", Name: "Memory State"},
-	"file-state":         {Kind: "state", Capability: "state", Name: "File State"},
-	"scheduler":          {Kind: "scheduler", Capability: "trigger", Name: "Scheduler"},
-	"csv-collector":      {Kind: "collector", Capability: "collector", Name: "CSV Collector"},
-	"path-metadata":      {Kind: "metadata", Capability: "metadataextractor", Name: "Path Metadata"},
-	"query-provider":     {Kind: "query", Capability: "query", Name: "Query Provider"},
-	"ui":                 {Kind: "ui-host", Capability: "ui", Name: "UI Host"},
-	"ui-page":            {Kind: "ui-contribution", Capability: "ui-page", Name: "UI Page Contribution"},
-	"ui-panel":           {Kind: "ui-contribution", Capability: "ui-panel", Name: "UI Panel Contribution"},
-	"ui-contribution":    {Kind: "ui-contribution", Capability: "ui-contribution", Name: "UI Contribution"},
-	"plugin-explorer":    {Kind: "ui-console-plugin", Capability: "plugin-explorer", Name: "Plugin Explorer"},
-	"csv-source-unit":    {Kind: "source-unit", Capability: "source-unit", Name: "CSV Source Unit"},
-	"console-bridge":     {Kind: "console-bridge", Capability: "console-bridge", Name: "Console Bridge"},
+// knownTypes aggregates the per-package manifests: every built-in component
+// package embeds its own manifest.toml (go:embed, registered in the
+// package's init into internal/pluginmeta), so this table is generated from
+// the packages — never hand-maintained.
+func knownTypes() map[string]pluginmeta.TypeInfo {
+	return pluginmeta.Types()
 }
 
 // DisplayName returns the human-facing plugin label for a known component
 // type. Unknown/empty values fall back to the raw type.
 func DisplayName(typ string) string {
-	if ti, ok := knownTypes[typ]; ok && ti.Name != "" {
-		return ti.Name
+	if ti, ok := pluginmeta.DisplayName(typ); ok {
+		return ti
 	}
 	return typ
 }
@@ -64,11 +46,11 @@ func Validate(cfg extconfig.Config) error {
 			return fmt.Errorf("duplicate component id %q", cc.ID)
 		}
 		byID[cc.ID] = cc
-		ti, ok := knownTypes[cc.Type]
+		ti, ok := knownTypes()[cc.Type]
 		if !ok {
 			return fmt.Errorf("unknown component type %q", cc.Type)
 		}
-		if err := validateOne(cc, ti); err != nil {
+		if err := validateOne(cfg, cc, ti); err != nil {
 			return err
 		}
 	}
@@ -91,7 +73,7 @@ func Validate(cfg extconfig.Config) error {
 			if !ok {
 				return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
 			}
-			if knownTypes[target.Type].Kind != "source" && knownTypes[target.Type].Kind != "source-unit" {
+			if knownTypes()[target.Type].Kind != "source" && knownTypes()[target.Type].Kind != "source-unit" {
 				return fmt.Errorf("metadata component %q source %q must reference a source component", id, ref)
 			}
 			targetRoot := str(target.Config, "root")
@@ -121,7 +103,7 @@ func Validate(cfg extconfig.Config) error {
 				"storage": "storage",
 				"state":   "state",
 			}[field]
-			if knownTypes[target.Type].Kind != want {
+			if knownTypes()[target.Type].Kind != want {
 				return fmt.Errorf("collector %q field %s must reference a %s component", id, field, want)
 			}
 		}
@@ -138,9 +120,20 @@ func Validate(cfg extconfig.Config) error {
 	return nil
 }
 
-func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
+func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginmeta.TypeInfo) error {
 	switch ti.Kind {
 	case "source":
+		if cc.Type == "single-file-source" {
+			if str(cc.Config, "path") == "" {
+				return fmt.Errorf("single-file-source %q missing path", cc.ID)
+			}
+			if raw, ok := cc.Config["dedupe_content_hash"]; ok {
+				if _, valid := boolCfgValue(raw); !valid {
+					return fmt.Errorf("single-file-source %q dedupe_content_hash must be a boolean", cc.ID)
+				}
+			}
+			break
+		}
 		if str(cc.Config, "root") == "" {
 			return fmt.Errorf("source %q missing root", cc.ID)
 		}
@@ -162,6 +155,21 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 	case "parser":
 		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
 			return fmt.Errorf("parser %q: %v", cc.ID, err)
+		}
+		if cc.Type == "text-parser" {
+			format := str(cc.Config, "text_format")
+			if format == "" {
+				format = "single-value"
+			}
+			switch format {
+			case "single-value", "line-regex", "key-value":
+			default:
+				return fmt.Errorf("text-parser %q unknown text_format %q", cc.ID, format)
+			}
+			if format == "line-regex" && str(cc.Config, "pattern") == "" {
+				return fmt.Errorf("text-parser %q line-regex requires pattern", cc.ID)
+			}
+			break
 		}
 		skip := 0
 		if raw, ok := cc.Config["skip_lines"]; ok {
@@ -213,8 +221,16 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 			return fmt.Errorf("file-state %q missing path", cc.ID)
 		}
 	case "scheduler":
-		if str(cc.Config, "schedule") != "daily" {
-			return fmt.Errorf("scheduler %q must use schedule=\"daily\"", cc.ID)
+		if cronExpr := str(cc.Config, "cron"); cronExpr != "" {
+			// cron 表达式接管时间线（与插件工厂同一解析规则，键必为
+			// 五段式 分 时 日 月 周）；schedule/time 此时不再生效。
+			if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(cronExpr); err != nil {
+				return fmt.Errorf("scheduler %q: invalid cron expression %q: %v", cc.ID, cronExpr, err)
+			}
+			return nil
+		}
+		if kind := str(cc.Config, "schedule"); kind != "daily" && kind != "" {
+			return fmt.Errorf("scheduler %q must use schedule=\"daily\" (or a cron expression)", cc.ID)
 		}
 		if _, err := parseClock(str(cc.Config, "time")); err != nil {
 			return fmt.Errorf("scheduler %q: %w", cc.ID, err)
@@ -248,7 +264,7 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		if policy == "" {
 			policy = "yesterday"
 		}
-		if policy != "yesterday" && policy != "specific" {
+		if policy != "yesterday" && policy != "specific" && policy != "today" {
 			return fmt.Errorf("collector %q invalid date_policy %q", cc.ID, policy)
 		}
 		if policy == "specific" {
@@ -276,8 +292,26 @@ func validateOne(cc extconfig.ComponentConfig, ti TypeInfo) error {
 		if err := validateSourceUnit(cc); err != nil {
 			return err
 		}
-	case "console-bridge":
-		// no config keys in v0.2
+	case "console-bridge", "console-rows":
+		// 桥/行查询依赖控制台宿主（hub）与查询能力：三者必须同时组合，
+		// 否则组件永远无法就绪。
+		for _, req := range []string{"ui", "query-provider", "scheduler"} {
+			if !hasType(cfg, req) {
+				return fmt.Errorf("%s %q requires component %q in the composition", cc.Type, cc.ID, req)
+			}
+		}
+	case "watch-trigger":
+		if str(cc.Config, "path") == "" {
+			return fmt.Errorf("watch-file-trigger %q missing path", cc.ID)
+		}
+		if str(cc.Config, "source") == "" {
+			return fmt.Errorf("watch-file-trigger %q missing source", cc.ID)
+		}
+		if raw := str(cc.Config, "debounce"); raw != "" {
+			if _, err := time.ParseDuration(raw); err != nil {
+				return fmt.Errorf("watch-file-trigger %q debounce invalid: %v", cc.ID, err)
+			}
+		}
 	}
 	_ = ti.Capability
 	return nil
@@ -353,8 +387,32 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	if kind == "" {
 		kind = "csv"
 	}
-	if kind != "csv" && kind != "csv-parser" {
+	if kind == "text" || kind == "text-parser" {
+		format := str(cc.Config, "text_format")
+		if format == "" {
+			format = "single-value"
+		}
+		switch format {
+		case "single-value", "line-regex", "key-value":
+		default:
+			return fmt.Errorf("source-unit %q unknown text_format %q", cc.ID, format)
+		}
+		if format == "line-regex" && str(cc.Config, "pattern") == "" {
+			return fmt.Errorf("source-unit %q line-regex requires pattern", cc.ID)
+		}
+	} else if kind != "csv" && kind != "csv-parser" {
 		return fmt.Errorf("source-unit %q unsupported parser %q", cc.ID, kind)
+	}
+	if l := str(cc.Config, "layout"); l != "" && l != "dated" && l != "flat" {
+		return fmt.Errorf("source-unit %q layout must be dated or flat", cc.ID)
+	}
+	if raw, ok := cc.Config["dedupe_content_hash"]; ok {
+		if _, valid := boolCfgValue(raw); !valid {
+			return fmt.Errorf("source-unit %q dedupe_content_hash must be a boolean", cc.ID)
+		}
+	}
+	if mode := str(cc.Config, "collection_mode"); mode != "" && mode != "batch" && mode != "append" {
+		return fmt.Errorf("source-unit %q collection_mode must be batch or append", cc.ID)
 	}
 	header := true
 	if raw, ok := cc.Config["header"]; ok {
@@ -409,11 +467,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	}
 	storageType = strings.ToLower(storageType)
 	switch storageType {
-	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage":
+	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage", "sqlite", "sqlite-storage":
 	default:
 		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
 	}
-	if storageType == "mysql" || storageType == "mysql-storage" || storageType == "postgres" || storageType == "postgresql" || storageType == "postgresql-storage" || storageType == "oracle" || storageType == "oracle-storage" {
+	if storageType != "memory" && storageType != "memory-storage" {
 		if str(cc.Config, "dsn") == "" {
 			return fmt.Errorf("source-unit %q storage requires dsn", cc.ID)
 		}
@@ -430,7 +488,7 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	if policy == "" {
 		policy = "yesterday"
 	}
-	if policy != "yesterday" && policy != "specific" {
+	if policy != "yesterday" && policy != "specific" && policy != "today" {
 		return fmt.Errorf("source-unit %q invalid date_policy %q", cc.ID, policy)
 	}
 	if policy == "specific" {
@@ -464,6 +522,17 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 // validateDetectContent rejects ambiguous discovery configuration: content
 // detection judges every file by its bytes, so a name glob alongside it has
 // no defined meaning.
+// hasType reports whether the desired composition contains a component of
+// the given type (ID matching is wrong here: scheduler ids vary per host).
+func hasType(cfg extconfig.Config, typ string) bool {
+	for _, cc := range cfg.Components {
+		if cc.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
 func validateDetectContent(cc extconfig.ComponentConfig, kind string) error {
 	if raw, ok := cc.Config["detect_content"]; ok {
 		if _, valid := boolCfgValue(raw); !valid {
@@ -474,6 +543,18 @@ func validateDetectContent(cc extconfig.ComponentConfig, kind string) error {
 		}
 	}
 	return nil
+}
+
+// ConsoleCritical reports whether a component type is part of the console
+// infrastructure itself. Uninstalling one would tear down the console the
+// operator is using, so lifecycle requests refuse them (mirrors the
+// protected set of the plugin explorer's Control path).
+func ConsoleCritical(typ string) bool {
+	switch typ {
+	case "ui", "query-provider", "console-bridge", "plugin-explorer":
+		return true
+	}
+	return false
 }
 
 func AllowedSourceType(typ string) bool {

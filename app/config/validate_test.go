@@ -4,7 +4,121 @@ import (
 	"testing"
 
 	extconfig "dynamic-runtime/extensions/config"
+
+	"gocordis-csv-collector/internal/pluginmeta"
 )
+
+// Validation reads the aggregated type table from the component packages'
+// embedded manifests; a unit test of this package links none of them, so it
+// registers the metadata its fixtures need.
+func init() {
+	pluginmeta.MustRegister([]byte(`
+name = "validate-test"
+title = "Validate Test"
+
+[[types]]
+name = "local-file-source"
+kind = "source"
+capability = "filesource"
+title = "Local File Source"
+
+[[types]]
+name = "csv-parser"
+kind = "parser"
+capability = "csvparser"
+title = "CSV Parser"
+
+[[types]]
+name = "memory-storage"
+kind = "storage"
+capability = "storage"
+title = "Memory Storage"
+
+[[types]]
+name = "memory-state"
+kind = "state"
+capability = "state"
+title = "Memory State"
+
+[[types]]
+name = "scheduler"
+kind = "scheduler"
+capability = "trigger"
+title = "Scheduler"
+
+[[types]]
+name = "path-metadata"
+kind = "metadata"
+capability = "metadataextractor"
+title = "Path Metadata"
+
+[[types]]
+name = "csv-collector"
+kind = "collector"
+capability = "collector"
+title = "CSV Collector"
+
+[[types]]
+name = "query-provider"
+kind = "query"
+capability = "query"
+title = "Query Provider"
+
+[[types]]
+name = "console-bridge"
+kind = "console-bridge"
+capability = "console-bridge"
+title = "Console Bridge"
+
+[[types]]
+name = "console-rows"
+kind = "console-bridge"
+capability = "console-rows"
+title = "Console Rows"
+
+[[types]]
+name = "ui"
+kind = "ui-host"
+capability = "ui"
+title = "UI Host"
+
+[[types]]
+name = "ui-page"
+kind = "ui-contribution"
+capability = "ui-page"
+title = "UI Page Contribution"
+
+[[types]]
+name = "ui-panel"
+kind = "ui-contribution"
+capability = "ui-panel"
+title = "UI Panel Contribution"
+
+[[types]]
+name = "plugin-explorer"
+kind = "ui-console-plugin"
+capability = "plugin-explorer"
+title = "Plugin Explorer"
+
+[[types]]
+name = "csv-source-unit"
+kind = "source-unit"
+capability = "source-unit"
+title = "CSV Source Unit"
+
+[[types]]
+name = "file-state"
+kind = "state"
+capability = "state"
+title = "File State"
+
+[[types]]
+name = "text-parser"
+kind = "parser"
+capability = "csvparser"
+title = "Text Parser"
+`), "validate_test")
+}
 
 func component(id, typ string, cfg map[string]any) extconfig.ComponentConfig {
 	return extconfig.ComponentConfig{ID: id, Type: typ, Config: cfg}

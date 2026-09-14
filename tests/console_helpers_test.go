@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	consolehost "dynamic-runtime/console/host"
+	consolehost "dynamic-runtime/extensions/console/host"
 
 	"gocordis-csv-collector/app/model"
 )

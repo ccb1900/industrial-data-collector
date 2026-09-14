@@ -9,7 +9,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	uiplugin "dynamic-runtime/console/host"
+	uiplugin "dynamic-runtime/extensions/console/host"
 )
 
 func TestP33_07ApplyRollback(t *testing.T) {

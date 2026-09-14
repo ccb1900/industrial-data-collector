@@ -21,6 +21,7 @@ const (
 	StatusRunning   = "Running"
 	StatusSucceeded = "Succeeded"
 	StatusFailed    = "Failed"
+	StatusSkipped   = "Skipped"
 )
 
 // CollectionView is one collection (source x date) rendered for UI.

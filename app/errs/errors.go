@@ -64,6 +64,9 @@ func ClassifySourceError(path string, err error) error {
 	if errors.Is(err, syscall.ENETDOWN) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
 		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
 	}
+	if networkUnavailable(err) {
+		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return Sourcef(ErrTimeout, "path %q: %w", path, err)
 	}

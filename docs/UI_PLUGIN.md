@@ -440,3 +440,17 @@ state files.
   configuration (`catchup_days`, `encoding`, `lazy_connect`, ...).
 - UI trigger accepts an explicit collection date (dated catch-up from the
   console).
+
+## Batch 5 — Lifecycle, Fleet, Client Package（当前 HEAD）
+
+- 插件生命周期：`/api/plugins/uninstall|install|removed`（`PluginLifecycle`
+  接口，应用侧 overlay 持久化期望配置差异并 reconcile 收敛）；前端三态
+  （激活/停用/已卸载）与受保护组件护栏。
+- Fleet：`/api/meta`（自描述：hostId/版本/组件清单，版本取自
+  debug.ReadBuildInfo）+ `/api/fleet` 聚合各主机 peer；Fleet 页只读。
+- 事件流持久化：`internal/obsjournal`（JSONL，10MB / 7 天双限保留），
+  console-bridge 注册 `observations` 命名查询；Feed 先历史后实时。
+- 客户端抽取：`go-cordis/client`（`@gordis/console-client`，壳 + 设计系统
+  + 组合投影），应用 frontend 退化为装配入口 + 领域视图（antd）。
+- 日志：`internal/logstore`（slog JSON → 环形缓冲 + 轮转文件），
+  `logs` 命名查询 + 日志面板。

@@ -131,6 +131,21 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	files, err := e.Source.List(ctx, model.ListRequest{SourceID: key.SourceID, Date: key.Date})
 	if err != nil {
 		if errs.Is(err, errs.ErrNotFound) {
+			// A missing date directory means two different facts depending
+			// on time: for TODAY it is "not arrived yet" (Pending — the
+			// directory may still appear); for a fully past day the absence
+			// is permanent (time is irreversible), so the row closes as
+			// terminal Skipped instead of waiting forever.
+			today := model.NewCollectionDate(started)
+			if key.Date.Before(today) {
+				result.Status = model.StatusSkipped
+				result.Error = fmt.Sprintf("date directory does not exist (day has passed): %v", err)
+				_ = e.State.End(ctx, key, model.StatusSkipped, result.Error)
+				cfg.Logger.Info("date directory absent for a past day; closed as skipped", "key", key.String())
+				result.EndedAt = time.Now()
+				result.Duration = result.EndedAt.Sub(started)
+				return result
+			}
 			result.Status = model.StatusPending
 			result.Error = fmt.Sprintf("date directory not available: %v", err)
 			_ = e.State.End(ctx, key, model.StatusPending, result.Error)

@@ -9,8 +9,8 @@ import (
 
 	"dynamic-runtime/extensions/config"
 
-	explorerplugin "dynamic-runtime/console/explorer"
-	appui "dynamic-runtime/console/registry"
+	explorerplugin "dynamic-runtime/extensions/console/explorer"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // PE-01/PE-02: Explorer discovers every configured plugin and renders the

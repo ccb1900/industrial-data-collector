@@ -113,6 +113,18 @@ func (m *ReadModel) OnCollectionPending(key model.CollectionKey, note string, at
 	e.ended = at
 }
 
+// OnCollectionSkipped closes a business date as terminal "no data": the
+// source directory does not exist and the day has passed — permanent
+// absence, unlike Pending.
+func (m *ReadModel) OnCollectionSkipped(key model.CollectionKey, note string, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entry(key)
+	e.status = StatusSkipped
+	e.note = note
+	e.ended = at
+}
+
 // OnFileFailed records one failed file.
 func (m *ReadModel) OnFileFailed(key model.CollectionKey, file model.FileIdentity, md model.Metadata, records int64, errMsg string) {
 	m.mu.Lock()

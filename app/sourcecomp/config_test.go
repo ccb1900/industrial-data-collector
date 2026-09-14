@@ -141,3 +141,58 @@ machine = "001"
 		t.Fatalf("metadata must not remain in config: %#v", rs.Config)
 	}
 }
+
+// 暴露不再去重：每个声明 expose_console 的源都登记自己的 sink，读侧由
+// console-rows 的 sink 注册表按源路由、缺省聚合（含共享同一物理表的源）。
+func TestExpandKeepsPerSourceExposure(t *testing.T) {
+	toml := `
+[profiles.shared]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/one.db"
+table = "records"
+expose_console = true
+columns = [{ name = "ts", column = "ts", type = "timestamp", required = true }]
+
+[profiles.other]
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/two.db"
+table = "records"
+expose_console = true
+columns = [{ name = "ts", column = "ts", type = "timestamp", required = true }]
+
+[[sources]]
+id = "alpha"
+path = "data/alpha"
+profiles = ["shared"]
+
+[[sources]]
+id = "beta"
+path = "data/beta"
+profiles = ["shared"]
+
+[[sources]]
+id = "gamma"
+path = "data/gamma"
+profiles = ["other"]
+`
+	result, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expose := map[string]bool{}
+	for _, c := range result.Config.Components {
+		if c.Type != "csv-source-unit" {
+			continue
+		}
+		if v, ok := c.Config["expose_console"].(bool); ok && v {
+			expose[c.ID] = true
+		}
+	}
+	for _, id := range []string{"alpha", "beta", "gamma"} {
+		if !expose["source-unit:"+id] {
+			t.Fatalf("source %s must keep exposure: %v", id, expose)
+		}
+	}
+}

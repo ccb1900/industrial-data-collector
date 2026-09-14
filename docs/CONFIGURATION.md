@@ -139,6 +139,44 @@ identity, so rule changes do not cause re-collection. See
 - `type`: `memory-state` or `file-state`.
 - `file-state` requires `path`; snapshots are written atomically.
 
+## Watch File Trigger
+
+- `type`: `watch-file-trigger`. Watches one file and emits the standard
+  CollectionRequested Runtime Event after the content stabilizes — the
+  change-triggered counterpart of the daily scheduler.
+- `path`: the watched file (the parent directory is watched, so atomic
+  write-temp-then-rename updates are caught).
+- `source`: the target source id.
+- `debounce`: duration, default `2s`; bursts of write events collapse into
+  one trigger after this quiet window.
+
+## Single File Source
+
+- `type`: `single-file-source`. A source pinned to one file (layout=flat):
+  no date directories, no pattern. Pairs with `watch-file-trigger`.
+- `path`: the file path (root IS the file).
+- `dedupe_content_hash`: bool, default `true`. Discovery hashes the content
+  (SHA-256, recorded as the file identity) so an identical rewrite is not
+  re-collected — recording happens when the content actually changes. Each
+  process start records the current snapshot once.
+- `file_stable_window_seconds`: as above; belt-and-braces against mid-write
+  reads.
+
+## Text Parser
+
+- `type`: `text-parser` (or in a source profile: `parser = "text"`).
+- `text_format`: `single-value` (whole trimmed content is one field named
+  `value_name`), `line-regex` (each non-empty line matches `pattern`, named
+  capture groups become columns; non-matching lines are skipped unless
+  `strict = true`), or `key-value` (`key<separator>value` lines, one record
+  per snapshot, columns in first-seen order).
+- `encoding`: as Source above.
+
+For change-triggered sources set `layout = "flat"`,
+`date_policy = "today"` and `collection_mode = "append"` on the source:
+the collection-level succeeded guard is disabled (every trigger re-opens
+the collection) while file-level content dedup still prevents duplicates.
+
 ## Scheduler
 
 - `type`: `scheduler`.

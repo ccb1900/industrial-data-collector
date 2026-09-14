@@ -6,24 +6,38 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
+	procplugin "dynamic-runtime/extensions/console/procplugin"
 	"dynamic-runtime/extensions/watch"
 
 	appconfig "gocordis-csv-collector/app/config"
 	"gocordis-csv-collector/app/sourcecomp"
 )
 
-type validatingParser struct{}
+type validatingParser struct {
+	host      *Host
+	pluginDir string
+}
 
-func (validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
+func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, data []byte) (config.Config, error) {
 	if err := ctx.Err(); err != nil {
 		return config.Config{}, err
 	}
-	cfg, err := sourcecomp.Expand(data)
+	parsed, err := sourcecomp.ExpandWithPlugins(data, p.pluginDir)
 	if err != nil {
 		return config.Config{}, err
+	}
+	cfg := parsed.Config
+	// Snapshot the raw parsed composition first: it is the base the patch
+	// layers apply to, and install/restore re-reconciles from it.
+	p.host.setBaseDesired(cfg)
+	// 期望状态 patch 在每次热加载时先行应用：控制台的卸载/配置编辑决策
+	// 不被文件内容覆盖；补丁与基础文件的形状冲突在此显式失败。
+	if err := p.host.applyOverlay(&cfg); err != nil {
+		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
 	}
 	if err := appconfig.Validate(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
@@ -42,6 +56,13 @@ type WatchHost struct {
 }
 
 func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
+	// configwatch 要求绝对路径：以调用方工作目录解析为绝对路径，
+	// 这样相对路径的 -config 在任何 cwd 下行为一致。
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	path = abs
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("config file: %w", err)
 	}
@@ -54,7 +75,11 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		configwatch.Source{ID: "config", Path: path, Format: configwatch.FormatTOML},
 		h.ctrl,
 		w,
-		configwatch.WithParser(validatingParser{}),
+		configwatch.WithParser(&validatingParser{host: h, pluginDir: procplugin.PluginsDirForConfig(path)}),
+		configwatch.WithPostReconcile(h.PostReconcile),
+		// 一次 reconcile（含应用层收尾）以 readyTimeout 兜底：组件永远
+		// 不就绪时返回明确错误，而不是把处理循环和调用方一起挂死。
+		configwatch.WithReconcileTimeout(readyTimeout),
 	)
 	if err != nil {
 		_ = h.Close(context.Background())
@@ -68,12 +93,7 @@ func (w *WatchHost) Sync(ctx context.Context) error {
 	if err := w.adapter.Sync(ctx); err != nil {
 		return err
 	}
-	for _, o := range w.ctrl.Owned() {
-		if err := o.Fiber.Ready(ctx); err != nil {
-			return fmt.Errorf("component %s not ready: %w", o.ID, err)
-		}
-	}
-	return nil
+	return hReadyBound(ctx, w.ctrl.Owned())
 }
 
 func (w *WatchHost) Run(ctx context.Context) error {

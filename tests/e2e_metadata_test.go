@@ -9,7 +9,7 @@ import (
 
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/storage"
-	storageplugin "gocordis-csv-collector/plugins/storage"
+	storageplugin "gocordis-csv-collector/components/storage"
 )
 
 func metadataRule(name, from, pattern string, required bool) map[string]any {

@@ -3,12 +3,15 @@ package collector
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	datepolicy "gocordis-csv-collector/app/date"
+	"gocordis-csv-collector/app/errs"
 	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/parser"
@@ -102,24 +105,97 @@ func TestCollectorPartialFileFailureSkipsCompletedFiles(t *testing.T) {
 	}
 }
 
-func TestMissingDirectoryStaysPending(t *testing.T) {
+func TestMissingDirectoryForPastDaySkips(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
+	// A past day whose directory does not exist can never have data: the
+	// outcome is the terminal Skipped, not an eternal Pending.
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 1 || res[0].Status != model.StatusPending {
-		t.Fatalf("result = %#v", res)
+	if len(res) != 1 || res[0].Status != model.StatusSkipped {
+		t.Fatalf("result = %#v, want Skipped", res)
 	}
-	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 1 {
+	// Skipped stays in the catchup scan (cheap re-check, late delivery still
+	// collects), but a re-run over the same missing directory re-skips.
+	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2) != 1 || res2[0].Status != model.StatusSkipped {
+		t.Fatalf("re-run = %#v, want Skipped", res2)
+	}
+}
+
+func TestMissingDirectoryTodayStaysPending(t *testing.T) {
+	root := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	// Today's directory may still appear during the day: Pending stands and
+	// the date stays listed for recovery.
+	today := model.NewCollectionDate(time.Now())
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(today)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusPending {
+		t.Fatalf("result = %#v, want Pending", res)
+	}
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 1 {
 		t.Fatal("pending date must be listed for recovery")
 	}
 }
 
 func ptr(d model.CollectionDate) *model.CollectionDate { return &d }
+
+// unavailableSource simulates a UNC share that is temporarily unreachable —
+// a TRANSIENT infrastructure condition that must be retried, never closed
+// as terminal Skipped.
+type unavailableSource struct{ id model.SourceID }
+
+func (s unavailableSource) ID() model.SourceID { return s.id }
+func (s unavailableSource) Root() string       { return `\\machine001\\data` }
+func (s unavailableSource) List(context.Context, model.ListRequest) ([]model.FileIdentity, error) {
+	return nil, errs.Sourcef(errs.ErrUnavailable, `path "\\machine001\\data": host unreachable`)
+}
+func (s unavailableSource) Read(context.Context, model.FileIdentity) (io.ReadCloser, error) {
+	return nil, errs.Sourcef(errs.ErrUnavailable, "unreachable")
+}
+func (s unavailableSource) Close() error { return nil }
+
+func TestUnreachableShareStaysFailedAndRetried(t *testing.T) {
+	st := state.NewMemory()
+	e := &Executor{
+		Source:   unavailableSource{id: "prod"},
+		Parser:   parser.New(),
+		Storage:  storage.NewMemory(storage.MemoryOptions{}),
+		State:    st,
+		Recovery: recovery.Planner{State: st},
+		Config: Config{
+			BatchSize:  2,
+			DatePolicy: datepolicy.Policy{Type: datepolicy.PolicySpecific, Specific: date(t, "2026-09-11")},
+		},
+	}
+	// A fully past day, but the failure is the SHARE being unreachable — a
+	// transient condition. It must close as Failed and stay listed for
+	// retry, never terminal Skipped.
+	// Handle reports the failure as its error AND as a Failed result row.
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-11"))})
+	if err == nil || !strings.Contains(err.Error(), "host unreachable") {
+		t.Fatalf("err = %v, want the unreachable failure", err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusFailed {
+		t.Fatalf("result = %#v, want Failed", res)
+	}
+	incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-11"), 0)
+	if len(incomplete) != 1 {
+		t.Fatalf("unreachable date must stay listed for recovery, got %v", incomplete)
+	}
+}
 
 func TestCollectorStorageFailureIsolation(t *testing.T) {
 	root := t.TempDir()

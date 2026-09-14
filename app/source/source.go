@@ -2,12 +2,15 @@ package source
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"gocordis-csv-collector/app/errs"
@@ -20,14 +23,25 @@ import (
 // files whose leading bytes look like delimited text under the configured
 // Encoding (see app/encoding), so GBK or UTF-16 exports without the expected
 // extension are still found.
+//
+// Flat means root IS one single file (no date subdirectory, no pattern): the
+// source watches exactly that file. Hash computes a SHA-256 content hash at
+// discovery and records it as the file identity — a rewritten file with
+// unchanged content keeps its identity and is not re-collected, while changed
+// content is collected as a new version.
 type Source struct {
 	SourceID      model.SourceID
 	root          string
 	Pattern       string
 	ContentDetect bool
 	Encoding      string
+	Flat          bool
+	Hash          bool
 	StableWindow  time.Duration
 	Now           func() time.Time
+
+	hashMu   sync.Mutex
+	lastHash map[string]string
 }
 
 // Local is an alias kept so application code reads clearly.
@@ -61,8 +75,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !s.ContentDetect && s.Pattern == "" {
+	if !s.ContentDetect && !s.Flat && s.Pattern == "" {
 		s.Pattern = "*.csv"
+	}
+	if s.Flat {
+		return s.listFlat(ctx)
 	}
 	dir := filepath.Join(s.root, req.Date.String())
 	// Discovery is recursive below the date directory so nested business
@@ -124,6 +141,70 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// listFlat discovers the single file this source is pinned to. Date policy
+// and directories do not apply: the path is the whole world. When Hash is
+// set, unchanged content is not re-emitted.
+func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(s.root)
+	if err != nil {
+		return nil, errs.ClassifySourceError(s.root, err)
+	}
+	if info.IsDir() {
+		return nil, errs.Sourcef(errs.ErrNotFound, "flat source %q is a directory", s.root)
+	}
+	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
+		return nil, nil // still being written; wait for a later trigger
+	}
+	info2, err := os.Stat(s.root)
+	if err != nil {
+		return nil, errs.ClassifySourceError(s.root, err)
+	}
+	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
+		return nil, nil // changing between stats; wait for a later trigger
+	}
+	file := model.FileIdentity{
+		SourceID: s.ID(),
+		Path:     s.root,
+		Name:     filepath.Base(s.root),
+		Size:     info2.Size(),
+		ModTime:  info2.ModTime(),
+	}
+	if s.Hash {
+		sum, err := fileSHA256(s.root)
+		if err != nil {
+			return nil, errs.ClassifySourceError(s.root, err)
+		}
+		s.hashMu.Lock()
+		if s.lastHash == nil {
+			s.lastHash = map[string]string{}
+		}
+		unchanged := s.lastHash[s.root] == sum
+		s.lastHash[s.root] = sum
+		s.hashMu.Unlock()
+		if unchanged {
+			return nil, nil // identical content: nothing new to record
+		}
+		file.Hash = sum
+	}
+	return []model.FileIdentity{file}, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (s *Source) Read(ctx context.Context, file model.FileIdentity) (io.ReadCloser, error) {

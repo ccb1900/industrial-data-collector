@@ -43,7 +43,11 @@ type MemoryState struct {
 	// failedFiles is the local failure ledger: one record per failed file per
 	// collection, cleared when the file later completes.
 	failedFiles map[string]map[string]failedFileRecord
-	now         func() time.Time
+	// appendMode disables the collection-level succeeded guard: every trigger
+	// re-opens the collection (watch/change-triggered sources record many
+	// snapshots under one business date). File-level dedup still applies.
+	appendMode bool
+	now        func() time.Time
 }
 
 // failedFileRecord is the persistent evidence of one failed file attempt.
@@ -67,6 +71,10 @@ func NewMemory() *MemoryState {
 	}
 }
 
+// SetAppendMode switches the collection-level guard off: every trigger
+// re-opens a succeeded collection (change-triggered sources).
+func (s *MemoryState) SetAppendMode() { s.appendMode = true }
+
 func (s *MemoryState) nowTime() time.Time {
 	if s.now != nil {
 		return s.now()
@@ -85,7 +93,9 @@ func (s *MemoryState) Begin(ctx context.Context, key model.CollectionKey, lease 
 	if rec, ok := s.collections[ck]; ok {
 		switch rec.Status {
 		case model.StatusSucceeded:
-			return false, nil
+			if !s.appendMode {
+				return false, nil
+			}
 		case model.StatusRunning:
 			if now.Sub(rec.StartedAt) < lease {
 				return false, nil
@@ -293,6 +303,17 @@ func (s *MemoryState) LastCompleted(ctx context.Context, sourceID model.SourceID
 	return last, found, nil
 }
 
+// StatusOf returns the persisted status of one collection key.
+func (s *MemoryState) StatusOf(_ context.Context, key model.CollectionKey) (model.Status, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.collections[stateKey(key)]
+	if !ok {
+		return "", false, nil
+	}
+	return rec.Status, true, nil
+}
+
 func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceID, until model.CollectionDate, staleAfter time.Duration) ([]model.CollectionKey, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -302,7 +323,12 @@ func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceI
 	now := s.nowTime()
 	var out []model.CollectionKey
 	for _, rec := range s.collections {
-		if rec.Key.SourceID != sourceID || rec.Status == model.StatusSucceeded {
+		// Succeeded and Skipped are not work: succeeded is done, skipped is
+		// a checked-and-absent past day (terminal for the task list). The
+		// planner re-derives calendar gaps each run anyway, so genuinely
+		// late deliveries inside the window are still attempted — they just
+		// never appear as "plan" tasks while absent.
+		if rec.Key.SourceID != sourceID || rec.Status == model.StatusSucceeded || rec.Status == model.StatusSkipped {
 			continue
 		}
 		if rec.Key.Date.After(until) {
@@ -511,6 +537,13 @@ func (s *FileState) End(ctx context.Context, key model.CollectionKey, status mod
 		return err
 	}
 	return s.save()
+}
+
+func (s *FileState) SetAppendMode() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.MemoryState.SetAppendMode()
+	s.save()
 }
 
 func (s *FileState) MarkFileCompleted(ctx context.Context, key model.CollectionKey, file model.FileIdentity, records int64) error {

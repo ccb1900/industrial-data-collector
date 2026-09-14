@@ -5,10 +5,10 @@
 ```text
 cmd/csv-collector
 app/host
-plugins/config
-plugins/collector + plugins/scheduler
-plugins/query + plugins/ui + plugins/ui-contrib + plugins/explorer
-plugins/source + plugins/metadata + plugins/parser + plugins/storage + plugins/state
+components/config
+components/collector + components/scheduler
+components/query + plugins/ui + components/ui-contrib + components/explorer
+components/source + components/metadata + components/parser + components/storage + components/state
 app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui + app/explorer
 app/source + app/parser + app/storage + app/state + app/model
 dynamic-runtime (github.com/ccb1900/gocordis)
@@ -38,7 +38,7 @@ app/       capability contracts and application-only services
 plugins/   GOCORDIS Components, capability keys, and component factories
 ```
 
-`plugins/config` is the composition root for the registered config types. Each
+`components/config` is the composition root for the registered config types. Each
 other `plugins/<plugin>` package owns the Component and capability key for one
 application capability.
 
