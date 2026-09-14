@@ -68,6 +68,9 @@ echo "== source-unit 配置键 =="
 for k in source_id path pattern detect_content encoding header delimiter skip_lines date_policy specific_date catchup_days batch_size collection_mode file_stable_window_seconds dedupe_content_hash state_type state_dir storage sink driver dsn table file_table expose_console lazy_connect metadata_source layout; do
   check "配置键 $k" grep_q "\"$k\"" components/sourceunit/component.go
 done
+check "配置键 no_data_grace_hours" grep_q '"no_data_grace_hours"' components/sourceunit/component.go
+check "脱敏哨兵" grep_q '__REDACTED__' app/host/redact.go
+check "explorer 投影脱敏" grep_q 'SetDesired(redactConfigForDisplay(cfg))' app/host/host.go
 
 echo "== 组件类型（manifest 自描述）=="
 for pkg in source parser watchtrigger storage state scheduler collector metadata query ui-contrib consolebridge sourceunit config; do

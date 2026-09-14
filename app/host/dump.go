@@ -53,20 +53,25 @@ func DumpEffectiveConfig(configPath string, patchPaths []string, overlayPath str
 	if err := appconfig.Validate(cfg); err != nil {
 		return fmt.Errorf("application config validation: %w", err)
 	}
+	// dump 是机器上的运维命令：输出真实值（不脱敏）。
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(renderEffective(cfg))
+	return enc.Encode(renderEffective(cfg, false))
 }
 
 // renderEffective shapes an effective composition for both the CLI dump and
 // the console's "effective-config" named query — one documented shape, not
 // Go struct defaults.
-func renderEffective(cfg config.Config) map[string]any {
+func renderEffective(cfg config.Config, redact bool) map[string]any {
 	out := make([]map[string]any, 0, len(cfg.Components))
 	for _, cc := range cfg.Components {
+		rowCfg := cc.Config
+		if redact {
+			rowCfg = redactMap(cc.Config)
+		}
 		enabled := cc.Enabled == nil || *cc.Enabled
 		out = append(out, map[string]any{
-			"id": cc.ID, "type": cc.Type, "enabled": enabled, "config": cc.Config,
+			"id": cc.ID, "type": cc.Type, "enabled": enabled, "config": rowCfg,
 		})
 	}
 	return map[string]any{"components": out}

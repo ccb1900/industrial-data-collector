@@ -157,9 +157,11 @@ func TestProjectionSkippedDateVisible(t *testing.T) {
 	stateDir := filepath.Join(base, "state")
 	// A fully passed day whose source directory does not exist is a terminal
 	// "no data" (Skipped) — permanent absence, distinct from Pending — and
-	// the console must still show that state instead of nothing.
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	doc := projectionDocument(root, stateDir, yesterday)
+	// the console must still show that state instead of nothing. Use a date
+	// two days back: yesterday may still sit inside the no-data grace window
+	// right after midnight.
+	twoDaysAgo := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
+	doc := projectionDocument(root, stateDir, twoDaysAgo)
 	parsed, err := sourcecomp.Parse([]byte(doc))
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +181,7 @@ func TestProjectionSkippedDateVisible(t *testing.T) {
 	cols := queryCollections(t, adapter)
 	found := false
 	for _, c := range cols {
-		if c.SourceID == "machine001" && c.Date == yesterday {
+		if c.SourceID == "machine001" && c.Date == twoDaysAgo {
 			found = true
 			if c.Status != "Skipped" {
 				t.Fatalf("collection = %#v, want Skipped", c)

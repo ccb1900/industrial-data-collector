@@ -59,6 +59,7 @@ type SourceUnitComponent struct {
 	policy                date.Policy
 	batchSize             int
 	catchupDays           int
+	noDataGraceHours      int
 	logger                *slog.Logger
 
 	emitCtx *runtime.Context
@@ -219,10 +220,11 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:   c.batchSize,
-			DatePolicy:  c.policy,
-			CatchupDays: c.catchupDays,
-			Logger:      c.logger,
+			BatchSize:        c.batchSize,
+			DatePolicy:       c.policy,
+			CatchupDays:      c.catchupDays,
+			NoDataGraceHours: c.noDataGraceHours,
+			Logger:           c.logger,
 		},
 	}
 	c.emitCtx = ctx
@@ -406,6 +408,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
+	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
@@ -414,6 +417,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	return &SourceUnitComponent{
 		sourceID:              model.SourceID(sourceID),
+		noDataGraceHours:      noDataGraceHours,
 		path:                  root,
 		src:                   src,
 		parser:                parserModel,

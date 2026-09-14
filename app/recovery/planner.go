@@ -26,14 +26,8 @@ func (p *Planner) Plan(ctx context.Context, sourceID model.SourceID, target mode
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	now := time.Now()
-	if p.Now != nil {
-		now = p.Now()
-	}
-	// Never recover dates after today when a caller asks for "today"; this is
-	// defensive only because Recovery is only triggered by an application
-	// request.
-	_ = now
+	// (Now/now 目前仅由测试注入与未来扩展使用；当前窗口合成只依赖
+	//  target 与台账，不直接读时钟。)
 
 	known, err := p.State.ListIncomplete(ctx, sourceID, target, 24*time.Hour)
 	if err != nil {

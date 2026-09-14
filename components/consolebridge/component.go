@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -74,7 +75,6 @@ func (c *Component) Inject() []runtime.Dependency {
 		runtime.Requires(queryplugin.FileQueryKey),
 		runtime.Requires(queryplugin.FailureQueryKey),
 		runtime.Requires(queryplugin.ObservationKey),
-		runtime.Requires(queryplugin.CommandKey),
 		runtime.Requires(schedulerplugin.CollectionTriggerKey),
 	}
 }
@@ -105,10 +105,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	command, err := runtime.Require(ctx, queryplugin.CommandKey)
-	if err != nil {
-		return nil, err
-	}
+
 	sched, err := runtime.Require(ctx, schedulerplugin.CollectionTriggerKey)
 	if err != nil {
 		return nil, err
@@ -277,7 +274,15 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					}
 				}
 			}
-			return event.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
+			// 异步化：入队即返回（进度经观察流跟进），避免大窗口采集
+			// 把 HTTP 请求挂到分钟级。激活上下文保证进程内生命周期。
+			base := c.emitCtx.Context()
+			go func() {
+				if err := event.Serial(base, c.emitCtx, events.CollectionRequested, req); err != nil {
+					slog.Warn("trigger rejected", "error", err.Error())
+				}
+			}()
+			return nil
 		})
 	}); err != nil {
 		return nil, err
@@ -311,7 +316,6 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	cleanups = append(cleanups, unsubObs)
-	_ = command
 
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {

@@ -94,11 +94,6 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 	if err := app.Sync(ctx); err != nil {
 		return fmt.Errorf("config sync: %w", err)
 	}
-	// 启动补采：与 csv-collector 常驻模式同一条路——恢复 catchup 窗口内
-	// 的缺失批次，重启后页面立即有完整历史，而不是等手动触发。
-	if err := app.Startup(ctx); err != nil {
-		return fmt.Errorf("startup recovery: %w", err)
-	}
 	ui := findUIComponent(app.Host)
 	if ui == nil {
 		return fmt.Errorf("no active ui component in configuration")
@@ -132,6 +127,15 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 		}
 	})
 
+	// 启动补采：与 csv-collector 常驻模式同一条路——恢复 catchup 窗口内
+	// 的缺失批次。异步执行：HTTP 先行监听，补采结果经观察流汇报；
+	// 阻塞式会因慢速源（UNC 超时）延迟整个控制台可用性。
+	go func() {
+		if err := app.Startup(ctx); err != nil {
+			logger.Error("startup recovery failed", "error", err.Error())
+			ui.PublishObservation("composition.failed", "startup", err.Error())
+		}
+	}()
 	// Config watch loop runs beside the HTTP server: TOML edits reconcile
 	// the live composition without restarting the process.
 	go func() {

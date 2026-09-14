@@ -152,7 +152,9 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	if h.explorer != nil {
-		h.explorer.SetDesired(cfg)
+		// explorer 是只读展示模型：敏感值以哨兵呈现，避免插件页明文
+		// 泄漏 DSN/口令；真实配置仍由宿主/补丁持有。
+		h.explorer.SetDesired(redactConfigForDisplay(cfg))
 	}
 	h.attachStateProjection()
 	return nil
@@ -234,6 +236,15 @@ func (h *Host) persistOverlay() error {
 // setPatchLocked replaces the last patch with the same op+id in place, or
 // appends. Position stability keeps the persisted file readable and makes
 // repeated edits of one component not grow the list.
+func indexOfComponent(components []config.ComponentConfig, id string) int {
+	for i := range components {
+		if components[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 func (h *Host) setPatchLocked(p patch.Patch) {
 	for i := len(h.patches) - 1; i >= 0; i-- {
 		if h.patches[i].Op == p.Op && h.patches[i].ID == p.ID {
@@ -261,25 +272,42 @@ func (h *Host) EffectiveConfig() (config.Config, bool) {
 }
 
 // ComponentConfig returns the effective configuration of one desired
-// component (patches applied).
+// component (patches applied) with sensitive values replaced by
+// RedactedSentinel — this copy is for DISPLAY and edit round-trips; writing
+// it back restores the stored secrets (see SetComponentConfig).
 func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i := len(h.patches) - 1; i >= 0; i-- {
 		if h.patches[i].ID == id && h.patches[i].Op == patch.PatchReplace {
-			return h.patches[i].Component.Config, nil
+			return redactMap(h.patches[i].Component.Config), nil
 		}
 	}
 	for _, cc := range h.lastDesired.Components {
 		if cc.ID == id {
-			out := map[string]any{}
-			for k, v := range cc.Config {
-				out[k] = v
+			if cc.Config == nil {
+				return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
 			}
-			return out, nil
+			return redactMap(cc.Config), nil
 		}
 	}
 	return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
+}
+
+// storedComponentConfig returns the UNSHADED stored configuration of one
+// desired component (bundle/discovered rows included), for secret restore.
+func (h *Host) storedComponentConfig(id string) (config.ComponentConfig, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if idx := indexOfComponent(h.lastDesired.Components, id); idx >= 0 {
+		return h.lastDesired.Components[idx], true
+	}
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].ID == id && (h.patches[i].Op == patch.PatchReplace || h.patches[i].Op == patch.PatchInsert) {
+			return *h.patches[i].Component, true
+		}
+	}
+	return config.ComponentConfig{}, false
 }
 
 // SetComponentConfig replaces the configuration of one desired component.
@@ -325,6 +353,11 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	h.mu.Unlock()
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
+	}
+	// A display copy may carry RedactedSentinel for secrets: restore the
+	// stored values so a round-trip never persists the sentinel.
+	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
+		restoreRedacted(cfg, stored.Config)
 	}
 
 	if err := h.persistOverlay(); err != nil {
@@ -435,7 +468,7 @@ func (h *Host) EffectiveSnapshot() map[string]any {
 	if !ok {
 		return map[string]any{"components": []any{}}
 	}
-	return renderEffective(cfg)
+	return renderEffective(cfg, true)
 }
 
 // attachStateProjection feeds the durable state of every source unit (and of

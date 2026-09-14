@@ -82,6 +82,9 @@ PASS  配置键 expose_console
 PASS  配置键 lazy_connect
 PASS  配置键 metadata_source
 PASS  配置键 layout
+PASS  配置键 no_data_grace_hours
+PASS  脱敏哨兵
+PASS  explorer 投影脱敏
 == 组件类型（manifest 自描述）==
 PASS  components/source/manifest.toml
 PASS  components/parser/manifest.toml
@@ -148,5 +151,5 @@ PASS  渲染器注册表
 PASS  投影 seam
 PASS  客户端模块加载
 
-结果: PASS=138 FAIL=0
+结果: PASS=141 FAIL=0
 文档与代码一致 ✔
