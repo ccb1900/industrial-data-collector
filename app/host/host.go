@@ -285,9 +285,7 @@ func (h *Host) ComponentConfig(id string) (map[string]any, error) {
 	}
 	for _, cc := range h.lastDesired.Components {
 		if cc.ID == id {
-			if cc.Config == nil {
-				return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
-			}
+			// Config 为 nil 是合法的（bundle 预设的无配置组件）：返回空 map。
 			return redactMap(cc.Config), nil
 		}
 	}
