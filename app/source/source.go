@@ -39,6 +39,12 @@ type Source struct {
 	Hash          bool
 	StableWindow  time.Duration
 	Now           func() time.Time
+	// DateDirLayout 非空时，日期子目录按该 Go 布局格式化（如 200601 →
+	// …/202609/），替代默认的 yyyy-mm-dd 目录。
+	DateDirLayout string
+	// FilenameDateLayout 非空时，文件名即日期模板（如 a_20060102.log →
+	// a_20260908.log）：按模板直接定位该业务日期的单个文件，替代目录遍历。
+	FilenameDateLayout string
 
 	hashMu   sync.Mutex
 	lastHash map[string]string
@@ -81,7 +87,10 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if s.Flat {
 		return s.listFlat(ctx)
 	}
-	dir := filepath.Join(s.root, req.Date.String())
+	if s.FilenameDateLayout != "" {
+		return s.listDatedFilename(ctx, req.Date)
+	}
+	dir := s.dateDir(req.Date)
 	// Discovery is recursive below the date directory so nested business
 	// layouts (line-A/station-03/... under <root>/<date>) are found. With a
 	// pattern the glob applies to each file's base name; with content
@@ -146,6 +155,59 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 // listFlat discovers the single file this source is pinned to. Date policy
 // and directories do not apply: the path is the whole world. When Hash is
 // set, unchanged content is not re-emitted.
+// dateDir 解析该业务日期的数据目录：默认 <root>/<yyyy-mm-dd>；
+// 配置 DateDirLayout 后按布局格式化（如 200601 → …/202609/）。
+func (s *Source) dateDir(date model.CollectionDate) string {
+	if s.DateDirLayout != "" {
+		return filepath.Join(s.root, date.Time().Format(s.DateDirLayout))
+	}
+	return filepath.Join(s.root, date.String())
+}
+
+// listDatedFilename 处理"文件名内嵌日期"的布局：文件名本身是日期模板
+// （如 a_20060102.log → a_20260908.log），按模板直接定位该业务日期的
+// 单个文件。缺失走既有分类（过期日→无数据、当天→等待数据）；文件仍在
+// 写入时按稳定窗口等待。
+func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDate) ([]model.FileIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	name := date.Time().Format(s.FilenameDateLayout)
+	path := filepath.Join(s.dateDir(date), name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, errs.ClassifySourceError(path, err)
+	}
+	if info.IsDir() {
+		return nil, errs.Sourcef(errs.ErrNotFound, "dated filename %q is a directory", path)
+	}
+	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
+		return nil, nil // still being written; wait for a later trigger
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		return nil, errs.ClassifySourceError(path, err)
+	}
+	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
+		return nil, nil // changing between stats; wait for a later trigger
+	}
+	file := model.FileIdentity{
+		SourceID: s.ID(),
+		Path:     path,
+		Name:     name,
+		Size:     info2.Size(),
+		ModTime:  info2.ModTime(),
+	}
+	if s.Hash {
+		sum, err := fileSHA256(path)
+		if err != nil {
+			return nil, err
+		}
+		file.Hash = sum
+	}
+	return []model.FileIdentity{file}, nil
+}
+
 func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

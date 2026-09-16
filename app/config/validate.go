@@ -565,7 +565,6 @@ func AllowedSourceType(typ string) bool {
 	return typ == "local-file-source" || typ == "unc-file-source"
 }
 
-
 // sqlDriverByType: 每个 SQL 存储类型期望的 database/sql 驱动名（与
 // components/storage 的驱动注册一致）。mysql/postgres 需要在构建时引入
 // 对应驱动包；oracle/sqlite 已内建。

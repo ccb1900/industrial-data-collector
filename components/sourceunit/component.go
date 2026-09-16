@@ -340,6 +340,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		src = source.New(sourceID, root, pattern,
 			time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
 		src.ContentDetect = detectContent
+		// 日期路由：日期子目录与文件名均可自定义布局（如月份目录
+		// 202609 + 文件名内嵌日期 a_20260908.log）。
+		src.DateDirLayout = configutil.OptionalString(cc, "date_dir_layout", "")
+		src.FilenameDateLayout = configutil.OptionalString(cc, "filename_date_layout", "")
 	}
 	src.Encoding = encoding
 

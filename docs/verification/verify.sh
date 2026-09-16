@@ -69,6 +69,8 @@ for k in source_id path pattern detect_content encoding header delimiter skip_li
   check "配置键 $k" grep_q "\"$k\"" components/sourceunit/component.go
 done
 check "配置键 no_data_grace_hours" grep_q '"no_data_grace_hours"' components/sourceunit/component.go
+  check "配置键 date_dir_layout" grep_q '"date_dir_layout"' components/sourceunit/component.go
+  check "配置键 filename_date_layout" grep_q '"filename_date_layout"' components/sourceunit/component.go
 check "脱敏哨兵" grep_q '__REDACTED__' app/host/redact.go
 check "explorer 投影脱敏" grep_q 'SetDesired(redactConfigForDisplay(cfg))' app/host/host.go
 
