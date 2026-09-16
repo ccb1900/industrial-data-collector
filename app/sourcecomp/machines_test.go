@@ -86,6 +86,60 @@ profiles = []
 	}
 }
 
+// 分组：机台带 group 标签，展开声明只认领同组机台——
+// 两组不同画像共存于同一实例，互不叉乘。
+func TestMachineListGroupPartition(t *testing.T) {
+	doc := `
+[profiles.fmt_a]
+parser = "csv"
+header = true
+
+[profiles.fmt_b]
+parser = "csv"
+header = true
+
+[[machines]]
+ip = "192.168.1.1"
+no = "MT-001"
+group = "A"
+
+[[machines]]
+ip = "192.168.1.2"
+no = "MT-002"
+group = "B"
+
+[[machine_formats]]
+path_template = '\\{ip}\logs'
+profiles = ["fmt_a"]
+group = "A"
+id_suffix = "a"
+
+[[machine_formats]]
+path_template = '\\{ip}\logs'
+profiles = ["fmt_b"]
+group = "B"
+id_suffix = "b"
+
+[[components]]
+id = "scheduler"
+type = "scheduler"
+`
+	res, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, c := range res.Config.Components {
+		if c.Type == "csv-source-unit" {
+			ids = append(ids, strings.TrimPrefix(c.ID, "source-unit:"))
+		}
+	}
+	want := "MT-001-a,MT-002-b"
+	if got := strings.Join(ids, ","); got != want {
+		t.Fatalf("rows = %s, want %s", got, want)
+	}
+}
+
 // 单格式清单：无 id_suffix 时源 id = 机台号。
 func TestMachineListSingleFormat(t *testing.T) {
 	doc := `

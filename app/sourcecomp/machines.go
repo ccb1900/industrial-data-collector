@@ -15,6 +15,9 @@ import (
 type MachineEntry struct {
 	IP string `toml:"ip"`
 	No string `toml:"no"`
+	// Group 是可选的机台分组标签（如按格式/产线分区）。空 = 通用组，
+	// 会被所有未声明 group 的展开声明认领。
+	Group string `toml:"group"`
 }
 
 // MachineFormat is one format group: it expands once per machine into a
@@ -46,6 +49,7 @@ func parseMachineEntries(raw any) ([]MachineEntry, error) {
 		e := MachineEntry{}
 		e.IP, _ = m["ip"].(string)
 		e.No, _ = m["no"].(string)
+		e.Group, _ = m["group"].(string)
 		if e.IP == "" || e.No == "" {
 			return nil, fmt.Errorf("machines #%d: ip and no are required", i)
 		}
@@ -62,6 +66,8 @@ type MachineFormatGroup struct {
 	DateDirLayout      string   `toml:"date_dir_layout"`
 	FilenameDateLayout string   `toml:"filename_date_layout"`
 	IDSuffix           string   `toml:"id_suffix"`
+	// Group 只展开带同标签的机台；空 = 通用（认领所有机台）。
+	Group string `toml:"group"`
 }
 
 // parseMachineFormats reads the [[machine_formats]] declarations.
@@ -92,6 +98,7 @@ func parseMachineFormats(raw any) ([]MachineFormatGroup, error) {
 		g.DateDirLayout, _ = m["date_dir_layout"].(string)
 		g.FilenameDateLayout, _ = m["filename_date_layout"].(string)
 		g.IDSuffix, _ = m["id_suffix"].(string)
+		g.Group, _ = m["group"].(string)
 		if g.PathTemplate == "" {
 			return nil, fmt.Errorf("machine_formats #%d: path_template is required", i)
 		}
@@ -129,6 +136,9 @@ func expandMachineList(groups []MachineFormatGroup, machines []MachineEntry) ([]
 			return nil, err
 		}
 		for _, m := range machines {
+			if g.Group != "" && m.Group != g.Group {
+				continue // 分组选择：声明只展开同组机台
+			}
 			id := m.No
 			if suffix != "" {
 				id = m.No + "-" + suffix
