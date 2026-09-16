@@ -98,6 +98,7 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	// decide, so exports without the expected extension are still collected.
 	now := s.now()
 	var out []model.FileIdentity
+	unstable := 0
 	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return errs.ClassifySourceError(path, err)
@@ -120,8 +121,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 		}
 		if s.StableWindow > 0 {
 			// A file whose mtime is younger than the stable window may still be
-			// open for writing; it is intentionally not discovered yet.
+			// open for writing; it is intentionally not discovered yet — but
+			// the attempt is counted: if EVERY candidate was unstable the
+			// caller must see "not ready" (Pending), never an empty success.
 			if now.Sub(info.ModTime()) < s.StableWindow {
+				unstable++
 				return nil
 			}
 		}
@@ -147,6 +151,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	})
 	if walkErr != nil {
 		return nil, walkErr
+	}
+	// 全部候选都在稳定窗口内：这不是"无文件"（那会终态化日期），
+	// 而是"还没准备好"——以不稳定错误让执行器保持 Pending。
+	if len(out) == 0 && unstable > 0 {
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "%d file(s) inside the stable window", unstable)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
@@ -182,7 +191,7 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 		return nil, errs.Sourcef(errs.ErrNotFound, "dated filename %q is a directory", path)
 	}
 	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
-		return nil, nil // still being written; wait for a later trigger
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q is still being written", path)
 	}
 	info2, err := os.Stat(path)
 	if err != nil {
@@ -220,7 +229,9 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 		return nil, errs.Sourcef(errs.ErrNotFound, "flat source %q is a directory", s.root)
 	}
 	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
-		return nil, nil // still being written; wait for a later trigger
+		// 仍在写入：显式不稳定错误，让执行器保持 Pending 等待——
+		// 折叠成"空文件成功"会把该日期终态化，晚到文件永远丢失。
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q is still being written", s.root)
 	}
 	info2, err := os.Stat(s.root)
 	if err != nil {

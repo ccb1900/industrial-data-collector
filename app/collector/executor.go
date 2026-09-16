@@ -171,6 +171,15 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			cfg.Logger.Warn("date directory not found; left pending for retry", "key", key.String(), "error", result.Error)
 			return result
 		}
+		if errs.Is(err, errs.ErrFileUnstable) {
+			// 候选文件都在稳定窗口内：不是空，是"还没准备好"——
+			// 保持 Pending 重试；终态化会把晚到文件永久丢失。
+			result.Status = model.StatusPending
+			result.Error = fmt.Sprintf("files inside stable window: %v", err)
+			_ = e.State.End(ctx, key, model.StatusPending, result.Error)
+			cfg.Logger.Warn("files unstable; pending for retry", "key", key.String())
+			return result
+		}
 		result.Status = model.StatusFailed
 		result.Error = err.Error()
 		_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
