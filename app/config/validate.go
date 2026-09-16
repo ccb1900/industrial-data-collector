@@ -1,6 +1,7 @@
 package config
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/robfig/cron/v3"
@@ -49,6 +50,9 @@ func Validate(cfg extconfig.Config) error {
 		ti, ok := knownTypes()[cc.Type]
 		if !ok {
 			return fmt.Errorf("unknown component type %q", cc.Type)
+		}
+		if err := validateSQLDriver(cc); err != nil {
+			return err
 		}
 		if err := validateOne(cfg, cc, ti); err != nil {
 			return err
@@ -559,4 +563,41 @@ func ConsoleCritical(typ string) bool {
 
 func AllowedSourceType(typ string) bool {
 	return typ == "local-file-source" || typ == "unc-file-source"
+}
+
+
+// sqlDriverByType: 每个 SQL 存储类型期望的 database/sql 驱动名（与
+// components/storage 的驱动注册一致）。mysql/postgres 需要在构建时引入
+// 对应驱动包；oracle/sqlite 已内建。
+var sqlDriverByType = map[string]string{
+	"mysql-storage":      "mysql",
+	"postgresql-storage": "pgx",
+	"oracle-storage":     "oracle",
+	"sqlite-storage":     "sqlite",
+}
+
+// validateSQLDriver 把"驱动未注册"的失败从运行时首次写库提前到配置校验：
+// 驱动通过 blank import 注册进二进制，校验只查注册表，不发起连接。
+func validateSQLDriver(cc extconfig.ComponentConfig) error {
+	want, ok := sqlDriverByType[cc.Type]
+	if !ok {
+		// source-unit 行：入库驱动随 sink 画像合并在源配置里。
+		if cc.Type != "csv-source-unit" {
+			return nil
+		}
+		want = ""
+	}
+	driver := want
+	if raw, ok := cc.Config["driver"].(string); ok && raw != "" {
+		driver = raw
+	}
+	if driver == "" {
+		return nil
+	}
+	for _, registered := range sql.Drivers() {
+		if registered == driver {
+			return nil
+		}
+	}
+	return fmt.Errorf("component %q: SQL driver %q is not registered in this binary — import the driver package at build time (e.g. mysql-storage 需引入 github.com/go-sql-driver/mysql)", cc.ID, driver)
 }

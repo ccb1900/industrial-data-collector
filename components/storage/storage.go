@@ -110,7 +110,7 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 		case "oracle-storage":
 			dialect = "oracle"
 			if driver == "" {
-				driver = "godror"
+				driver = "oracle"
 			}
 		default:
 			if driver == "" {

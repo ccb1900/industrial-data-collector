@@ -212,6 +212,8 @@ func dialectTypes(dialect string) map[string]string {
 		return map[string]string{"text": "TEXT", "int": "INTEGER", "bigint": "BIGINT", "float": "DOUBLE PRECISION", "bool": "BOOLEAN", "timestamp": "TIMESTAMPTZ", "date": "DATE"}
 	case "mysql":
 		return map[string]string{"text": "TEXT", "int": "INT", "bigint": "BIGINT", "float": "DOUBLE", "bool": "TINYINT(1)", "timestamp": "DATETIME", "date": "DATE"}
+	case "oracle":
+		return map[string]string{"text": "VARCHAR2(4000)", "int": "NUMBER(10)", "bigint": "NUMBER(19)", "float": "BINARY_DOUBLE", "bool": "NUMBER(1)", "timestamp": "TIMESTAMP", "date": "DATE"}
 	default: // sqlite
 		return map[string]string{"text": "TEXT", "int": "INTEGER", "bigint": "INTEGER", "float": "REAL", "bool": "INTEGER", "timestamp": "TEXT", "date": "TEXT"}
 	}
@@ -219,12 +221,22 @@ func dialectTypes(dialect string) map[string]string {
 
 func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	dt := dialectTypes(t.cfg.Dialect)
-	// Data table: idempotency backbone + declared columns.
+	oracle := t.cfg.Dialect == "oracle"
+	// Data table: idempotency backbone + declared columns. Oracle 的键列
+	// 用定长类型：PK 索引键超长会 ORA-01450，不能用 VARCHAR2(4000)。
 	cols := []string{
 		"source_id " + dt["text"] + " NOT NULL",
 		"collection_date " + dt["date"] + " NOT NULL",
 		"file_id " + dt["text"] + " NOT NULL",
 		"row_number " + dt["bigint"] + " NOT NULL",
+	}
+	if oracle {
+		cols = []string{
+			"source_id VARCHAR2(255) NOT NULL",
+			"collection_date DATE NOT NULL",
+			"file_id VARCHAR2(255) NOT NULL",
+			"row_number NUMBER(19) NOT NULL",
+		}
 	}
 	for _, c := range t.cfg.Columns {
 		cols = append(cols, c.Column+" "+dt[c.Type])
@@ -233,7 +245,14 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		cols = append(cols, "row_values "+dt["text"])
 	}
 	pk := "PRIMARY KEY (source_id, collection_date, file_id, row_number)"
-	if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
+	if oracle {
+		// Oracle 无 IF NOT EXISTS：查 user_tables 后按需建表。
+		if !t.tableExists(ctx, t.cfg.Table) {
+			if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
+				return err
+			}
+		}
+	} else if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
 		return err
 	}
 	// Additive evolution: add declared columns that exist neither in the
@@ -250,19 +269,44 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		if have[strings.ToLower(c.Column)] {
 			continue
 		}
-		if err := t.execDDL(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])); err != nil {
+		ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
+		if oracle {
+			ddl = fmt.Sprintf("ALTER TABLE %s ADD (%s %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
+		}
+		if err := t.execDDL(ctx, ddl); err != nil {
 			return err
 		}
 	}
 	// File registry (optional): one row per collected file, header as TEXT.
 	if t.cfg.FileTable != "" {
 		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
-		if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id %s NOT NULL, collection_date %s NOT NULL, file_id %s NOT NULL, path %s, name %s, records %s, header %s, collected_at %s, PRIMARY KEY (source_id, collection_date, file_id))",
-			ft, dt["text"], dt["date"], dt["text"], dt["text"], dt["text"], dt["bigint"], dt["text"], dt["timestamp"])); err != nil {
-			return err
+		fileDDL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id %s NOT NULL, collection_date %s NOT NULL, file_id %s NOT NULL, path %s, name %s, records %s, header %s, collected_at %s, PRIMARY KEY (source_id, collection_date, file_id))",
+			ft, dt["text"], dt["date"], dt["text"], dt["text"], dt["text"], dt["bigint"], dt["text"], dt["timestamp"])
+		if oracle {
+			// 键列换 Oracle 安全类型；无 IF NOT EXISTS，查 user_tables。
+			if !t.tableExists(ctx, t.cfg.FileTable) {
+				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id VARCHAR2(255) NOT NULL, collection_date DATE NOT NULL, file_id VARCHAR2(255) NOT NULL, path VARCHAR2(1000), name VARCHAR2(255), records NUMBER(19), header VARCHAR2(1), collected_at TIMESTAMP, PRIMARY KEY (source_id, collection_date, file_id))", ft)
+			} else {
+				fileDDL = ""
+			}
+		}
+		if fileDDL != "" {
+			if err := t.execDDL(ctx, fileDDL); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// tableExists reports whether the table already exists (Oracle dialect).
+func (t *TableStorage) tableExists(ctx context.Context, table string) bool {
+	var cnt int
+	if err := t.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER(:1)", table).Scan(&cnt); err != nil {
+		return false
+	}
+	return cnt > 0
 }
 
 func (t *TableStorage) existingColumns(ctx context.Context, table string) ([]string, error) {
@@ -281,6 +325,21 @@ func (t *TableStorage) existingColumns(ctx context.Context, table string) ([]str
 			var notNull, pk int
 			var dflt any
 			if e := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); e != nil {
+				return nil, e
+			}
+			out = append(out, name)
+		}
+		err = rows.Err()
+	case "oracle": // user_tab_columns；未加引号建成的表名/列名均为大写
+		rows, e := t.db.QueryContext(ctx,
+			"SELECT column_name FROM user_tab_columns WHERE table_name = UPPER(:1)", table)
+		if e != nil {
+			return nil, e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if e := rows.Scan(&name); e != nil {
 				return nil, e
 			}
 			out = append(out, name)
@@ -531,9 +590,17 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		quoted = append(quoted, quoteIdent(t.cfg.Dialect, c))
 	}
 	tbl := quoteIdent(t.cfg.Dialect, t.cfg.Table)
-	rows, err := t.db.QueryContext(ctx, fmt.Sprintf(
+	query := fmt.Sprintf(
 		"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number LIMIT %d OFFSET %d",
-		strings.Join(quoted, ", "), tbl, w, limit, offset), args...)
+		strings.Join(quoted, ", "), tbl, w, limit, offset)
+	if t.cfg.Dialect == "oracle" {
+		// Oracle 11g 兼容分页（ROWNUM 包装；绑定参数都在内层，边界用
+		// 已校验的整数字面量，无注入面）。11g 无 OFFSET/FETCH 语法。
+		query = fmt.Sprintf(
+			"SELECT * FROM (SELECT q.*, ROWNUM rn FROM (SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number) q WHERE ROWNUM <= %d) WHERE rn > %d",
+			strings.Join(quoted, ", "), tbl, w, offset+limit, offset)
+	}
+	rows, err := t.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return page, errs.ClassifyStorageError("query rows", err)
 	}
