@@ -93,19 +93,24 @@ func TestDateRoutingMissingClassified(t *testing.T) {
 	_ = time.Now
 }
 
-// 词表翻译：长记号优先，YYYY 不被 YY 吞；其余字符原样保留。
-func TestGoLayoutVocabulary(t *testing.T) {
+// 词表渲染：只认 YYYY/YY/MM/DD 四个记号，其余字符一律字面量——
+// 尤其是设备命名习惯里的数字（m307data 的 "3"、"07"），绝不能被
+// 时间布局记号吞掉重渲染。
+func TestRenderDatedVocabulary(t *testing.T) {
+	d := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	cases := map[string]string{
-		"YYYYMMDD":     "20060102",
-		"YYMMDD":       "060102",
-		"a_YYMMDD.log": "a_060102.log",
-		"YYYY":         "2006",
-		"YYYYYY":       "200606",
-		"20260908":     "20260908", // 无记号原样透传
+		"YYYYMMDD":            "20260901",
+		"YYMMDD":              "260901",
+		"a_YYMMDD.log":        "a_260901.log",
+		"m307data_YYMMDD.log": "m307data_260901.log",
+		"YYYY":                "2026",
+		"YYYYYY":              "202626",
+		"MST_Jan_15_3":        "MST_Jan_15_3", // Go 布局记号词在此全是字面量
+		"20260908":            "20260908",
 	}
 	for in, want := range cases {
-		if got := goLayout(in); got != want {
-			t.Errorf("goLayout(%q) = %q, want %q", in, got, want)
+		if got := renderDated(in, d); got != want {
+			t.Errorf("renderDated(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

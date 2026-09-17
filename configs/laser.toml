@@ -1,0 +1,402 @@
+# ========================================================================
+# 激光加工机本机日志采集（res/laser 真实数据）
+#
+# 目录形状：res/laser/202609/<prefix>_YYMMDD.log —— 月份目录 + 两位年份
+# 文件名内嵌日期；GBK/GB18030 编码，CRLF 行尾，首行表头。
+# 15 种格式 = 15 个源，各自独立入库表（列按表头名精确匹配）。
+# 列全部声明为 TEXT：数据原样落库，避免个别脏值（如 "- 0.190"）中断整行。
+# ========================================================================
+
+bundles = ["collector-core", "collector-console"]
+
+[profiles.laser]
+parser = "csv"
+header = true
+encoding = "gb18030"
+allow_ragged = true
+date_policy = "yesterday"
+catchup_days = 31
+batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
+storage = "sqlite-storage"
+driver = "sqlite"
+dsn = "state/collect.db"
+file_table = "laser_files"
+expose_console = true
+lazy_connect = true
+
+[[sources]]
+id = "laser_aaa"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "aaa_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "aaa_YYMMDD.log"
+table = "laser_aaa"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "识别结果 X", column = "result_x", type = "text" },
+  { name = "识别结果 Y", column = "result_y", type = "text" },
+  { name = "工件坐标 X", column = "workpiece_x", type = "text" },
+  { name = "工件坐标 Y", column = "workpiece_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "主程序的序列编号", column = "main_prog_seq", type = "text" },
+  { name = "主程序的程序块编号", column = "main_prog_block", type = "text" },
+  { name = "子程序的程序编号", column = "sub_prog_no", type = "text" },
+  { name = "子程序的序列编号", column = "sub_prog_seq", type = "text" },
+  { name = "子程序的程序块编号", column = "sub_prog_block", type = "text" },
+  { name = "机械坐标 X", column = "machine_x", type = "text" },
+  { name = "机械坐标 Y", column = "machine_y", type = "text" },
+  { name = "尺寸", column = "size", type = "text" },
+  { name = "Score", column = "score", type = "text" },
+]
+
+[[sources]]
+id = "laser_aaa_gosa"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "aaaGosa_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "aaaGosa_YYMMDD.log"
+table = "laser_aaa_gosa"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "最大误差 R", column = "max_err_r", type = "text" },
+  { name = "最大误差 X", column = "max_err_x", type = "text" },
+  { name = "最大误差 Y", column = "max_err_y", type = "text" },
+]
+
+[[sources]]
+id = "laser_alm_log"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "Almlog_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "Almlog_YYMMDD.log"
+table = "laser_alm_log"
+columns = [
+  { name = "DATE", column = "biz_date", type = "text" },
+  { name = "TIME", column = "biz_time", type = "text" },
+  { name = "CAPTION", column = "caption", type = "text" },
+  { name = "ALARM", column = "alarm", type = "text" },
+]
+
+[[sources]]
+id = "laser_cnd_selct"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "cndselct_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "cndselct_YYMMDD.log"
+table = "laser_cnd_selct"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "脉宽", column = "pulse_width", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+  { name = "速度", column = "speed", type = "text" },
+  { name = "脉冲数", column = "pulse_count", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "B/C", column = "b_c", type = "text" },
+  { name = "G", column = "g", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "容许范围", column = "tolerance", type = "text" },
+]
+
+[[sources]]
+id = "laser_length"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "length_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "length_YYMMDD.log"
+table = "laser_length"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "补偿点数", column = "comp_points", type = "text" },
+  { name = "长度(#15)", column = "length_15", type = "text" },
+  { name = "长度(#16)", column = "length_16", type = "text" },
+  { name = "长度(#17)", column = "length_17", type = "text" },
+  { name = "长度(#18)", column = "length_18", type = "text" },
+  { name = "长度(#19)", column = "length_19", type = "text" },
+  { name = "长度(#20)", column = "length_20", type = "text" },
+  { name = "错误内容", column = "error_msg", type = "text" },
+  { name = "长度最大误差", column = "length_max_err", type = "text" },
+  { name = "伸缩率最小值", column = "stretch_rate_min", type = "text" },
+  { name = "伸缩率最大值", column = "stretch_rate_max", type = "text" },
+]
+
+[[sources]]
+id = "laser_m307"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "m307data_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "m307data_YYMMDD.log"
+table = "laser_m307"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "测量输出", column = "measured_out", type = "text" },
+  { name = "检验输出", column = "check_out", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+]
+
+[[sources]]
+id = "laser_m370"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "m370data_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "m370data_YYMMDD.log"
+table = "laser_m370"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "摄像头类型", column = "camera_type", type = "text" },
+  { name = "偏置 X", column = "offset_x", type = "text" },
+  { name = "偏置 Y", column = "offset_y", type = "text" },
+  { name = "偏置 Z", column = "offset_z", type = "text" },
+]
+
+[[sources]]
+id = "laser_m377"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "M377data_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "M377data_YYMMDD.log"
+table = "laser_m377"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "stageNo.", column = "stage_no", type = "text" },
+  { name = "maskNo.", column = "mask_no", type = "text" },
+  { name = "R-Xerr", column = "r_xerr", type = "text" },
+  { name = "R-Yerr", column = "r_yerr", type = "text" },
+  { name = "R-circulity", column = "r_circularity", type = "text" },
+  { name = "L-Xerr", column = "l_xerr", type = "text" },
+  { name = "L-Yerr", column = "l_yerr", type = "text" },
+  { name = "L-circulity", column = "l_circularity", type = "text" },
+  { name = "light A-R", column = "light_a_r", type = "text" },
+  { name = "light B-R", column = "light_b_r", type = "text" },
+  { name = "light A-L", column = "light_a_l", type = "text" },
+  { name = "light B-L", column = "light_b_l", type = "text" },
+]
+
+[[sources]]
+id = "laser_mainte1"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "mainte1_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "mainte1_YYMMDD.log"
+table = "laser_mainte1"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "清除项目", column = "clear_item", type = "text" },
+  { name = "清除次数", column = "clear_count", type = "text" },
+]
+
+[[sources]]
+id = "laser_mask_gosa"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "maskGosa_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "maskGosa_YYMMDD.log"
+table = "laser_mask_gosa"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "最大误差 R", column = "max_err_r", type = "text" },
+  { name = "最大误差 X", column = "max_err_x", type = "text" },
+  { name = "最大误差 Y", column = "max_err_y", type = "text" },
+  { name = "光罩No.", column = "mask_no", type = "text" },
+]
+
+[[sources]]
+id = "laser_pwr"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "pwrdata_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "pwrdata_YYMMDD.log"
+table = "laser_pwr"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+  { name = "测量能量", column = "measured_energy", type = "text" },
+  { name = "容许范围", column = "tolerance", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "上限频率", column = "freq_limit", type = "text" },
+  { name = "shot群数", column = "shot_group", type = "text" },
+  { name = "显示测量频率", column = "display_freq", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+]
+
+[[sources]]
+id = "laser_sin_statis"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "Sinstatis_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "Sinstatis_YYMMDD.log"
+table = "laser_sin_statis"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "管理No.", column = "manage_no", type = "text" },
+  { name = "伸缩最大(X)", column = "stretch_max_x", type = "text" },
+  { name = "伸缩最小(X)", column = "stretch_min_x", type = "text" },
+  { name = "伸缩平均(X)", column = "stretch_avg_x", type = "text" },
+  { name = "伸缩标准偏差(X)", column = "stretch_std_x", type = "text" },
+  { name = "伸缩最大(Y)", column = "stretch_max_y", type = "text" },
+  { name = "伸缩最小(Y)", column = "stretch_min_y", type = "text" },
+  { name = "伸缩平均(Y)", column = "stretch_avg_y", type = "text" },
+  { name = "伸缩标准偏差(Y)", column = "stretch_std_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "偏置最大(X)", column = "offset_max_x", type = "text" },
+  { name = "偏置最小(X)", column = "offset_min_x", type = "text" },
+  { name = "偏置平均(X)", column = "offset_avg_x", type = "text" },
+  { name = "偏置标准偏差(X)", column = "offset_std_x", type = "text" },
+  { name = "偏置最大(Y)", column = "offset_max_y", type = "text" },
+  { name = "偏置最小(Y)", column = "offset_min_y", type = "text" },
+  { name = "偏置平均(Y)", column = "offset_avg_y", type = "text" },
+  { name = "偏置标准偏差(Y)", column = "offset_std_y", type = "text" },
+  { name = "θ最大", column = "theta_max", type = "text" },
+  { name = "θ最小", column = "theta_min", type = "text" },
+  { name = "θ平均", column = "theta_avg", type = "text" },
+  { name = "θ标准偏差", column = "theta_std", type = "text" },
+  { name = "加工张数", column = "sheet_count", type = "text" },
+]
+
+[[sources]]
+id = "laser_sinsyuku"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "sinsyuku_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "sinsyuku_YYMMDD.log"
+table = "laser_sinsyuku"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "管理No.", column = "manage_no", type = "text" },
+  { name = "序列号", column = "serial_no", type = "text" },
+  { name = "伸缩率 X", column = "stretch_rate_x", type = "text" },
+  { name = "伸缩率 Y", column = "stretch_rate_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "状态", column = "status", type = "text" },
+  { name = "错误内容", column = "error_msg", type = "text" },
+  { name = "偏置X", column = "offset_x", type = "text" },
+  { name = "偏置Y", column = "offset_y", type = "text" },
+  { name = "θ", column = "theta", type = "text" },
+  { name = "<manual work comp>", column = "manual_work_comp", type = "text" },
+  { name = "<OFFSET PROC. X>", column = "offset_proc_x", type = "text" },
+  { name = "<OFFSET PROC. Y>", column = "offset_proc_y", type = "text" },
+  { name = "再开始状态", column = "restart_status", type = "text" },
+  { name = "停止程序块", column = "stop_block", type = "text" },
+  { name = "结束程序块", column = "end_block", type = "text" },
+]
+# 注意: 表头存在重复列名 ['状态']，按名匹配取最后一次出现
+
+[[sources]]
+id = "laser_table"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "table_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "table_YYMMDD.log"
+table = "laser_table"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "RZ(mm)", column = "rz_mm", type = "text" },
+  { name = "RX(mm)", column = "rx_mm", type = "text" },
+  { name = "RY(mm)", column = "ry_mm", type = "text" },
+  { name = "LZ(mm)", column = "lz_mm", type = "text" },
+  { name = "LX(mm)", column = "lx_mm", type = "text" },
+  { name = "LY(mm)", column = "ly_mm", type = "text" },
+  { name = "RZ-ave", column = "rz_ave", type = "text" },
+  { name = "LZ-ave", column = "lz_ave", type = "text" },
+  { name = "RZ-range", column = "rz_range", type = "text" },
+  { name = "LZ-range", column = "lz_range", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+
+[[sources]]
+id = "laser_zaxis"
+path = "res/laser"
+profiles = ["laser"]
+pattern = "Zaxis_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "Zaxis_YYMMDD.log"
+table = "laser_zaxis"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "ZR轴", column = "zr_axis", type = "text" },
+  { name = "ZL轴", column = "zl_axis", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "计划开始", column = "planned_start", type = "text" },
+  { name = "LdDir", column = "ld_dir", type = "text" },
+]
+
+# ----------------------------------------------------------------
+# 调度：每日 03:23 采集昨日数据
+# ----------------------------------------------------------------
+[[components]]
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+cron = "23 3 * * *"

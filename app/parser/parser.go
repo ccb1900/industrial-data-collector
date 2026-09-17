@@ -32,6 +32,11 @@ type Parser struct {
 	SkipLines int
 	Document  DocumentConfig
 	Encoding  string
+	// AllowRagged 容忍各行字段数不一致（真实设备导出的常见形态）。
+	// 关闭时（默认）沿用 encoding/csv 严格模式：以首条记录的字段数为准，
+	// 不一致即报 malformed CSV。开启后变长行放行，存储端按表头名取列，
+	// 缺位为 NULL、无名多余字段忽略。
+	AllowRagged bool
 }
 
 func New() *Parser { return &Parser{} }
@@ -118,6 +123,9 @@ func (p *Parser) parseFlat(ctx context.Context, br *bufio.Reader) (*stream, erro
 	cr := csv.NewReader(br)
 	if p.Comma != 0 {
 		cr.Comma = p.Comma
+	}
+	if p.AllowRagged {
+		cr.FieldsPerRecord = -1
 	}
 	s := &stream{ctx: ctx, parser: p, csv: cr}
 	if p.Header {

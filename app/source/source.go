@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -206,26 +207,47 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 // listFlat discovers the single file this source is pinned to. Date policy
 // and directories do not apply: the path is the whole world. When Hash is
 // set, unchanged content is not re-emitted.
-// goLayout 把声明层的中性日期词表（YYYY/YY/MM/DD）翻译为 Go 时间布局，
-// 其余字符原样保留（如 "a_YYMMDD.log"）。词表与业务日期同粒度：没有小时
-// 记号——CollectionDate 无小时分量，小时级子目录（…/20260908/14/…）由
-// 日期目录下的递归发现覆盖，无需专门 token。参数顺序即优先级：长记号在前，
-// "YYYY" 先于 "YY" 匹配，两位年份不会被误吞。
-func goLayout(pattern string) string {
-	r := strings.NewReplacer(
-		"YYYY", "2006",
-		"YY", "06",
-		"MM", "01",
-		"DD", "02",
-	)
-	return r.Replace(pattern)
+// renderDated 按声明层的中性日期词表渲染日期模板：只认 YYYY/YY/MM/DD
+// 四个记号，其余字符一律是字面量——"m307data_YYMMDD.log" 里的 3、07、
+// data 原样保留。绝不经过 time.Format 的 Go 布局：那会把模板里的每个
+// 字面字符重新暴露在 Go 记号语法下（"3" 是 12 小时制、"Jan"/"MST" 是
+// 月名时区名……），设备命名习惯会静默渲染成错误文件名。
+// 词表与业务日期同粒度：没有小时记号——CollectionDate 无小时分量，
+// 小时级子目录（…/20260908/14/…）由日期目录下的递归发现覆盖。
+func renderDated(pattern string, t time.Time) string {
+	if pattern == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	for i := 0; i < len(pattern); {
+		rest := pattern[i:]
+		switch {
+		case strings.HasPrefix(rest, "YYYY"):
+			b.WriteString(strconv.Itoa(t.Year()))
+			i += 4
+		case strings.HasPrefix(rest, "YY"):
+			fmt.Fprintf(&b, "%02d", t.Year()%100)
+			i += 2
+		case strings.HasPrefix(rest, "MM"):
+			fmt.Fprintf(&b, "%02d", int(t.Month()))
+			i += 2
+		case strings.HasPrefix(rest, "DD"):
+			fmt.Fprintf(&b, "%02d", t.Day())
+			i += 2
+		default:
+			b.WriteByte(pattern[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // dateDir 解析该业务日期的数据目录：默认 <root>/<yyyy-mm-dd>；
-// 配置 DateDirLayout 后按布局格式化（如 200601 → …/202609/）。
+// 配置 DateDirLayout 后按词表渲染（如 YYYYMM → …/202609/）。
 func (s *Source) dateDir(date model.CollectionDate) string {
 	if s.DateDirLayout != "" {
-		return filepath.Join(s.root, date.Time().Format(goLayout(s.DateDirLayout)))
+		return filepath.Join(s.root, renderDated(s.DateDirLayout, date.Time()))
 	}
 	return filepath.Join(s.root, date.String())
 }
@@ -238,7 +260,7 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	name := date.Time().Format(goLayout(s.FilenameDateLayout))
+	name := renderDated(s.FilenameDateLayout, date.Time())
 	path := filepath.Join(s.dateDir(date), name)
 	info, err := os.Stat(path)
 	if err != nil {

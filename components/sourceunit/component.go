@@ -485,6 +485,7 @@ func buildParser(cfg map[string]any) (model.CSVParser, error) {
 	if p.SkipLines < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser skip_lines must be >= 0")
 	}
+	p.AllowRagged = configutil.OptionalBool(cc, "allow_ragged", false)
 	if d := configutil.OptionalString(cc, "delimiter", ""); d != "" {
 		runes := []rune(d)
 		if len(runes) != 1 {
