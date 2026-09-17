@@ -182,6 +182,9 @@ type CollectionRequested struct {
 	// SourceID selects one configured source. Empty means every active Source
 	// unit, preserving the historical single-collector behavior.
 	SourceID SourceID
+	// Group selects one machine/format group (机台组). Empty means the request
+	// is a broadcast: every source reacts regardless of its group.
+	Group string
 }
 
 // ListRequest describes one discovery request.

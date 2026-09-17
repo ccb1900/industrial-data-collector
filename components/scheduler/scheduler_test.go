@@ -19,11 +19,15 @@ func TestNewSchedulerAcceptsCron(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
-	if c.typ != "cron" || c.cronExpr != "30 2 * * *" || c.cron == nil {
-		t.Fatalf("unexpected component: typ=%q expr=%q cron=%v", c.typ, c.cronExpr, c.cron)
+	if c.typ != "cron" || len(c.entries) != 1 {
+		t.Fatalf("unexpected component: typ=%q entries=%d", c.typ, len(c.entries))
 	}
-	if c.clock != "" {
-		t.Fatalf("cron mode must not keep the daily clock: %q", c.clock)
+	e := c.entries[0]
+	if e.cronExpr != "30 2 * * *" || e.cron == nil || e.group != "" {
+		t.Fatalf("entry = %+v", e)
+	}
+	if e.clock != "" {
+		t.Fatalf("cron mode must not keep the daily clock: %q", e.clock)
 	}
 }
 
@@ -43,7 +47,7 @@ func TestCronScheduleAndInfo(t *testing.T) {
 		t.Fatalf("NewScheduler: %v", err)
 	}
 	after := time.Date(2026, 9, 11, 0, 30, 0, 0, time.Local)
-	next, ok := cronSchedule{inner: c.cron}.Next(after)
+	next, ok := cronSchedule{inner: c.entries[0].cron}.Next(after)
 	if !ok || next.Format("01-02 15:04") != "09-11 02:30" {
 		t.Fatalf("cron Next = %v (ok=%v), want 09-11 02:30", next, ok)
 	}
@@ -56,7 +60,7 @@ func TestCronScheduleAndInfo(t *testing.T) {
 		t.Fatalf("cron mode must not report the daily time: %v", info)
 	}
 	// next 带服务器本地偏移：操作员直接对着墙上时钟核对 cron。
-	wantNext := c.cron.Next(time.Now()).Format(time.RFC3339)
+	wantNext := c.entries[0].cron.Next(time.Now()).Format(time.RFC3339)
 	if info["next"] != wantNext {
 		t.Fatalf("Info next = %v, want %v", info["next"], wantNext)
 	}

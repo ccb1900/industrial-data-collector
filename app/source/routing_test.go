@@ -32,7 +32,7 @@ func TestDateDirAndFilenameRouting(t *testing.T) {
 	src := &Source{
 		SourceID: "machine-a", root: root,
 		Pattern:       "a_*.log",
-		DateDirLayout: "200601", FilenameDateLayout: "a_20060102.log",
+		DateDirLayout: "YYYYMM", FilenameDateLayout: "a_YYYYMMDD.log",
 	}
 	date := func(s string) model.CollectionDate {
 		var d model.CollectionDate
@@ -71,7 +71,7 @@ func TestDateRoutingMissingClassified(t *testing.T) {
 	}
 	src := &Source{
 		SourceID: "machine-a", root: root,
-		DateDirLayout: "200601", FilenameDateLayout: "a_20060102.log",
+		DateDirLayout: "YYYYMM", FilenameDateLayout: "a_YYYYMMDD.log",
 	}
 	date := func(s string) model.CollectionDate {
 		var d model.CollectionDate

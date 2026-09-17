@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,11 +165,18 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 // listFlat discovers the single file this source is pinned to. Date policy
 // and directories do not apply: the path is the whole world. When Hash is
 // set, unchanged content is not re-emitted.
+// goLayout 把声明层的中性日期词表（YYYY/MM/DD）翻译为 Go 时间布局。
+// 只识别这三个记号，其余字符原样保留（如 "a_YYYYMMDD.log"）。
+func goLayout(pattern string) string {
+	r := strings.NewReplacer("YYYY", "2006", "MM", "01", "DD", "02")
+	return r.Replace(pattern)
+}
+
 // dateDir 解析该业务日期的数据目录：默认 <root>/<yyyy-mm-dd>；
 // 配置 DateDirLayout 后按布局格式化（如 200601 → …/202609/）。
 func (s *Source) dateDir(date model.CollectionDate) string {
 	if s.DateDirLayout != "" {
-		return filepath.Join(s.root, date.Time().Format(s.DateDirLayout))
+		return filepath.Join(s.root, date.Time().Format(goLayout(s.DateDirLayout)))
 	}
 	return filepath.Join(s.root, date.String())
 }
@@ -181,7 +189,7 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	name := date.Time().Format(s.FilenameDateLayout)
+	name := date.Time().Format(goLayout(s.FilenameDateLayout))
 	path := filepath.Join(s.dateDir(date), name)
 	info, err := os.Stat(path)
 	if err != nil {

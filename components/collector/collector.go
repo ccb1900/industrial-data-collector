@@ -28,6 +28,7 @@ type CollectorComponent struct {
 	policy           date.Policy
 	catchupDays      int
 	noDataGraceHours int
+	group            string
 	logger           *slog.Logger
 	emitCtx          *runtime.Context
 }
@@ -107,6 +108,10 @@ func (c *CollectorComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error
 		if req.SourceID != "" && req.SourceID != sourceID {
 			return nil
 		}
+		// 组过滤：调度/手动请求携带 group 时，只响应同组源（空 = 广播）。
+		if req.Group != "" && req.Group != c.group {
+			return nil
+		}
 		job := collectJob{ctx: dctx, req: req, done: make(chan error, 1)}
 		select {
 		case reqCh <- job:
@@ -183,6 +188,7 @@ func NewCollector(cc config.ComponentConfig, logger *slog.Logger) (*CollectorCom
 	if catchup < 0 {
 		return nil, fmt.Errorf("%w: catchup_days must be >= 0", errs.ErrInvalidConfig)
 	}
+	group := configutil.OptionalString(cc, "group", "")
 	grace := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
 	if grace < 0 {
 		return nil, fmt.Errorf("%w: no_data_grace_hours must be >= 0", errs.ErrInvalidConfig)
@@ -190,5 +196,5 @@ func NewCollector(cc config.ComponentConfig, logger *slog.Logger) (*CollectorCom
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &CollectorComponent{batchSize: batch, policy: policy, catchupDays: catchup, noDataGraceHours: grace, logger: logger}, nil
+	return &CollectorComponent{batchSize: batch, policy: policy, catchupDays: catchup, noDataGraceHours: grace, group: group, logger: logger}, nil
 }

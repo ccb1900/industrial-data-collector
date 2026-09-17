@@ -58,6 +58,7 @@ type SourceUnitComponent struct {
 	lazyConnect           bool
 	policy                date.Policy
 	batchSize             int
+	group                 string
 	catchupDays           int
 	noDataGraceHours      int
 	logger                *slog.Logger
@@ -244,6 +245,10 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		return nil, err
 	}
 	err := runtime.On(ctx, events.CollectionRequested, func(dctx context.Context, req model.CollectionRequested) error {
+		// 组过滤：调度/手动请求携带 group 时，只响应同组源（空 = 广播）。
+		if req.Group != "" && req.Group != c.group {
+			return nil
+		}
 		if req.SourceID != "" && req.SourceID != c.sourceID {
 			return nil // a different Source owns this request
 		}
@@ -413,6 +418,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
 	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
+	group := configutil.OptionalString(cc, "group", "")
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
@@ -421,6 +427,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	return &SourceUnitComponent{
 		sourceID:              model.SourceID(sourceID),
+		group:                 group,
 		noDataGraceHours:      noDataGraceHours,
 		path:                  root,
 		src:                   src,
