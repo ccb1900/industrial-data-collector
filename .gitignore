@@ -3,3 +3,5 @@ node_modules/
 state/
 *.removed.json
 plugins/alarm-demo/alarm-demo
+/res/
+.DS_Store

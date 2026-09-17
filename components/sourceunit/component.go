@@ -500,6 +500,11 @@ func buildParser(cfg map[string]any) (model.CSVParser, error) {
 	if docCfg.Enabled() && !p.Header {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode requires header=true")
 	}
+	// 结构化元数据段要求行与声明的字段一一对应，锯齿放行会让元数据错位——
+	// 显式拒绝而不是静默忽略 allow_ragged。
+	if docCfg.Enabled() && p.AllowRagged {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode does not support allow_ragged")
+	}
 	if docCfg.Enabled() && p.SkipLines != 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode cannot be combined with skip_lines")
 	}

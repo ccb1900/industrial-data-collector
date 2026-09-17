@@ -31,9 +31,7 @@ func TestNativeSepUnifiesSeparators(t *testing.T) {
 		if got != want {
 			t.Errorf("nativeSep(%q) = %q, want %q", c.in, got, want)
 		}
-		if strings.ContainsAny(got, `\/`) &&
-			strings.Contains(got, "/") && strings.Contains(got, `\`) &&
-			!(runtime.GOOS == "windows" && strings.HasPrefix(got, `\\`)) {
+		if strings.Contains(got, "/") && strings.Contains(got, `\`) {
 			t.Errorf("nativeSep(%q) = %q mixes separators", c.in, got)
 		}
 	}
