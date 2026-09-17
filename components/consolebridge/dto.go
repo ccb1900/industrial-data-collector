@@ -4,6 +4,9 @@
 package consolebridge
 
 import (
+	"time"
+
+	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 )
 
@@ -75,6 +78,34 @@ func toUIFiles(views []query.FileView) []uiFile {
 	out := make([]uiFile, 0, len(views))
 	for _, v := range views {
 		out = append(out, toUIFile(v))
+	}
+	return out
+}
+
+// uiFailure flattens the failure ledger record for the console: the
+// application struct nests Key/File, the UI wants one flat camelCase row.
+type uiFailure struct {
+	SourceID string `json:"sourceId"`
+	Date     string `json:"date"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Attempts int    `json:"attempts"`
+	Error    string `json:"error"`
+	FailedAt string `json:"failedAt"`
+}
+
+func toUIFailures(views []model.FileFailure) []uiFailure {
+	out := make([]uiFailure, 0, len(views))
+	for _, f := range views {
+		out = append(out, uiFailure{
+			SourceID: string(f.Key.SourceID),
+			Date:     f.Key.Date.String(),
+			Name:     f.File.Name,
+			Path:     f.File.Path,
+			Attempts: f.Attempts,
+			Error:    f.Error,
+			FailedAt: f.FailedAt.Format(time.RFC3339),
+		})
 	}
 	return out
 }

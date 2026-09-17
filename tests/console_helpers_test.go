@@ -7,7 +7,6 @@ import (
 
 	consolehost "dynamic-runtime/extensions/console/host"
 
-	"gocordis-csv-collector/app/model"
 )
 
 // hubQuery runs a named console query through the adapter and decodes the
@@ -84,6 +83,18 @@ func queryFiles(t *testing.T, adapter *consolehost.Host, sourceID, date string) 
 	return hubQuery[[]wireFile](t, adapter, "files", url.Values{"sourceId": []string{sourceID}, "date": []string{date}})
 }
 
-func queryFailures(t *testing.T, adapter *consolehost.Host) []model.FileFailure {
-	return hubQuery[[]model.FileFailure](t, adapter, "failures", url.Values{})
+// wireFailure mirrors the bridge's flat camelCase failure shape (dto.go),
+// like wireCollection/wireFile — the hub never leaks application structs.
+type wireFailure struct {
+	SourceID string `json:"sourceId"`
+	Date     string `json:"date"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Attempts int    `json:"attempts"`
+	Error    string `json:"error"`
+	FailedAt string `json:"failedAt"`
+}
+
+func queryFailures(t *testing.T, adapter *consolehost.Host) []wireFailure {
+	return hubQuery[[]wireFailure](t, adapter, "failures", url.Values{})
 }

@@ -250,7 +250,7 @@
             "rowActions": [
               {
                 "args": {
-                  "sourceId": "$row.sourceId"
+                  "sourceId": "$row.id"
                 },
                 "command": "trigger",
                 "label": "采集"
@@ -265,7 +265,7 @@
       "ID": "ui-page-data",
       "Type": "ui-page",
       "Config": {
-        "description": "类型化入库数据的分页查询与存储洞察。",
+        "description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
         "icon": "search",
         "order": 35,
         "page_id": "data",
@@ -274,32 +274,6 @@
         "title": "数据查询",
         "views": [
           {
-            "columns": [
-              {
-                "key": "collection_date",
-                "title": "采集日"
-              },
-              {
-                "key": "row_number",
-                "title": "行号"
-              },
-              {
-                "key": "ts",
-                "title": "时间"
-              },
-              {
-                "key": "temperature",
-                "title": "温度"
-              },
-              {
-                "key": "unit",
-                "title": "单位"
-              },
-              {
-                "key": "product",
-                "title": "产品"
-              }
-            ],
             "filters": [
               {
                 "key": "sourceId",
@@ -322,20 +296,6 @@
             "title": "记录查询"
           },
           {
-            "fields": [
-              {
-                "key": "connected",
-                "label": "连接"
-              },
-              {
-                "key": "readings",
-                "label": "读数行数"
-              },
-              {
-                "key": "source_files",
-                "label": "文件行数"
-              }
-            ],
             "kind": "kv",
             "query": "storage",
             "title": "存储洞察"
@@ -415,6 +375,14 @@
         "views": [
           {
             "columns": [
+              {
+                "key": "sourceId",
+                "title": "数据源"
+              },
+              {
+                "key": "date",
+                "title": "采集日"
+              },
               {
                 "key": "name",
                 "title": "文件"

@@ -146,7 +146,8 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					"kind": "table", "query": "sources", "pageSize": 20,
 					"rowActions": []any{
-						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.sourceId"}},
+						// 源行的主键是 id：实参传错键会退化为全量广播触发。
+						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.id"}},
 					},
 					"columns": []any{
 						map[string]any{"key": "name", "title": "数据源"},
@@ -160,7 +161,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"page_id":     "data",
 			"title":       "数据查询",
 			"route":       "/data",
-			"description": "类型化入库数据的分页查询与存储洞察。",
+			"description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
 			"renderer":    "views",
 			"icon":        "search",
 			"order":       35,
@@ -172,23 +173,12 @@ func consoleRows() []extconfig.ComponentConfig {
 						// 日期留空 = 跨批次查询该数据源的全部数据（默认给昨天）。
 						map[string]any{"key": "date", "label": "日期", "type": "date", "default": "$yesterday"},
 					},
-					// 不声明 columns 时控制台用响应列名作表头；这里显式挑选展示列。
-					"columns": []any{
-						map[string]any{"key": "collection_date", "title": "采集日"},
-						map[string]any{"key": "row_number", "title": "行号"},
-						map[string]any{"key": "ts", "title": "时间"},
-						map[string]any{"key": "temperature", "title": "温度"},
-						map[string]any{"key": "unit", "title": "单位"},
-						map[string]any{"key": "product", "title": "产品"},
-					},
+					// 不声明 columns：列头来自响应自身的表结构（typed sink 的
+					// columnar page），任何业务的库表都无需改此页面。
 				},
 				map[string]any{
+					// 不声明 fields：渲染整个应答对象——每张暴露表的行数。
 					"kind": "kv", "title": "存储洞察", "query": "storage",
-					"fields": []any{
-						map[string]any{"key": "connected", "label": "连接"},
-						map[string]any{"key": "readings", "label": "读数行数"},
-						map[string]any{"key": "source_files", "label": "文件行数"},
-					},
 				},
 			},
 		}),
@@ -229,6 +219,8 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					"kind": "table", "query": "failures", "pageSize": 8,
 					"columns": []any{
+						map[string]any{"key": "sourceId", "title": "数据源"},
+						map[string]any{"key": "date", "title": "采集日"},
 						map[string]any{"key": "name", "title": "文件"},
 						map[string]any{"key": "attempts", "title": "次数"},
 						map[string]any{"key": "error", "title": "错误"},

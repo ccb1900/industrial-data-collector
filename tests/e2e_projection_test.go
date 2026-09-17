@@ -146,7 +146,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 		t.Fatalf("projected files = %#v, want 2", files)
 	}
 	fails := queryFailures(t, adapter2)
-	if len(fails) != 1 || fails[0].File.Name != "broken.csv" {
+	if len(fails) != 1 || fails[0].Name != "broken.csv" {
 		t.Fatalf("projected ledger = %#v, want broken.csv", fails)
 	}
 }

@@ -191,7 +191,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			if err != nil {
 				return nil, hubErr(err)
 			}
-			return views, nil
+			return toUIFailures(views), nil
 		})
 	}); err != nil {
 		return nil, err
