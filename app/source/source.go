@@ -206,10 +206,18 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 // listFlat discovers the single file this source is pinned to. Date policy
 // and directories do not apply: the path is the whole world. When Hash is
 // set, unchanged content is not re-emitted.
-// goLayout 把声明层的中性日期词表（YYYY/MM/DD）翻译为 Go 时间布局。
-// 只识别这三个记号，其余字符原样保留（如 "a_YYYYMMDD.log"）。
+// goLayout 把声明层的中性日期词表（YYYY/YY/MM/DD）翻译为 Go 时间布局，
+// 其余字符原样保留（如 "a_YYMMDD.log"）。词表与业务日期同粒度：没有小时
+// 记号——CollectionDate 无小时分量，小时级子目录（…/20260908/14/…）由
+// 日期目录下的递归发现覆盖，无需专门 token。参数顺序即优先级：长记号在前，
+// "YYYY" 先于 "YY" 匹配，两位年份不会被误吞。
 func goLayout(pattern string) string {
-	r := strings.NewReplacer("YYYY", "2006", "MM", "01", "DD", "02")
+	r := strings.NewReplacer(
+		"YYYY", "2006",
+		"YY", "06",
+		"MM", "01",
+		"DD", "02",
+	)
 	return r.Replace(pattern)
 }
 

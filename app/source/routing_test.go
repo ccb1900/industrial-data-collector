@@ -92,3 +92,44 @@ func TestDateRoutingMissingClassified(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// 词表翻译：长记号优先，YYYY 不被 YY 吞；其余字符原样保留。
+func TestGoLayoutVocabulary(t *testing.T) {
+	cases := map[string]string{
+		"YYYYMMDD":     "20060102",
+		"YYMMDD":       "060102",
+		"a_YYMMDD.log": "a_060102.log",
+		"YYYY":         "2006",
+		"YYYYYY":       "200606",
+		"20260908":     "20260908", // 无记号原样透传
+	}
+	for in, want := range cases {
+		if got := goLayout(in); got != want {
+			t.Errorf("goLayout(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// 两位年份的文件名路由：a_260908.log ← a_YYMMDD.log。
+func TestFilenameRoutingTwoDigitYear(t *testing.T) {
+	root := t.TempDir()
+	month := filepath.Join(root, "202609")
+	if err := os.MkdirAll(month, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(month, "a_260908.log"), []byte("id\n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := &Source{
+		SourceID: "machine-a", root: root,
+		DateDirLayout: "YYYYMM", FilenameDateLayout: "a_YYMMDD.log",
+	}
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-08")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := src.List(context.Background(), model.ListRequest{SourceID: "machine-a", Date: d})
+	if err != nil || len(res) != 1 || res[0].Name != "a_260908.log" {
+		t.Fatalf("List = %+v err=%v, want [a_260908.log]", res, err)
+	}
+}
