@@ -3,7 +3,7 @@ module gocordis-csv-collector
 go 1.25.0
 
 require (
-	dynamic-runtime v0.0.0-20260910224321-5c2c6789b64f
+	dynamic-runtime v0.0.0-20260914234604-d81365c03639
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.6.0
@@ -32,4 +32,4 @@ require (
 	modernc.org/memory v1.8.0 // indirect
 )
 
-replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20260913234934-bc126f45060c
+replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20260914234604-d81365c03639
