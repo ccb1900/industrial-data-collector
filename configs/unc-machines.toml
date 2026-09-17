@@ -1,0 +1,202 @@
+# ========================================================================
+# UNC 多机台日志采集 → Oracle
+#
+# 目录形状（每台机台一个共享，日志按月分目录、文件名内嵌日期）：
+#   \\192.168.1.100\logs\202609\a_20260908.log
+#   \\192.168.1.100\logs\202609\a_20260909.log
+#   \\192.168.1.101\logs\202609\a_20260908.log
+#   ...
+#
+# 三种格式 = 三个源（每机台 × 每格式）；机台号随每行写入 Oracle。
+# ========================================================================
+
+# ----------------------------------------------------------------
+# 共享画像：机台 A 组日志（a_*.log）
+# 列按实际 CSV 表头改；type 可选 timestamp/float/text/int/bigint/bool/date
+# ----------------------------------------------------------------
+bundles = ["collector-core", "collector-console"]
+
+[profiles.log_a]
+parser = "csv"
+header = true
+pattern = "a_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "a_YYYYMMDD.log"
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
+storage = "oracle-storage"
+driver = "oracle"
+dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+table = "LOGS_A"
+expose_console = true
+lazy_connect = true
+
+[[profiles.log_a.columns]]
+from = "csv"
+name = "ts"
+column = "timestamp"
+type = "timestamp"
+required = true
+
+[[profiles.log_a.columns]]
+from = "csv"
+name = "temperature"
+column = "temperature"
+type = "float"
+
+[[profiles.log_a.columns]]
+from = "csv"
+name = "pressure"
+column = "pressure"
+type = "float"
+
+[[profiles.log_a.columns]]
+from = "metadata"
+name = "machine_no"
+column = "machine_no"
+type = "text"
+
+# ----------------------------------------------------------------
+# 共享画像：b 格式日志（b_*.log）
+# ----------------------------------------------------------------
+[profiles.log_b]
+parser = "csv"
+header = true
+pattern = "b_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "b_YYYYMMDD.log"
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
+storage = "oracle-storage"
+driver = "oracle"
+dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+table = "LOGS_B"
+expose_console = true
+lazy_connect = true
+
+[[profiles.log_b.columns]]
+from = "csv"
+name = "ts"
+column = "event_time"
+type = "timestamp"
+required = true
+
+[[profiles.log_b.columns]]
+from = "csv"
+name = "event_type"
+column = "event_type"
+type = "text"
+
+[[profiles.log_b.columns]]
+from = "csv"
+name = "duration_ms"
+column = "duration_ms"
+type = "int"
+
+[[profiles.log_b.columns]]
+from = "metadata"
+name = "machine_no"
+column = "machine_no"
+type = "text"
+
+# ----------------------------------------------------------------
+# 共享画像：c 格式日志（c_*.log）
+# ----------------------------------------------------------------
+[profiles.log_c]
+parser = "csv"
+header = true
+pattern = "c_*.log"
+date_dir_layout = "YYYYMM"
+filename_date_layout = "c_YYYYMMDD.log"
+date_policy = "yesterday"
+catchup_days = 7
+batch_size = 1000
+state_type = "file-state"
+state_dir = "./state"
+storage = "oracle-storage"
+driver = "oracle"
+dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+table = "LOGS_C"
+expose_console = true
+lazy_connect = true
+
+[[profiles.log_c.columns]]
+from = "csv"
+name = "ts"
+column = "timestamp"
+type = "timestamp"
+required = true
+
+[[profiles.log_c.columns]]
+from = "csv"
+name = "batch_id"
+column = "batch_id"
+type = "text"
+
+[[profiles.log_c.columns]]
+from = "csv"
+name = "count"
+column = "count"
+type = "int"
+
+[[profiles.log_c.columns]]
+from = "metadata"
+name = "machine_no"
+column = "machine_no"
+type = "text"
+
+# ----------------------------------------------------------------
+# 机台清单：唯一一份 ip ↔ 机台号 对应表
+# 加机台 = 加一行；删机台 = 删一行
+# ----------------------------------------------------------------
+[[machines]]
+ip = "192.168.1.100"
+no = "MT-001"
+
+[[machines]]
+ip = "192.168.1.101"
+no = "MT-002"
+
+[[machines]]
+ip = "192.168.1.102"
+no = "MT-003"
+
+# ----------------------------------------------------------------
+# 格式展开：每种格式 × 每台机台 → 一个源组件
+# {ip} 替换为清单中的 ip；YYYYMM/YYYYMMDD 翻译为实际日期路径
+# ----------------------------------------------------------------
+[[machine_formats]]
+path_template = '\\\\{ip}\logs'
+profiles = ["log_a"]
+id_suffix = "a"
+
+[[machine_formats]]
+path_template = '\\\\{ip}\logs'
+profiles = ["log_b"]
+id_suffix = "b"
+
+[[machine_formats]]
+path_template = '\\\\{ip}\logs'
+profiles = ["log_c"]
+id_suffix = "c"
+
+# ----------------------------------------------------------------
+# 调度：所有机台统一每日采集（按 date_policy 确定目标日期）
+# 不同组需要不同时刻时，加多条 schedules 并给机台打 group 标签
+# ----------------------------------------------------------------
+[[components]]
+id = "scheduler"
+type = "scheduler"
+
+[components.config]
+cron = "23 3 * * *"
+
+# ----------------------------------------------------------------
+# 控制台组件（预设：概览/采集任务/数据源/数据查询/插件 六页）
+# ----------------------------------------------------------------
