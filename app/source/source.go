@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,41 @@ type Source struct {
 
 	hashMu   sync.Mutex
 	lastHash map[string]string
+
+	normOnce sync.Once
+}
+
+// nativeSep 统一路径书写风格。约定：配置值里的反斜杠一律是分隔符（Windows
+// 书写习惯），绝不是 Unix 文件名里的普通字符。组合前先转换为主机原生风格：
+//
+//	Windows 主机：全部转成 \（UNC 前缀 \\ 保留，如 \\host\share\dir）；
+//	Unix 主机：   全部转成 /（\\host\share 变为 //host/share）。
+//
+// 这样同一份配置在任何主机上组合出的路径只含一种分隔符——不会出现
+// \\host\logs/202609 这种混搭（Unix 把 \ 当普通字符，os.Stat 必然失败，
+// 表现为"文件不存在"）。Unix 上 //host/share 本身不可达时，仍由挂载或
+// 软链接决定可达性；分隔符混用这一类错误则被彻底消灭。
+func nativeSep(p string) string {
+	if p == "" || !strings.ContainsRune(p, '\\') {
+		return p
+	}
+	slash := strings.ReplaceAll(p, "\\", "/")
+	if runtime.GOOS == "windows" {
+		return filepath.FromSlash(slash)
+	}
+	return slash
+}
+
+// normalize 把根、glob 与日期模板统一为主机分隔符。Source 的字段可由
+// 组件在 New 之后逐个赋值，因此惰性执行一次即可覆盖所有装配路径；
+// Root() 的消费方（path-metadata 的相对路径推导）也拿到一致的值。
+func (s *Source) normalize() {
+	s.normOnce.Do(func() {
+		s.root = nativeSep(s.root)
+		s.Pattern = nativeSep(s.Pattern)
+		s.DateDirLayout = nativeSep(s.DateDirLayout)
+		s.FilenameDateLayout = nativeSep(s.FilenameDateLayout)
+	})
 }
 
 // Local is an alias kept so application code reads clearly.
@@ -68,8 +104,12 @@ func (s *Source) ID() model.SourceID {
 	return s.SourceID
 }
 
-// Root returns the configured source root (ordinary path value; UNC included).
-func (s *Source) Root() string { return s.root }
+// Root returns the configured source root (ordinary path value; UNC included),
+// normalized to the host separator style.
+func (s *Source) Root() string {
+	s.normalize()
+	return s.root
+}
 
 func (s *Source) now() time.Time {
 	if s.Now != nil {
@@ -82,6 +122,7 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.normalize()
 	if !s.ContentDetect && !s.Flat && s.Pattern == "" {
 		s.Pattern = "*.csv"
 	}
