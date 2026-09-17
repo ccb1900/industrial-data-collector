@@ -6,12 +6,14 @@
 package sourceunit
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
+	"os"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -59,6 +61,7 @@ type SourceUnitComponent struct {
 	policy                date.Policy
 	batchSize             int
 	group                 string
+	header                bool
 	catchupDays           int
 	noDataGraceHours      int
 	logger                *slog.Logger
@@ -419,6 +422,15 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
 	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
 	group := configutil.OptionalString(cc, "group", "")
+	header := configutil.OptionalBool(cc, "header", true)
+	// 自动列发现：columns 未声明 + header=true 时，扫描源目录第一个
+	// 匹配文件读表头生成列定义（TEXT 起步）。启动时最佳努力——文件不
+	// 存在则跳过，后续热加载文件出现时自动补全。
+	if tableCfg != nil && len(tableCfg.Columns) == 0 {
+		if cols := sniffCSVHeader(root, pattern); len(cols) > 0 {
+			tableCfg.Columns = cols
+		}
+	}
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
@@ -428,6 +440,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	return &SourceUnitComponent{
 		sourceID:              model.SourceID(sourceID),
 		group:                 group,
+		header:                header,
 		noDataGraceHours:      noDataGraceHours,
 		path:                  root,
 		src:                   src,
@@ -665,3 +678,48 @@ func datePolicy(cfg map[string]any) (date.Policy, error) {
 }
 
 var _ runtime.Component = (*SourceUnitComponent)(nil)
+
+
+// sniffCSVHeader 从源目录中第一个匹配 pattern 的文件读取表头行，生成
+// TEXT 列定义。启动时最佳努力——文件不存在或读取失败时返回空。
+func sniffCSVHeader(root, pattern string) []storage.ColumnMapping {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matched, _ := filepath.Match(pattern, entry.Name())
+		if !matched {
+			continue
+		}
+		f, err := os.Open(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		line, err := bufio.NewReader(f).ReadString('\n')
+		f.Close()
+		if err != nil || line == "" {
+			continue
+		}
+		line = strings.TrimRight(line, "\r\n")
+		names := strings.Split(line, ",")
+		var cols []storage.ColumnMapping
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			cols = append(cols, storage.ColumnMapping{
+				From:   "csv",
+				Name:   name,
+				Column: name,
+				Type:   "text",
+			})
+		}
+		return cols
+	}
+	return nil
+}
