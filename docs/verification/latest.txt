@@ -1,0 +1,155 @@
+== CLI 标志 ==
+PASS  web-ui -config
+PASS  web-ui -addr
+PASS  web-ui -dump-config
+PASS  web-ui -patch
+PASS  csv-collector -once
+PASS  csv-collector -dump-config
+PASS  csv-collector -patch
+PASS  web-ui 启动补采
+== hub 查询（consolebridge 注册）==
+PASS  hub 查询 sources
+PASS  hub 查询 collections
+PASS  hub 查询 collection
+PASS  hub 查询 files
+PASS  hub 查询 failures
+PASS  hub 查询 observations
+PASS  hub 查询 schedule
+PASS  hub 查询 plan
+PASS  hub 查询 effective-config
+PASS  hub 查询 logs（框架注册）
+PASS  hub 命令 trigger
+== 进程外插件 demo 契约 ==
+PASS  proc 方法 alarms
+PASS  proc 方法 alarm-stats
+PASS  proc 方法 ack-alarm
+PASS  manifest backend
+PASS  manifest client
+== webui 端点 ==
+PASS  端点 /api/ui/pages
+PASS  端点 /api/ui/panels
+PASS  端点 /api/ui/client-modules
+PASS  端点 /api/plugins/control
+PASS  端点 /api/plugins/install
+PASS  端点 /api/plugins/removed
+PASS  端点 /api/plugins/uninstall
+PASS  端点 /api/meta
+PASS  端点 /api/fleet
+PASS  端点 /api/stream
+PASS  GET /api/query/<名>
+PASS  POST /api/command/<名>
+PASS  同源挂载 /client-modules/
+== 状态集 ==
+PASS  状态 Pending
+PASS  状态 Running
+PASS  状态 Succeeded
+PASS  状态 Failed
+PASS  状态 Skipped
+PASS  UI 词：等待数据
+PASS  UI 词：无数据
+PASS  UI 词：成功
+== 日期策略与采集模式 ==
+PASS  date_policy yesterday
+PASS  date_policy today
+PASS  date_policy specific
+PASS  collection_mode batch
+PASS  collection_mode append
+== source-unit 配置键 ==
+PASS  配置键 source_id
+PASS  配置键 path
+PASS  配置键 pattern
+PASS  配置键 detect_content
+PASS  配置键 encoding
+PASS  配置键 header
+PASS  配置键 delimiter
+PASS  配置键 skip_lines
+PASS  配置键 date_policy
+PASS  配置键 specific_date
+PASS  配置键 catchup_days
+PASS  配置键 batch_size
+PASS  配置键 collection_mode
+PASS  配置键 file_stable_window_seconds
+PASS  配置键 dedupe_content_hash
+PASS  配置键 state_type
+PASS  配置键 state_dir
+PASS  配置键 storage
+PASS  配置键 sink
+PASS  配置键 driver
+PASS  配置键 dsn
+PASS  配置键 table
+PASS  配置键 file_table
+PASS  配置键 expose_console
+PASS  配置键 lazy_connect
+PASS  配置键 metadata_source
+PASS  配置键 layout
+PASS  配置键 no_data_grace_hours
+PASS  脱敏哨兵
+PASS  explorer 投影脱敏
+== 组件类型（manifest 自描述）==
+PASS  components/source/manifest.toml
+PASS  components/parser/manifest.toml
+PASS  components/watchtrigger/manifest.toml
+PASS  components/storage/manifest.toml
+PASS  components/state/manifest.toml
+PASS  components/scheduler/manifest.toml
+PASS  components/collector/manifest.toml
+PASS  components/metadata/manifest.toml
+PASS  components/query/manifest.toml
+PASS  components/ui-contrib/manifest.toml
+PASS  components/consolebridge/manifest.toml
+PASS  components/sourceunit/manifest.toml
+PASS  components/config/manifest.toml
+PASS  manifest 类型总数 = 27（实际 27）
+PASS  pluginmeta 聚合存在
+PASS  validate 聚合引用
+== 页面与面板（collector-console 预设）==
+PASS  页面 overview
+PASS  页面 collections
+PASS  页面 sources
+PASS  页面 data
+PASS  无独立文件页（主从合并）
+PASS  面板 logs
+PASS  面板 event-feed
+PASS  面板 failures
+PASS  面板 collection-detail
+PASS  详情面板绑定 collections
+PASS  页面图标声明
+== 目录与脚本 ==
+PASS  路径 configs/desktop.toml
+PASS  路径 configs/example.toml
+PASS  路径 configs/windows-task.toml
+PASS  路径 data/production
+PASS  路径 data/quality
+PASS  路径 plugins/alarm-demo/manifest.toml
+PASS  路径 plugins/alarm-demo/main.go
+PASS  路径 plugins/alarm-demo/src/ui.tsx
+PASS  路径 scripts/build-console.sh
+PASS  路径 scripts/install-plugin.sh
+PASS  路径 docs/用户指南.md
+PASS  路径 docs/开发者指南.md
+PASS  补丁文件格式 version
+== go-cordis 框架扩展与设施 ==
+PASS  go-cordis extensions/broker
+PASS  go-cordis extensions/bundle
+PASS  go-cordis extensions/config
+PASS  go-cordis extensions/configwatch
+PASS  go-cordis extensions/console
+PASS  go-cordis extensions/event
+PASS  go-cordis extensions/hmr
+PASS  go-cordis extensions/loader
+PASS  go-cordis extensions/observe
+PASS  go-cordis extensions/patch
+PASS  go-cordis extensions/registry
+PASS  go-cordis extensions/scheduler
+PASS  go-cordis extensions/watch
+PASS  logstore 扩展
+PASS  procplugin 扩展
+PASS  plugin-kit
+PASS  ComposeDocument
+PASS  patch.ApplyPatches
+PASS  渲染器注册表
+PASS  投影 seam
+PASS  客户端模块加载
+
+结果: PASS=141 FAIL=0
+文档与代码一致 ✔

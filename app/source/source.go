@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,12 @@ type Source struct {
 	Hash          bool
 	StableWindow  time.Duration
 	Now           func() time.Time
+	// DateDirLayout 非空时，日期子目录按该 Go 布局格式化（如 200601 →
+	// …/202609/），替代默认的 yyyy-mm-dd 目录。
+	DateDirLayout string
+	// FilenameDateLayout 非空时，文件名即日期模板（如 a_20060102.log →
+	// a_20260908.log）：按模板直接定位该业务日期的单个文件，替代目录遍历。
+	FilenameDateLayout string
 
 	hashMu   sync.Mutex
 	lastHash map[string]string
@@ -81,7 +88,10 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if s.Flat {
 		return s.listFlat(ctx)
 	}
-	dir := filepath.Join(s.root, req.Date.String())
+	if s.FilenameDateLayout != "" {
+		return s.listDatedFilename(ctx, req.Date)
+	}
+	dir := s.dateDir(req.Date)
 	// Discovery is recursive below the date directory so nested business
 	// layouts (line-A/station-03/... under <root>/<date>) are found. With a
 	// pattern the glob applies to each file's base name; with content
@@ -89,6 +99,7 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	// decide, so exports without the expected extension are still collected.
 	now := s.now()
 	var out []model.FileIdentity
+	unstable := 0
 	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return errs.ClassifySourceError(path, err)
@@ -111,8 +122,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 		}
 		if s.StableWindow > 0 {
 			// A file whose mtime is younger than the stable window may still be
-			// open for writing; it is intentionally not discovered yet.
+			// open for writing; it is intentionally not discovered yet — but
+			// the attempt is counted: if EVERY candidate was unstable the
+			// caller must see "not ready" (Pending), never an empty success.
 			if now.Sub(info.ModTime()) < s.StableWindow {
+				unstable++
 				return nil
 			}
 		}
@@ -139,6 +153,11 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if walkErr != nil {
 		return nil, walkErr
 	}
+	// 全部候选都在稳定窗口内：这不是"无文件"（那会终态化日期），
+	// 而是"还没准备好"——以不稳定错误让执行器保持 Pending。
+	if len(out) == 0 && unstable > 0 {
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "%d file(s) inside the stable window", unstable)
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
@@ -146,6 +165,66 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 // listFlat discovers the single file this source is pinned to. Date policy
 // and directories do not apply: the path is the whole world. When Hash is
 // set, unchanged content is not re-emitted.
+// goLayout 把声明层的中性日期词表（YYYY/MM/DD）翻译为 Go 时间布局。
+// 只识别这三个记号，其余字符原样保留（如 "a_YYYYMMDD.log"）。
+func goLayout(pattern string) string {
+	r := strings.NewReplacer("YYYY", "2006", "MM", "01", "DD", "02")
+	return r.Replace(pattern)
+}
+
+// dateDir 解析该业务日期的数据目录：默认 <root>/<yyyy-mm-dd>；
+// 配置 DateDirLayout 后按布局格式化（如 200601 → …/202609/）。
+func (s *Source) dateDir(date model.CollectionDate) string {
+	if s.DateDirLayout != "" {
+		return filepath.Join(s.root, date.Time().Format(goLayout(s.DateDirLayout)))
+	}
+	return filepath.Join(s.root, date.String())
+}
+
+// listDatedFilename 处理"文件名内嵌日期"的布局：文件名本身是日期模板
+// （如 a_20060102.log → a_20260908.log），按模板直接定位该业务日期的
+// 单个文件。缺失走既有分类（过期日→无数据、当天→等待数据）；文件仍在
+// 写入时按稳定窗口等待。
+func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDate) ([]model.FileIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	name := date.Time().Format(goLayout(s.FilenameDateLayout))
+	path := filepath.Join(s.dateDir(date), name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, errs.ClassifySourceError(path, err)
+	}
+	if info.IsDir() {
+		return nil, errs.Sourcef(errs.ErrNotFound, "dated filename %q is a directory", path)
+	}
+	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q is still being written", path)
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		return nil, errs.ClassifySourceError(path, err)
+	}
+	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
+		return nil, nil // changing between stats; wait for a later trigger
+	}
+	file := model.FileIdentity{
+		SourceID: s.ID(),
+		Path:     path,
+		Name:     name,
+		Size:     info2.Size(),
+		ModTime:  info2.ModTime(),
+	}
+	if s.Hash {
+		sum, err := fileSHA256(path)
+		if err != nil {
+			return nil, err
+		}
+		file.Hash = sum
+	}
+	return []model.FileIdentity{file}, nil
+}
+
 func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -158,7 +237,9 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 		return nil, errs.Sourcef(errs.ErrNotFound, "flat source %q is a directory", s.root)
 	}
 	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
-		return nil, nil // still being written; wait for a later trigger
+		// 仍在写入：显式不稳定错误，让执行器保持 Pending 等待——
+		// 折叠成"空文件成功"会把该日期终态化，晚到文件永远丢失。
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q is still being written", s.root)
 	}
 	info2, err := os.Stat(s.root)
 	if err != nil {

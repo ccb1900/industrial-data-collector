@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	consolehost "dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/hub"
 
+	logstore "dynamic-runtime/extensions/console/logstore"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
 	"gocordis-csv-collector/app/model"
@@ -30,7 +32,6 @@ import (
 	queryplugin "gocordis-csv-collector/components/query"
 	schedulerplugin "gocordis-csv-collector/components/scheduler"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
-	"gocordis-csv-collector/internal/logstore"
 	"gocordis-csv-collector/internal/obsjournal"
 )
 
@@ -74,7 +75,6 @@ func (c *Component) Inject() []runtime.Dependency {
 		runtime.Requires(queryplugin.FileQueryKey),
 		runtime.Requires(queryplugin.FailureQueryKey),
 		runtime.Requires(queryplugin.ObservationKey),
-		runtime.Requires(queryplugin.CommandKey),
 		runtime.Requires(schedulerplugin.CollectionTriggerKey),
 	}
 }
@@ -105,10 +105,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	command, err := runtime.Require(ctx, queryplugin.CommandKey)
-	if err != nil {
-		return nil, err
-	}
+
 	sched, err := runtime.Require(ctx, schedulerplugin.CollectionTriggerKey)
 	if err != nil {
 		return nil, err
@@ -262,9 +259,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					SourceID string `json:"sourceId"`
 					Date     string `json:"date"`
 					Reason   string `json:"reason"`
+					Group    string `json:"group"`
 				}
 				if err := json.Unmarshal(body, &ui); err == nil {
 					req.SourceID = model.SourceID(ui.SourceID)
+					req.Group = ui.Group
 					if ui.Reason != "" {
 						req.Reason = ui.Reason
 					}
@@ -277,21 +276,24 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					}
 				}
 			}
-			return event.Serial(ctx, c.emitCtx, events.CollectionRequested, req)
+			// 异步化：入队即返回（进度经观察流跟进），避免大窗口采集
+			// 把 HTTP 请求挂到分钟级。激活上下文保证进程内生命周期。
+			base := c.emitCtx.Context()
+			go func() {
+				if err := event.Serial(base, c.emitCtx, events.CollectionRequested, req); err != nil {
+					slog.Warn("trigger rejected", "error", err.Error())
+				}
+			}()
+			return nil
 		})
 	}); err != nil {
 		return nil, err
 	}
 
-	// Named query "logs": the structured application log ring.
+	// Named query "logs": the structured application log ring (framework
+	// logstore provides the ring, the handler and the query contract).
 	if err := register(func() (func() error, error) {
-		return hubRegistry.RegisterQuery("logs", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
-			limit, _ := strconv.Atoi(params.Get("limit"))
-			if limit <= 0 {
-				limit = 200
-			}
-			return logstore.Default().Latest(limit, params.Get("level"), params.Get("contains")), nil
-		})
+		return logstore.RegisterLogsQuery(hubRegistry, logstore.Default())
 	}); err != nil {
 		return nil, err
 	}
@@ -316,7 +318,6 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	cleanups = append(cleanups, unsubObs)
-	_ = command
 
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {

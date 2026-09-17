@@ -23,13 +23,21 @@ type Config struct {
 	// Zero keeps the previous behavior: gaps are synthesized only from the
 	// last succeeded business date.
 	CatchupDays int
-	Now         func() time.Time
-	Logger      *slog.Logger
+	// NoDataGraceHours bounds how long after a business day ends a missing
+	// source directory is still treated as Pending (the data may arrive
+	// late). Beyond the grace the day closes as terminal Skipped (无数据).
+	// Zero/negative applies the default (6 hours).
+	NoDataGraceHours int
+	Now              func() time.Time
+	Logger           *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 1000
+	}
+	if c.NoDataGraceHours <= 0 {
+		c.NoDataGraceHours = 6
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -138,6 +146,17 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			// terminal Skipped instead of waiting forever.
 			today := model.NewCollectionDate(started)
 			if key.Date.Before(today) {
+				// 宽限期：业务日刚结束时目录可能仍在晚到（落盘延迟、
+				// 稳定窗口跨午夜），宽限小时内保持 Pending。
+				graceEnd := key.Date.Time().AddDate(0, 0, 1).
+					Add(time.Duration(cfg.NoDataGraceHours) * time.Hour)
+				if !started.After(graceEnd) {
+					result.Status = model.StatusPending
+					result.Error = fmt.Sprintf("date directory not available (within grace): %v", err)
+					_ = e.State.End(ctx, key, model.StatusPending, result.Error)
+					cfg.Logger.Warn("date directory absent; pending within grace", "key", key.String())
+					return result
+				}
 				result.Status = model.StatusSkipped
 				result.Error = fmt.Sprintf("date directory does not exist (day has passed): %v", err)
 				_ = e.State.End(ctx, key, model.StatusSkipped, result.Error)
@@ -150,6 +169,15 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			result.Error = fmt.Sprintf("date directory not available: %v", err)
 			_ = e.State.End(ctx, key, model.StatusPending, result.Error)
 			cfg.Logger.Warn("date directory not found; left pending for retry", "key", key.String(), "error", result.Error)
+			return result
+		}
+		if errs.Is(err, errs.ErrFileUnstable) {
+			// 候选文件都在稳定窗口内：不是空，是"还没准备好"——
+			// 保持 Pending 重试；终态化会把晚到文件永久丢失。
+			result.Status = model.StatusPending
+			result.Error = fmt.Sprintf("files inside stable window: %v", err)
+			_ = e.State.End(ctx, key, model.StatusPending, result.Error)
+			cfg.Logger.Warn("files unstable; pending for retry", "key", key.String())
 			return result
 		}
 		result.Status = model.StatusFailed

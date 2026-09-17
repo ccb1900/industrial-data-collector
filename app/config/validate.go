@@ -1,6 +1,7 @@
 package config
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/robfig/cron/v3"
@@ -49,6 +50,9 @@ func Validate(cfg extconfig.Config) error {
 		ti, ok := knownTypes()[cc.Type]
 		if !ok {
 			return fmt.Errorf("unknown component type %q", cc.Type)
+		}
+		if err := validateSQLDriver(cc); err != nil {
+			return err
 		}
 		if err := validateOne(cfg, cc, ti); err != nil {
 			return err
@@ -221,9 +225,35 @@ func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginme
 			return fmt.Errorf("file-state %q missing path", cc.ID)
 		}
 	case "scheduler":
+		// 多条目 [[schedules]]：每条独立时间线（cron 或 daily+time），
+		// 各带可选 group（机台组定向触发）。旧单键 cron/schedule/time
+		// 等价于一条无组条目。
+		if rows, ok := cc.Config["schedules"].([]any); ok && len(rows) > 0 {
+			if cc.Config["cron"] != nil || cc.Config["schedule"] != nil || cc.Config["time"] != nil {
+				return fmt.Errorf("scheduler %q: schedules 与 cron/schedule/time 不可混用", cc.ID)
+			}
+			for i, r := range rows {
+				m, ok := r.(map[string]any)
+				if !ok {
+					return fmt.Errorf("scheduler %q: schedules #%d must be a table", cc.ID, i)
+				}
+				if cronExpr := str(m, "cron"); cronExpr != "" {
+					if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(cronExpr); err != nil {
+						return fmt.Errorf("scheduler %q: schedules #%d: invalid cron expression %q: %v", cc.ID, i, cronExpr, err)
+					}
+					continue
+				}
+				clock := str(m, "time")
+				if clock == "" {
+					clock = "02:00"
+				}
+				if _, err := parseClock(clock); err != nil {
+					return fmt.Errorf("scheduler %q: schedules #%d: %w", cc.ID, i, err)
+				}
+			}
+			return nil
+		}
 		if cronExpr := str(cc.Config, "cron"); cronExpr != "" {
-			// cron 表达式接管时间线（与插件工厂同一解析规则，键必为
-			// 五段式 分 时 日 月 周）；schedule/time 此时不再生效。
 			if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(cronExpr); err != nil {
 				return fmt.Errorf("scheduler %q: invalid cron expression %q: %v", cc.ID, cronExpr, err)
 			}
@@ -559,4 +589,40 @@ func ConsoleCritical(typ string) bool {
 
 func AllowedSourceType(typ string) bool {
 	return typ == "local-file-source" || typ == "unc-file-source"
+}
+
+// sqlDriverByType: 每个 SQL 存储类型期望的 database/sql 驱动名（与
+// components/storage 的驱动注册一致）。mysql/postgres 需要在构建时引入
+// 对应驱动包；oracle/sqlite 已内建。
+var sqlDriverByType = map[string]string{
+	"mysql-storage":      "mysql",
+	"postgresql-storage": "pgx",
+	"oracle-storage":     "oracle",
+	"sqlite-storage":     "sqlite",
+}
+
+// validateSQLDriver 把"驱动未注册"的失败从运行时首次写库提前到配置校验：
+// 驱动通过 blank import 注册进二进制，校验只查注册表，不发起连接。
+func validateSQLDriver(cc extconfig.ComponentConfig) error {
+	want, ok := sqlDriverByType[cc.Type]
+	if !ok {
+		// source-unit 行：入库驱动随 sink 画像合并在源配置里。
+		if cc.Type != "csv-source-unit" {
+			return nil
+		}
+		want = ""
+	}
+	driver := want
+	if raw, ok := cc.Config["driver"].(string); ok && raw != "" {
+		driver = raw
+	}
+	if driver == "" {
+		return nil
+	}
+	for _, registered := range sql.Drivers() {
+		if registered == driver {
+			return nil
+		}
+	}
+	return fmt.Errorf("component %q: SQL driver %q is not registered in this binary — import the driver package at build time (e.g. mysql-storage 需引入 github.com/go-sql-driver/mysql)", cc.ID, driver)
 }

@@ -59,11 +59,13 @@ func TestStableWindowSkipsNewFile(t *testing.T) {
 	s := New("prod", root, "*.csv", 30*time.Second)
 	s.Now = func() time.Time { return now }
 	files, err := s.List(context.Background(), model.ListRequest{SourceID: "prod", Date: mustDate(t, "2026-09-06")})
-	if err != nil {
-		t.Fatal(err)
+	// 不稳定文件不再是"空列表成功"——那会把日期终态化成成功-0，
+	// 晚到数据永久丢失；显式 ErrFileUnstable 让执行器保持 Pending。
+	if !errs.Is(err, errs.ErrFileUnstable) {
+		t.Fatalf("err = %v, want ErrFileUnstable", err)
 	}
-	if len(files) != 0 {
-		t.Fatalf("new file should be filtered: %#v", files)
+	if files != nil {
+		t.Fatalf("unstable list must be nil: %#v", files)
 	}
 }
 
@@ -149,10 +151,10 @@ func TestListRecursiveRespectsStableWindowAndPattern(t *testing.T) {
 	s := New("prod", root, "*.csv", 30*time.Second)
 	s.Now = func() time.Time { return now }
 	files, err := s.List(context.Background(), model.ListRequest{SourceID: "prod", Date: mustDate(t, "2026-09-06")})
-	if err != nil {
-		t.Fatal(err)
+	if !errs.Is(err, errs.ErrFileUnstable) {
+		t.Fatalf("err = %v, want ErrFileUnstable", err)
 	}
-	if len(files) != 0 {
-		t.Fatalf("fresh nested file must be filtered: %#v", files)
+	if files != nil {
+		t.Fatalf("unstable list must be nil: %#v", files)
 	}
 }

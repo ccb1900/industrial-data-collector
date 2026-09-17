@@ -197,6 +197,31 @@ func TestUnreachableShareStaysFailedAndRetried(t *testing.T) {
 	}
 }
 
+// 不稳定（稳定窗口内）≠ 空：执行器必须保持 Pending 重试，
+// 绝不能折叠成"成功-0 文件"把日期终态化（晚到文件会永久丢失）。
+func TestUnstableFilesStayPending(t *testing.T) {
+	root := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	e.Config.NoDataGraceHours = 6
+	// 文件写入后立刻采集：mtime 在稳定窗口内。
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
+	// 源的稳定窗口 30s：文件刚写入，List 报 ErrFileUnstable。
+	src := e.Source.(*source.Source)
+	src.StableWindow = 30 * time.Second
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusPending {
+		t.Fatalf("result = %#v, want Pending", res)
+	}
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 1 {
+		t.Fatal("unstable date must stay listed for recovery")
+	}
+}
+
 func TestCollectorStorageFailureIsolation(t *testing.T) {
 	root := t.TempDir()
 	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n2,b\n")

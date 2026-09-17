@@ -31,6 +31,7 @@ import (
 	"gocordis-csv-collector/app/storage"
 	"gocordis-csv-collector/components/internal/configutil"
 	"gocordis-csv-collector/components/internal/outcome"
+	metadataplugin "gocordis-csv-collector/components/metadata"
 	storageplugin "gocordis-csv-collector/components/storage"
 )
 
@@ -44,20 +45,23 @@ type SourceUnitComponent struct {
 	sourceID model.SourceID
 	path     string
 
-	src               *source.Source
-	parser            model.CSVParser
-	staticMetadata    model.Metadata
-	metadataExtractor model.MetadataExtractor
-	stateSvc          model.CollectionState
-	memState          bool
-	mem               *storage.MemoryStore
-	sqlCfg            *storage.SQLConfig
-	tableCfg          *storage.TableConfig
-	lazyConnect       bool
-	policy            date.Policy
-	batchSize         int
-	catchupDays       int
-	logger            *slog.Logger
+	src                   *source.Source
+	parser                model.CSVParser
+	staticMetadata        model.Metadata
+	metadataExtractor     model.MetadataExtractor
+	metadataFromComponent bool
+	stateSvc              model.CollectionState
+	memState              bool
+	mem                   *storage.MemoryStore
+	sqlCfg                *storage.SQLConfig
+	tableCfg              *storage.TableConfig
+	lazyConnect           bool
+	policy                date.Policy
+	batchSize             int
+	group                 string
+	catchupDays           int
+	noDataGraceHours      int
+	logger                *slog.Logger
 
 	emitCtx *runtime.Context
 }
@@ -68,8 +72,13 @@ type job struct {
 	done chan error
 }
 
-func (c *SourceUnitComponent) Name() string                  { return "source-unit:" + string(c.sourceID) }
-func (c *SourceUnitComponent) Inject() []runtime.Dependency  { return nil }
+func (c *SourceUnitComponent) Name() string { return "source-unit:" + string(c.sourceID) }
+func (c *SourceUnitComponent) Inject() []runtime.Dependency {
+	if c.metadataFromComponent {
+		return []runtime.Dependency{runtime.Requires(metadataplugin.Key)}
+	}
+	return nil
+}
 func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 
 // SourceID returns the logical Source identity. It is independent from path
@@ -130,6 +139,14 @@ func (c *SourceUnitComponent) Projection() query.UnitState {
 
 // Apply starts one worker/event-handler activation for this Source.
 func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	// component 装配：提取器来自 path-metadata 组件的 capability。
+	if c.metadataFromComponent {
+		extractorSvc, err := runtime.Require(ctx, metadataplugin.Key)
+		if err != nil {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata component required but not active: %w", c.sourceID, err)
+		}
+		c.metadataExtractor = extractorSvc
+	}
 	store := model.Storage(c.mem)
 	var closeStore func() error
 	switch {
@@ -204,10 +221,11 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:   c.batchSize,
-			DatePolicy:  c.policy,
-			CatchupDays: c.catchupDays,
-			Logger:      c.logger,
+			BatchSize:        c.batchSize,
+			DatePolicy:       c.policy,
+			CatchupDays:      c.catchupDays,
+			NoDataGraceHours: c.noDataGraceHours,
+			Logger:           c.logger,
 		},
 	}
 	c.emitCtx = ctx
@@ -227,6 +245,10 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		return nil, err
 	}
 	err := runtime.On(ctx, events.CollectionRequested, func(dctx context.Context, req model.CollectionRequested) error {
+		// 组过滤：调度/手动请求携带 group 时，只响应同组源（空 = 广播）。
+		if req.Group != "" && req.Group != c.group {
+			return nil
+		}
 		if req.SourceID != "" && req.SourceID != c.sourceID {
 			return nil // a different Source owns this request
 		}
@@ -323,6 +345,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		src = source.New(sourceID, root, pattern,
 			time.Duration(configutil.OptionalInt(cc, "file_stable_window_seconds", 30))*time.Second)
 		src.ContentDetect = detectContent
+		// 日期路由：日期子目录与文件名均可自定义布局（如月份目录
+		// 202609 + 文件名内嵌日期 a_20260908.log）。
+		src.DateDirLayout = configutil.OptionalString(cc, "date_dir_layout", "")
+		src.FilenameDateLayout = configutil.OptionalString(cc, "filename_date_layout", "")
 	}
 	src.Encoding = encoding
 
@@ -334,16 +360,29 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if err != nil {
 		return nil, err
 	}
-	rules, err := appmetadata.ParseRules(cc.Config["path_metadata"])
+	// 元数据提取器的两种装配（互斥）：
+	//   inline（默认）—— path_metadata 规则内联在本源配置里；
+	//   component —— 声明消费一个 path-metadata 组件的 MetadataExtractor
+	//                capability（提取器自身成为可替换的 provider）。
+	metadataMode := configutil.OptionalString(cc, "metadata_source", "inline")
+	if metadataMode != "inline" && metadataMode != "component" {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata_source must be inline or component", cc.ID)
+	}
+	var extractor model.MetadataExtractor
+	metadataFromComponent := metadataMode == "component"
+	inlineRules, err := appmetadata.ParseRules(cc.Config["path_metadata"])
 	if err != nil {
 		return nil, err
 	}
-	var extractor model.MetadataExtractor
-	if len(rules) > 0 {
+	if metadataFromComponent {
+		if len(inlineRules) > 0 {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: metadata_source=component conflicts with inline path_metadata rules", cc.ID)
+		}
+	} else if len(inlineRules) > 0 {
 		ex, err := appmetadata.NewExtractor(appmetadata.SourceRuleSet{
 			SourceID: model.SourceID(sourceID),
 			Root:     root,
-			Rules:    rules,
+			Rules:    inlineRules,
 		})
 		if err != nil {
 			return nil, err
@@ -378,6 +417,8 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
+	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
+	group := configutil.OptionalString(cc, "group", "")
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
@@ -385,22 +426,25 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		logger = slog.Default()
 	}
 	return &SourceUnitComponent{
-		sourceID:          model.SourceID(sourceID),
-		path:              root,
-		src:               src,
-		parser:            parserModel,
-		staticMetadata:    staticMD,
-		metadataExtractor: extractor,
-		stateSvc:          stateSvc,
-		memState:          isMemory,
-		mem:               mem,
-		sqlCfg:            sqlCfg,
-		tableCfg:          tableCfg,
-		lazyConnect:       configutil.OptionalBool(cc, "lazy_connect", false),
-		policy:            policy,
-		batchSize:         batch,
-		catchupDays:       catchup,
-		logger:            logger,
+		sourceID:              model.SourceID(sourceID),
+		group:                 group,
+		noDataGraceHours:      noDataGraceHours,
+		path:                  root,
+		src:                   src,
+		parser:                parserModel,
+		staticMetadata:        staticMD,
+		metadataExtractor:     extractor,
+		metadataFromComponent: metadataFromComponent,
+		stateSvc:              stateSvc,
+		memState:              isMemory,
+		mem:                   mem,
+		sqlCfg:                sqlCfg,
+		tableCfg:              tableCfg,
+		lazyConnect:           configutil.OptionalBool(cc, "lazy_connect", false),
+		policy:                policy,
+		batchSize:             batch,
+		catchupDays:           catchup,
+		logger:                logger,
 	}, nil
 }
 

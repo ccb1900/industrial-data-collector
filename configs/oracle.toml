@@ -1,8 +1,5 @@
-# NOTE: Oracle requires the CGO-based godror driver, which is not part of the
-# default pure-Go build (CGO_ENABLED=0). To use it, register godror in the
-# host binary and build with CGO enabled + an Oracle Instant Client.
-# Pure-Go alternatives: sqlite-storage (edge/single machine) or
-# postgresql-storage (server).
+# NOTE: Oracle 走纯 Go 驱动 go-ora（components/storage/drivers.go 已内建，
+# 无 CGO / 无 Instant Client），替代了早期 CGO godror 方案。
 [[components]]
 id = "production-source"
 type = "local-file-source"
@@ -26,8 +23,8 @@ id = "oracle-storage"
 type = "oracle-storage"
 
 [components.config]
-driver = "godror"
-dsn = "user/password@//127.0.0.1:1521/service"
+driver = "oracle"
+dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
 table = "gocordis_records"
 
 

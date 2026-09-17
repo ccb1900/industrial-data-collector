@@ -100,14 +100,6 @@ func PackageNames() []string {
 	return out
 }
 
-// Reset clears every registration (tests only).
-func Reset() {
-	mu.Lock()
-	defer mu.Unlock()
-	types = map[string]TypeInfo{}
-	packages = nil
-}
-
 // DisplayName returns the human-facing title of one component type.
 func DisplayName(typ string) (string, bool) {
 	mu.RLock()

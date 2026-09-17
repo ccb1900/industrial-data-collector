@@ -1,0 +1,537 @@
+{
+  "collector-console": [
+    {
+      "ID": "ui-page-overview",
+      "Type": "ui-page",
+      "Config": {
+        "actions": [
+          {
+            "command": "trigger",
+            "datePicker": true,
+            "label": "立即采集"
+          }
+        ],
+        "description": "采集运行情况总览：由读模型投影，观察流失效后自动重查。",
+        "icon": "dashboard",
+        "order": 0,
+        "page_id": "overview",
+        "renderer": "views",
+        "route": "/overview",
+        "title": "概览",
+        "views": [
+          {
+            "items": [
+              {
+                "label": "数据源",
+                "op": "count",
+                "query": "sources"
+              },
+              {
+                "label": "采集任务",
+                "op": "count",
+                "query": "collections"
+              },
+              {
+                "field": "records",
+                "label": "累计记录",
+                "op": "sum",
+                "query": "collections"
+              },
+              {
+                "field": "filesFailed",
+                "label": "失败文件",
+                "op": "sum",
+                "query": "collections",
+                "warn": true
+              }
+            ],
+            "kind": "stats"
+          },
+          {
+            "dateKey": "date",
+            "kind": "trend",
+            "query": "collections",
+            "series": [
+              {
+                "key": "records",
+                "label": "采集"
+              },
+              {
+                "key": "filesFailed",
+                "label": "失败"
+              }
+            ],
+            "title": "按日采集量"
+          },
+          {
+            "columns": [
+              {
+                "key": "sourceId",
+                "title": "数据源"
+              },
+              {
+                "key": "date",
+                "title": "采集日期"
+              },
+              {
+                "format": "{filesCompleted}/{filesTotal}",
+                "key": "files",
+                "title": "文件进度"
+              },
+              {
+                "key": "records",
+                "title": "记录数"
+              },
+              {
+                "key": "status",
+                "title": "状态"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 8,
+            "query": "collections"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-page-collections",
+      "Type": "ui-page",
+      "Config": {
+        "actions": [
+          {
+            "command": "trigger",
+            "datePicker": true,
+            "label": "立即采集"
+          }
+        ],
+        "description": "按数据源与采集日期列出任务；点选一行即在下方的文件明细与本侧详情中展示该次采集。",
+        "icon": "profile",
+        "order": 10,
+        "page_id": "collections",
+        "renderer": "views",
+        "route": "/collections",
+        "title": "采集任务",
+        "views": [
+          {
+            "fields": [
+              {
+                "key": "schedule",
+                "label": "调度策略"
+              },
+              {
+                "key": "time",
+                "label": "触发时间"
+              },
+              {
+                "key": "cron",
+                "label": "Cron 表达式"
+              },
+              {
+                "key": "last",
+                "label": "上次触发"
+              },
+              {
+                "key": "next",
+                "label": "下次触发"
+              }
+            ],
+            "kind": "kv",
+            "query": "schedule"
+          },
+          {
+            "kind": "list",
+            "query": "plan",
+            "rowActions": [
+              {
+                "args": {
+                  "date": "$row.date",
+                  "sourceId": "$row.sourceId"
+                },
+                "command": "trigger",
+                "label": "采集"
+              }
+            ],
+            "titleKey": "sourceId"
+          },
+          {
+            "columns": [
+              {
+                "key": "sourceId",
+                "title": "数据源"
+              },
+              {
+                "key": "date",
+                "title": "采集日期"
+              },
+              {
+                "format": "{filesCompleted}/{filesTotal}",
+                "key": "files",
+                "title": "文件进度"
+              },
+              {
+                "key": "records",
+                "title": "记录数"
+              },
+              {
+                "key": "status",
+                "title": "状态"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 10,
+            "query": "collections",
+            "selectFocus": true
+          },
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "文件"
+              },
+              {
+                "key": "path",
+                "title": "路径"
+              },
+              {
+                "key": "records",
+                "title": "记录数"
+              },
+              {
+                "key": "status",
+                "title": "状态"
+              }
+            ],
+            "expand": "metadata",
+            "kind": "table",
+            "pageSize": 20,
+            "params": {
+              "date": "$focus.date",
+              "sourceId": "$focus.sourceId"
+            },
+            "query": "files",
+            "title": "文件明细"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-page-sources",
+      "Type": "ui-page",
+      "Config": {
+        "description": "由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。",
+        "icon": "api",
+        "order": 30,
+        "page_id": "sources",
+        "renderer": "views",
+        "route": "/sources",
+        "title": "数据源",
+        "views": [
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "数据源"
+              },
+              {
+                "key": "path",
+                "title": "路径"
+              },
+              {
+                "key": "status",
+                "title": "状态"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 20,
+            "query": "sources",
+            "rowActions": [
+              {
+                "args": {
+                  "sourceId": "$row.sourceId"
+                },
+                "command": "trigger",
+                "label": "采集"
+              }
+            ]
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-page-data",
+      "Type": "ui-page",
+      "Config": {
+        "description": "类型化入库数据的分页查询与存储洞察。",
+        "icon": "search",
+        "order": 35,
+        "page_id": "data",
+        "renderer": "views",
+        "route": "/data",
+        "title": "数据查询",
+        "views": [
+          {
+            "columns": [
+              {
+                "key": "collection_date",
+                "title": "采集日"
+              },
+              {
+                "key": "row_number",
+                "title": "行号"
+              },
+              {
+                "key": "ts",
+                "title": "时间"
+              },
+              {
+                "key": "temperature",
+                "title": "温度"
+              },
+              {
+                "key": "unit",
+                "title": "单位"
+              },
+              {
+                "key": "product",
+                "title": "产品"
+              }
+            ],
+            "filters": [
+              {
+                "key": "sourceId",
+                "label": "数据源",
+                "optionKey": "id",
+                "optionLabel": "name",
+                "optionsQuery": "sources",
+                "required": true
+              },
+              {
+                "default": "$yesterday",
+                "key": "date",
+                "label": "日期",
+                "type": "date"
+              }
+            ],
+            "kind": "query-table",
+            "pageSize": 20,
+            "query": "rows",
+            "title": "记录查询"
+          },
+          {
+            "fields": [
+              {
+                "key": "connected",
+                "label": "连接"
+              },
+              {
+                "key": "readings",
+                "label": "读数行数"
+              },
+              {
+                "key": "source_files",
+                "label": "文件行数"
+              }
+            ],
+            "kind": "kv",
+            "query": "storage",
+            "title": "存储洞察"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-panel-logs",
+      "Type": "ui-panel",
+      "Config": {
+        "order": 25,
+        "pages": [
+          "overview"
+        ],
+        "panel_id": "logs",
+        "position": "bottom",
+        "renderer": "views",
+        "title": "日志",
+        "views": [
+          {
+            "columns": [
+              {
+                "key": "time",
+                "title": "时间"
+              },
+              {
+                "key": "level",
+                "title": "级别"
+              },
+              {
+                "key": "msg",
+                "title": "消息"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 8,
+            "params": {
+              "limit": "100"
+            },
+            "query": "logs"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-panel-event-feed",
+      "Type": "ui-panel",
+      "Config": {
+        "order": 20,
+        "pages": [
+          "overview",
+          "collections"
+        ],
+        "panel_id": "event-feed",
+        "position": "bottom",
+        "renderer": "event-feed",
+        "title": "事件流"
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-panel-failures",
+      "Type": "ui-panel",
+      "Config": {
+        "order": 30,
+        "pages": [
+          "overview",
+          "collections"
+        ],
+        "panel_id": "failures",
+        "position": "bottom",
+        "renderer": "views",
+        "title": "失败账本",
+        "views": [
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "文件"
+              },
+              {
+                "key": "attempts",
+                "title": "次数"
+              },
+              {
+                "key": "error",
+                "title": "错误"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 8,
+            "query": "failures"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-panel-collection-detail",
+      "Type": "ui-panel",
+      "Config": {
+        "order": 10,
+        "pages": [
+          "collections"
+        ],
+        "panel_id": "collection-detail",
+        "position": "right",
+        "renderer": "views",
+        "title": "采集详情",
+        "views": [
+          {
+            "fields": [
+              {
+                "key": "sourceId",
+                "label": "数据源"
+              },
+              {
+                "key": "date",
+                "label": "采集日期"
+              },
+              {
+                "key": "status",
+                "label": "状态"
+              },
+              {
+                "key": "records",
+                "label": "记录数"
+              },
+              {
+                "key": "filesCompleted",
+                "label": "完成文件"
+              },
+              {
+                "key": "filesFailed",
+                "label": "失败文件"
+              }
+            ],
+            "kind": "kv",
+            "params": {
+              "date": "$focus.date",
+              "sourceId": "$focus.sourceId"
+            },
+            "query": "collection"
+          }
+        ]
+      },
+      "Enabled": null
+    }
+  ],
+  "collector-core": [
+    {
+      "ID": "scheduler",
+      "Type": "scheduler",
+      "Config": {
+        "cron": "23 3 * * *"
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "console-bridge",
+      "Type": "console-bridge",
+      "Config": null,
+      "Enabled": null
+    },
+    {
+      "ID": "console-rows",
+      "Type": "console-rows",
+      "Config": null,
+      "Enabled": null
+    },
+    {
+      "ID": "query-provider",
+      "Type": "query-provider",
+      "Config": null,
+      "Enabled": null
+    },
+    {
+      "ID": "ui",
+      "Type": "ui",
+      "Config": null,
+      "Enabled": null
+    },
+    {
+      "ID": "plugin-explorer",
+      "Type": "plugin-explorer",
+      "Config": {
+        "icon": "block",
+        "order": 40,
+        "page_id": "plugins",
+        "route": "/plugins",
+        "title": "插件"
+      },
+      "Enabled": null
+    }
+  ]
+}

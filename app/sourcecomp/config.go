@@ -93,7 +93,7 @@ func NewSourcesLayer() *SourcesLayer { return &SourcesLayer{} }
 func (l *SourcesLayer) Layer() configwatch.Layer {
 	return configwatch.Layer{
 		Name:         "sources",
-		ConsumedKeys: []string{"profiles", "sources", "source"},
+		ConsumedKeys: []string{"profiles", "sources", "source", "machines", "machine_formats"},
 		Expand:       l.expand,
 		PostMerge:    l.postMerge,
 	}
@@ -113,6 +113,20 @@ func (l *SourcesLayer) expand(_ context.Context, doc map[string]any) ([]extconfi
 		return nil, err
 	}
 	compDefs = append(compDefs, legacy...)
+	// 机台清单展开：每机台 × 每格式一个源，机台号注入静态元数据。
+	machines, err := parseMachineEntries(doc["machines"])
+	if err != nil {
+		return nil, err
+	}
+	groups, err := parseMachineFormats(doc["machine_formats"])
+	if err != nil {
+		return nil, err
+	}
+	machineDefs, err := expandMachineList(groups, machines)
+	if err != nil {
+		return nil, err
+	}
+	compDefs = append(compDefs, machineDefs...)
 
 	resolver, err := NewResolver(profiles)
 	if err != nil {

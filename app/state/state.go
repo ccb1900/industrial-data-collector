@@ -124,7 +124,22 @@ func (s *MemoryState) End(ctx context.Context, key model.CollectionKey, status m
 	rec.Note = note
 	rec.EndedAt = s.nowTime()
 	s.collections[ck] = rec
+	// 保留策略：Skipped（无数据）行是检查证据，保留 90 天后清理，
+	// 防止台账随"每天一条"无界增长。Succeeded/Failed 是完整历史，不清理。
+	s.pruneSkippedLocked(rec.EndedAt)
 	return nil
+}
+
+// skippedRetentionDays：无数据行的保留天数。
+const skippedRetentionDays = 90
+
+func (s *MemoryState) pruneSkippedLocked(now time.Time) {
+	cutoff := now.AddDate(0, 0, -skippedRetentionDays)
+	for k, rec := range s.collections {
+		if rec.Status == model.StatusSkipped && !rec.EndedAt.IsZero() && rec.EndedAt.Before(cutoff) {
+			delete(s.collections, k)
+		}
+	}
 }
 
 func (s *MemoryState) FileCompleted(ctx context.Context, key model.CollectionKey, file model.FileIdentity) (bool, error) {

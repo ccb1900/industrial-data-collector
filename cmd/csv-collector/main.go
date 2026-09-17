@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	logstore "dynamic-runtime/extensions/console/logstore"
 	"flag"
 	"fmt"
-	"gocordis-csv-collector/internal/logstore"
 	"log/slog"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 	"os"
@@ -15,6 +15,7 @@ import (
 	procplugin "dynamic-runtime/extensions/console/procplugin"
 
 	"gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
 )
@@ -26,6 +27,15 @@ func main() {
 	var patches multiFlag
 	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
+	if !*dumpConfig {
+		// 单实例守卫：state/ 只允许一个采集/控制台进程。
+		releaseLock, err := applock.Acquire("state")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "csv-collector:", err)
+			os.Exit(1)
+		}
+		defer releaseLock()
+	}
 	logStore := logstore.Default()
 	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
 	logger := slog.New(logStore.NewHandler(os.Stderr))
