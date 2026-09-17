@@ -32,4 +32,7 @@ require (
 	modernc.org/memory v1.8.0 // indirect
 )
 
-replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20260914234604-d81365c03639
+<<<<<<< HEAD
+replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20260917032048-0d323b5c63c3
+=======
+>>>>>>> ace8ed1 (chore: bump go-cordis dep for procplugin tolerance + observe race fix)
