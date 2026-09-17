@@ -10,10 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"os"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -678,7 +678,6 @@ func datePolicy(cfg map[string]any) (date.Policy, error) {
 }
 
 var _ runtime.Component = (*SourceUnitComponent)(nil)
-
 
 // sniffCSVHeader 从源目录中第一个匹配 pattern 的文件读取表头行，生成
 // TEXT 列定义。启动时最佳努力——文件不存在或读取失败时返回空。
