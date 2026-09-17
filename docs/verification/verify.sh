@@ -71,6 +71,8 @@ done
 check "配置键 no_data_grace_hours" grep_q '"no_data_grace_hours"' components/sourceunit/component.go
   check "配置键 date_dir_layout" grep_q '"date_dir_layout"' components/sourceunit/component.go
   check "配置键 filename_date_layout" grep_q '"filename_date_layout"' components/sourceunit/component.go
+check "分组标签解析 group" grep_q '"group"' app/sourcecomp/machines.go
+check "机台清单展开函数" grep_q 'func expandMachineList' app/sourcecomp/machines.go
 check "脱敏哨兵" grep_q '__REDACTED__' app/host/redact.go
 check "explorer 投影脱敏" grep_q 'SetDesired(redactConfigForDisplay(cfg))' app/host/host.go
 

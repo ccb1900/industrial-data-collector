@@ -259,9 +259,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					SourceID string `json:"sourceId"`
 					Date     string `json:"date"`
 					Reason   string `json:"reason"`
+					Group    string `json:"group"`
 				}
 				if err := json.Unmarshal(body, &ui); err == nil {
 					req.SourceID = model.SourceID(ui.SourceID)
+					req.Group = ui.Group
 					if ui.Reason != "" {
 						req.Reason = ui.Reason
 					}

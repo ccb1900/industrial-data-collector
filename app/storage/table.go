@@ -161,7 +161,7 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 		return nil, err
 	}
 	ensureSQLiteDir(cfg)
-	db, err := sql.Open(cfg.Driver, cfg.DSN)
+	db, err := sql.Open(cfg.Driver, sqliteDSN(cfg))
 	if err != nil {
 		return nil, errs.ClassifyStorageError("open", err)
 	}
@@ -183,7 +183,7 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 		return nil
 	}
 	ensureSQLiteDir(t.cfg)
-	db, err := sql.Open(t.cfg.Driver, t.cfg.DSN)
+	db, err := sql.Open(t.cfg.Driver, sqliteDSN(t.cfg))
 	if err != nil {
 		return errs.ClassifyStorageError("open", err)
 	}
@@ -678,6 +678,19 @@ var TableRowsQueryKey = runtime.NewKey[RowsQuery]("console.rows.query")
 
 // ensureSQLiteDir creates the parent directory of a sqlite file DSN, so a
 // fresh deployment does not fail on a missing state directory.
+// sqliteDSN 为 SQLite DSN 追加 busy_timeout：多源共库（多机台写入同一
+// 文件）时，并发 DDL/写库等待锁而不是立即报 SQLITE_BUSY。
+func sqliteDSN(cfg TableConfig) string {
+	if cfg.Driver != "sqlite" {
+		return cfg.DSN
+	}
+	sep := "?"
+	if strings.Contains(cfg.DSN, "?") {
+		sep = "&"
+	}
+	return cfg.DSN + sep + "_pragma=busy_timeout(5000)"
+}
+
 func ensureSQLiteDir(cfg TableConfig) {
 	if cfg.Dialect != "sqlite" {
 		return
