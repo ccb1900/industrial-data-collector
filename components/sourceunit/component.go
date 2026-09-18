@@ -467,6 +467,19 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// since 生命周期下界的一次性清扫：since 之前的旧记录（历史版本
+	// 物化的 Skipped/Pending，或误配时期的成功/失败）不属于这个源的
+	// 存在史——清除，而不是留在台账里成为永久不可行动项。
+	if !since.IsZero() {
+		ctx := context.Background()
+		if recs, rerr := stateSvc.CollectionRecords(ctx, model.SourceID(sourceID)); rerr == nil {
+			for _, r := range recs {
+				if r.Key.Date.Before(since) {
+					_ = stateSvc.Drop(ctx, r.Key)
+				}
+			}
+		}
+	}
 	return &SourceUnitComponent{
 		sourceID:              model.SourceID(sourceID),
 		group:                 group,

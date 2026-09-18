@@ -67,9 +67,9 @@ func (c *TableConfig) Validate() error {
 	}
 	c.Dialect = strings.ToLower(c.Dialect)
 	switch c.Dialect {
-	case "postgres", "mysql", "sqlite":
+	case "postgres", "mysql", "sqlite", "oracle":
 	default:
-		return errs.Sourcef(errs.ErrInvalidConfig, "table storage dialect %q not supported (postgres/mysql/sqlite)", c.Dialect)
+		return errs.Sourcef(errs.ErrInvalidConfig, "table storage dialect %q not supported (postgres/mysql/sqlite/oracle)", c.Dialect)
 	}
 	if c.Table == "" {
 		c.Table = "records"

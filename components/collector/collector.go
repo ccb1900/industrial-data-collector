@@ -196,5 +196,10 @@ func NewCollector(cc config.ComponentConfig, logger *slog.Logger) (*CollectorCom
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if _, present := cc.Config["no_data_grace_hours"]; present {
+		// 该键在遗留路径同样已被实例制取代（Executor 不再读取）。
+		logger.Warn("no_data_grace_hours is ignored; missing-data visibility is handled by inspection (expect + inspection_lookback_days)",
+			"component", cc.ID)
+	}
 	return &CollectorComponent{batchSize: batch, policy: policy, catchupDays: catchup, noDataGraceHours: grace, group: group, logger: logger}, nil
 }
