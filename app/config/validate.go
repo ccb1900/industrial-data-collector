@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/robfig/cron/v3"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,31 @@ func Validate(cfg extconfig.Config) error {
 		if err := validateOne(cfg, cc, ti); err != nil {
 			return err
 		}
+	}
+	// 类型化入库的交叉防御：同一 (dsn, table) 被多个源单元声明时，列集
+	// 必须完全一致。"多源同表"（同列、靠 source_id 区分）是合法模式；
+	// 列集不同则一定是配错——打错一个表名就把两种业务静默写进一张表。
+	type tableKey struct{ dsn, table string }
+	typed := map[tableKey]struct{ id, sig string }{}
+	for id, cc := range byID {
+		if cc.Type != "csv-source-unit" || cc.Config["columns"] == nil {
+			continue
+		}
+		sig, err := columnSignature(cc.Config["columns"])
+		if err != nil {
+			return fmt.Errorf("source %q: %v", id, err)
+		}
+		k := tableKey{dsn: str(cc.Config, "dsn"), table: str(cc.Config, "table")}
+		if k.table == "" {
+			k.table = "records"
+		}
+		if prev, ok := typed[k]; ok {
+			if prev.sig != sig {
+				return fmt.Errorf("sources %q and %q declare the same table %q (dsn %q) with different column declarations — rename one table", prev.id, id, k.table, k.dsn)
+			}
+			continue
+		}
+		typed[k] = struct{ id, sig string }{id, sig}
 	}
 	// One path-metadata component = the single MetadataExtractor Provider of
 	// the Realm. It may carry per-source rule sets for many sources; it never
@@ -625,4 +651,27 @@ func validateSQLDriver(cc extconfig.ComponentConfig) error {
 		}
 	}
 	return fmt.Errorf("component %q: SQL driver %q is not registered in this binary — import the driver package at build time (e.g. mysql-storage 需引入 github.com/go-sql-driver/mysql)", cc.ID, driver)
+}
+
+// columnSignature 提取列声明的列名集合指纹（排序后连接），用于同表
+// 列集一致性比对。列名缺失视为配置错误（typed 模式必须有列名）。
+func columnSignature(raw any) (string, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return "", fmt.Errorf("columns must be an array of tables")
+	}
+	names := make([]string, 0, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("columns #%d must be a table", i)
+		}
+		name := str(m, "column")
+		if name == "" {
+			return "", fmt.Errorf("columns #%d missing column name", i)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "\x00"), nil
 }

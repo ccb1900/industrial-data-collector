@@ -1,7 +1,13 @@
 package config
 
 import (
+	"database/sql"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
+
+	"database/sql/driver"
 
 	extconfig "dynamic-runtime/extensions/config"
 
@@ -435,3 +441,48 @@ func TestValidateAcceptsQueryAndUIComponents(t *testing.T) {
 		t.Fatalf("query-provider/ui components must be accepted: %v", err)
 	}
 }
+
+// 同一 (dsn, table) 的列集不一致必然是配错——拒绝启动而不是静默把两种
+// 业务写进一张表。同表同列（靠 source_id 区分）保持合法。
+func TestValidateRejectsSameTableDifferentColumns(t *testing.T) {
+	registerSQLiteDriverOnce()
+	base := func(id, table string, col string) extconfig.ComponentConfig {
+		return extconfig.ComponentConfig{
+			ID: id, Type: "csv-source-unit",
+			Config: map[string]any{
+				"source_id": id, "path": "/tmp/x", "storage": "sqlite-storage",
+				"driver": "sqlite", "dsn": "state/collect.db", "table": table,
+				"columns": []any{
+					map[string]any{"name": col, "column": col, "type": "text"},
+				},
+			},
+		}
+	}
+	cfg := extconfig.Config{Components: []extconfig.ComponentConfig{
+		base("a", "shared", "x"),
+		base("b", "shared", "y"),
+	}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "different column declarations") {
+		t.Fatalf("err = %v, want different-column rejection", err)
+	}
+
+	// 同表同列：合法。
+	cfg.Components[1].Config["columns"] = cfg.Components[0].Config["columns"]
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("same columns must be legal, got %v", err)
+	}
+}
+
+// 桩驱动：单元测试二进制不链接真实驱动包，驱动探针只查 sql.Drivers()
+// 成员名，注册一个同名桩即可让组合校验走到交叉检查。
+var registerSQLiteStub sync.Once
+
+func registerSQLiteDriverOnce() {
+	registerSQLiteStub.Do(func() {
+		sql.Register("sqlite", stubDriver{})
+	})
+}
+
+type stubDriver struct{}
+
+func (stubDriver) Open(string) (driver.Conn, error) { return nil, errors.New("stub") }

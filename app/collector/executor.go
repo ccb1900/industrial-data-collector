@@ -147,9 +147,11 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			today := model.NewCollectionDate(started)
 			if key.Date.Before(today) {
 				// 宽限期：业务日刚结束时目录可能仍在晚到（落盘延迟、
-				// 稳定窗口跨午夜），宽限小时内保持 Pending。
-				graceEnd := key.Date.Time().AddDate(0, 0, 1).
-					Add(time.Duration(cfg.NoDataGraceHours) * time.Hour)
+				// 稳定窗口跨午夜），宽限小时内保持 Pending。截止按本地
+				// 墙钟的"日终午夜 + 宽限"计算——CollectionDate 是 UTC
+				// 午夜归一的，直接加 24h 会把宽限窗随本地偏移平移
+				//（UTC-时区部署的宽限被吃掉大半，迟到文件被终态化）。
+				graceEnd := graceEndFor(key.Date, time.Duration(cfg.NoDataGraceHours)*time.Hour)
 				if !started.After(graceEnd) {
 					result.Status = model.StatusPending
 					result.Error = fmt.Sprintf("date directory not available (within grace): %v", err)
@@ -353,4 +355,13 @@ func overlayMetadata(base model.Metadata, source model.Metadata) model.Metadata 
 		out.Values[k] = v
 	}
 	return out
+}
+
+// graceEndFor 返回业务日 D 的宽限截止：本地墙钟的 D+1 零点 + 宽限。
+// CollectionDate 存的是 UTC 午夜归一的日历日，宽限必须落在采集进程的
+// 本地时区里，否则宽限窗随部署地的 UTC 偏移平移（东区被拉长是安全的
+// 错误方向，西区被吃掉大半会终态化迟到文件）。
+func graceEndFor(date model.CollectionDate, grace time.Duration) time.Time {
+	y, m, d := date.Time().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.Local).AddDate(0, 0, 1).Add(grace)
 }
