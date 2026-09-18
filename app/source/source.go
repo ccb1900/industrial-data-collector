@@ -177,7 +177,10 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 			// open for writing; it is intentionally not discovered yet — but
 			// the attempt is counted: if EVERY candidate was unstable the
 			// caller must see "not ready" (Pending), never an empty success.
-			if now.Sub(info.ModTime()) < s.StableWindow {
+			// mtime 在未来（文件服务器时钟快于采集机的常见偏斜）不算不稳定：
+			// 负差值恒小于窗口会把文件永远挡在发现之外——UNC 生产环境的
+			// 典型故障，本地盘开发永不复现。写入中的文件由下方双 stat 兜住。
+			if delta := now.Sub(info.ModTime()); delta >= 0 && delta < s.StableWindow {
 				unstable++
 				return nil
 			}
@@ -279,7 +282,8 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 	if info.IsDir() {
 		return nil, errs.Sourcef(errs.ErrNotFound, "dated filename %q is a directory", path)
 	}
-	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
+	// 服务器时钟偏斜（mtime 在未来）不算不稳定，同 List 走查的约定。
+	if delta := s.now().Sub(info.ModTime()); s.StableWindow > 0 && delta >= 0 && delta < s.StableWindow {
 		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q is still being written", path)
 	}
 	info2, err := os.Stat(path)
@@ -329,7 +333,8 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 	if info.IsDir() {
 		return nil, errs.Sourcef(errs.ErrNotFound, "flat source %q is a directory", s.root)
 	}
-	if s.StableWindow > 0 && s.now().Sub(info.ModTime()) < s.StableWindow {
+	// 服务器时钟偏斜（mtime 在未来）不算不稳定，同 List 走查的约定。
+	if delta := s.now().Sub(info.ModTime()); s.StableWindow > 0 && delta >= 0 && delta < s.StableWindow {
 		// 仍在写入：显式不稳定错误，让执行器保持 Pending 等待——
 		// 折叠成"空文件成功"会把该日期终态化，晚到文件永远丢失。
 		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q is still being written", s.root)

@@ -12,7 +12,9 @@ package watchtrigger
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +57,13 @@ func (c *TriggerComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) 
 	}
 	dir := filepath.Dir(c.path)
 	base := filepath.Base(c.path)
+	// Windows 的 ReadDirectoryChangesW 不支持网络路径（UNC/映射盘），
+	// Linux inotify 对 NFS 同样不可靠：监视要么失败要么静默失效。
+	// 提前把这件事说清楚，别让操作员以为"加了 watch 就一定有事件"。
+	if strings.HasPrefix(dir, `\\`) || strings.HasPrefix(dir, "//") {
+		slog.Warn("watch-trigger on a network path is unreliable (fsnotify cannot watch UNC/NFS); prefer polling or a local staging directory",
+			"path", c.path)
+	}
 	if err := watcher.Add(dir); err != nil {
 		_ = watcher.Close()
 		return nil, fmt.Errorf("%w: watch %q: %v", errs.ErrDependency, dir, err)
