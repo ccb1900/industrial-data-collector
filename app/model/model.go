@@ -266,6 +266,11 @@ type CollectionState interface {
 	// StatusOf returns the persisted status of one collection key (false if
 	// never attempted).
 	StatusOf(ctx context.Context, key CollectionKey) (Status, bool, error)
+	// Drop removes the collection record entirely: the instance model only
+	// materializes records for work with evidence (files found, expected
+	// data missing). A probed date with no files and no expectation leaves
+	// no trace — Drop clears stale records from earlier semantics.
+	Drop(ctx context.Context, key CollectionKey) error
 	Close() error
 }
 

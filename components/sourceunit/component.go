@@ -65,6 +65,9 @@ type SourceUnitComponent struct {
 	header                bool
 	catchupDays           int
 	noDataGraceHours      int
+	since                 model.CollectionDate
+	expect                string
+	inspectLookbackDays   int
 	logger                *slog.Logger
 
 	emitCtx *runtime.Context
@@ -108,10 +111,14 @@ func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionK
 		return nil, err
 	}
 	// The plan is the actionable work list: a date already closed as
-	// Skipped (checked, no data) is history, not a task — even though the
-	// planner still re-checks it inside the catch-up window.
+	// Skipped (checked, no data) is history, not a task, and dates before
+	// the source's since never existed — even though the planner still
+	// re-checks the catch-up window.
 	out := make([]model.CollectionKey, 0, len(keys))
 	for _, k := range keys {
+		if !c.since.IsZero() && k.Date.Before(c.since) {
+			continue
+		}
 		if status, ok, err := c.stateSvc.StatusOf(ctx, k); err == nil && ok && status == model.StatusSkipped {
 			continue
 		}
@@ -225,11 +232,14 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:        c.batchSize,
-			DatePolicy:       c.policy,
-			CatchupDays:      c.catchupDays,
-			NoDataGraceHours: c.noDataGraceHours,
-			Logger:           c.logger,
+			BatchSize:           c.batchSize,
+			DatePolicy:          c.policy,
+			CatchupDays:         c.catchupDays,
+			NoDataGraceHours:    c.noDataGraceHours,
+			Since:               c.since,
+			Expect:              c.expect,
+			InspectLookbackDays: c.inspectLookbackDays,
+			Logger:              c.logger,
 		},
 	}
 	c.emitCtx = ctx
@@ -422,6 +432,22 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
 	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
+	// 实例制语义：since = 源生命周期下界；expect = 预期节奏（daily）；
+	// inspection_lookback_days = 预期缺失的巡检回看窗口（含目标日）。
+	since := model.CollectionDate{}
+	if raw := configutil.OptionalString(cc, "since", ""); raw != "" {
+		if err := since.UnmarshalText([]byte(raw)); err != nil {
+			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q since must be YYYY-MM-DD: %v", cc.ID, err)
+		}
+	}
+	expect := configutil.OptionalString(cc, "expect", "")
+	if expect != "" && expect != "daily" {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q expect must be \"daily\"", cc.ID)
+	}
+	lookback := configutil.OptionalInt(cc, "inspection_lookback_days", 1)
+	if lookback < 1 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q inspection_lookback_days must be >= 1", cc.ID)
+	}
 	group := configutil.OptionalString(cc, "group", "")
 	header := configutil.OptionalBool(cc, "header", true)
 	// 自动列发现：columns 未声明 + header=true 时，扫描源目录第一个
@@ -443,6 +469,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		group:                 group,
 		header:                header,
 		noDataGraceHours:      noDataGraceHours,
+		since:                 since,
+		expect:                expect,
+		inspectLookbackDays:   lookback,
 		path:                  root,
 		src:                   src,
 		parser:                parserModel,

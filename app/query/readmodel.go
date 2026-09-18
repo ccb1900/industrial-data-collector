@@ -318,6 +318,11 @@ func (m *ReadModel) AttachUnits(units []UnitState) {
 			src.path = u.Path
 		}
 		for _, rec := range u.Collections {
+			// 实例制：Skipped（无数据）不是实例，重启投影不再复活伪任务。
+			// 旧台账里已存在的 Skipped 记录就此退役。
+			if model.Status(rec.Status) == model.StatusSkipped {
+				continue
+			}
 			e := m.entry(rec.Key)
 			if rec.Status != "" {
 				e.status = string(rec.Status)

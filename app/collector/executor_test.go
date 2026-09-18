@@ -110,43 +110,114 @@ func TestMissingDirectoryForPastDaySkips(t *testing.T) {
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	// A past day whose directory does not exist can never have data: the
-	// outcome is the terminal Skipped, not an eternal Pending.
+	// 实例制：过期日目录不存在 = 无证据，不物化台账。结果里的 Skipped
+	// 只是日志语义；状态层不留下任何记录，补采列表也不会出现伪任务。
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res) != 1 || res[0].Status != model.StatusSkipped {
-		t.Fatalf("result = %#v, want Skipped", res)
+		t.Fatalf("result = %#v, want Skipped (log-only)", res)
 	}
-	// Skipped stays in the catchup scan (cheap re-check, late delivery still
-	// collects), but a re-run over the same missing directory re-skips.
+	if _, ok, _ := st.StatusOf(context.Background(), model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-06")}); ok {
+		t.Fatal("missing date must not be materialized into the ledger")
+	}
+	// 重跑同样不物化。
 	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res2) != 1 || res2[0].Status != model.StatusSkipped {
-		t.Fatalf("re-run = %#v, want Skipped", res2)
+		t.Fatalf("re-run = %#v, want Skipped (log-only)", res2)
 	}
 }
 
-func TestMissingDirectoryTodayStaysPending(t *testing.T) {
+// 巡检：expect=daily 时，回看窗口内的预期缺失生成可重试的 Failed 实例；
+// 文件晚到后，下次采集成功覆盖它。
+func TestInspectionCreatesRetryableFailure(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	// Today's directory may still appear during the day: Pending stands and
-	// the date stays listed for recovery.
+	e.Config.Expect = "daily"
+	e.Config.InspectLookbackDays = 1
+
+	// 巡检窗口相对"今天"：昨天。
+	yesterday := model.NewCollectionDate(time.Now().AddDate(0, 0, -1))
+	// Handle 对 Failed 结果同时返回非 nil error（与不可达路径同语义）。
+	_, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(yesterday)})
+	if err == nil || !strings.Contains(err.Error(), "inspection") {
+		t.Fatalf("err = %v, want the inspection failure", err)
+	}
+	incomplete, _ := st.ListIncomplete(context.Background(), "prod", yesterday, 0)
+	if len(incomplete) != 1 {
+		t.Fatal("inspection failure must stay listed for retry")
+	}
+
+	// 文件晚到：下次触发采集成功，覆盖巡检失败。
+	writeDateCSV(t, root, yesterday.String(), "a.csv", "id,name\n1,a\n")
+	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(yesterday)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2) != 1 || res2[0].Status != model.StatusSucceeded {
+		t.Fatalf("late-arrival result = %#v, want Succeeded", res2)
+	}
+	if incomplete2, _ := st.ListIncomplete(context.Background(), "prod", yesterday, 0); len(incomplete2) != 0 {
+		t.Fatal("succeeded date must leave the retry list")
+	}
+}
+
+// since 生命周期下界：早于它的业务日不计划、不物化；显式指定日期的
+// 触发同样遵守。
+func TestSinceClampsPlanning(t *testing.T) {
+	root := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	since := date(t, "2026-09-05")
+	e.Config.Since = since
+
+	writeDateCSV(t, root, "2026-09-04", "old.csv", "id\n1\n")
+	writeDateCSV(t, root, "2026-09-06", "new.csv", "id\n1\n")
+
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-04"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 0 {
+		t.Fatalf("before-since trigger = %#v, want nothing planned", res)
+	}
+	if _, ok, _ := st.StatusOf(context.Background(), model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-04")}); ok {
+		t.Fatal("before-since date must not be materialized")
+	}
+	// since 之后的日期正常采集。
+	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2) != 1 || res2[0].Status != model.StatusSucceeded {
+		t.Fatalf("after-since result = %#v, want Succeeded", res2)
+	}
+}
+
+func TestMissingDirectoryTodayNotMaterialized(t *testing.T) {
+	root := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	// 实例制：今天的目录未出现 = 无证据，不物化（文件晚到后下次触发
+	// 重探即得；预期缺失由巡检在窗口内负责）。
 	today := model.NewCollectionDate(time.Now())
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(today)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 1 || res[0].Status != model.StatusPending {
-		t.Fatalf("result = %#v, want Pending", res)
+	if len(res) != 1 || res[0].Status != model.StatusSkipped {
+		t.Fatalf("result = %#v, want Skipped (log-only)", res)
 	}
-	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 1 {
-		t.Fatal("pending date must be listed for recovery")
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 0 {
+		t.Fatalf("missing date must not be materialized, got %v", incomplete)
 	}
 }
 
@@ -199,7 +270,7 @@ func TestUnreachableShareStaysFailedAndRetried(t *testing.T) {
 
 // 不稳定（稳定窗口内）≠ 空：执行器必须保持 Pending 重试，
 // 绝不能折叠成"成功-0 文件"把日期终态化（晚到文件会永久丢失）。
-func TestUnstableFilesStayPending(t *testing.T) {
+func TestUnstableFilesNotMaterialized(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
@@ -215,10 +286,10 @@ func TestUnstableFilesStayPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(res) != 1 || res[0].Status != model.StatusPending {
-		t.Fatalf("result = %#v, want Pending", res)
+		t.Fatalf("result = %#v, want Pending (log-only)", res)
 	}
-	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 1 {
-		t.Fatal("unstable date must stay listed for recovery")
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 0 {
+		t.Fatalf("unstable date must not be materialized, got %v", incomplete)
 	}
 }
 

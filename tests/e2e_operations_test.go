@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,10 +153,21 @@ func (c *opsConn) Begin() (driver.Tx, error)           { return &opsTx{}, nil }
 
 type opsStmt struct{}
 
-func (s *opsStmt) Close() error                               { return nil }
-func (s *opsStmt) NumInput() int                              { return 0 }
+func (s *opsStmt) Close() error { return nil }
+
+// NumInput 返回 -1：database/sql 跳过参数个数校验（桩无法解析方言占位
+// 符，自动字段映射的类型化写入会带参执行）。
+func (s *opsStmt) NumInput() int                              { return -1 }
 func (s *opsStmt) Exec([]driver.Value) (driver.Result, error) { return driver.RowsAffected(1), nil }
-func (s *opsStmt) Query([]driver.Value) (driver.Rows, error)  { return nil, nil }
+
+// Query 返回空结果集（nil Rows 会 panic）：类型化读取路径会对桩发 SELECT。
+func (s *opsStmt) Query([]driver.Value) (driver.Rows, error) { return &opsRows{}, nil }
+
+type opsRows struct{}
+
+func (r *opsRows) Columns() []string         { return nil }
+func (r *opsRows) Close() error              { return nil }
+func (r *opsRows) Next([]driver.Value) error { return io.EOF }
 
 type opsTx struct{}
 

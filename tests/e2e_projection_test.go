@@ -151,15 +151,12 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestProjectionSkippedDateVisible(t *testing.T) {
+func TestProjectionSkippedDateNotMaterialized(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "machine001")
 	stateDir := filepath.Join(base, "state")
-	// A fully passed day whose source directory does not exist is a terminal
-	// "no data" (Skipped) — permanent absence, distinct from Pending — and
-	// the console must still show that state instead of nothing. Use a date
-	// two days back: yesterday may still sit inside the no-data grace window
-	// right after midnight.
+	// 实例制：过期日目录不存在 = 无证据，不物化——控制台不会为"从未
+	// 存在的采集"显示条目。缺失可见性由巡检（expect）承担。
 	twoDaysAgo := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
 	doc := projectionDocument(root, stateDir, twoDaysAgo)
 	parsed, err := sourcecomp.Parse([]byte(doc))
@@ -179,16 +176,9 @@ func TestProjectionSkippedDateVisible(t *testing.T) {
 		t.Fatal("ui adapter missing")
 	}
 	cols := queryCollections(t, adapter)
-	found := false
 	for _, c := range cols {
 		if c.SourceID == "machine001" && c.Date == twoDaysAgo {
-			found = true
-			if c.Status != "Skipped" {
-				t.Fatalf("collection = %#v, want Skipped", c)
-			}
+			t.Fatalf("missing date must not be materialized, got %#v", c)
 		}
-	}
-	if !found {
-		t.Fatalf("skipped date invisible in %+#v", cols)
 	}
 }

@@ -142,6 +142,17 @@ func (s *MemoryState) pruneSkippedLocked(now time.Time) {
 	}
 }
 
+// Drop 移除一个采集键的全部台账（实例制：无证据不物化）。
+func (s *MemoryState) Drop(ctx context.Context, key model.CollectionKey) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.collections, stateKey(key))
+	return nil
+}
+
 func (s *MemoryState) FileCompleted(ctx context.Context, key model.CollectionKey, file model.FileIdentity) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -551,6 +562,16 @@ func (s *FileState) End(ctx context.Context, key model.CollectionKey, status mod
 	if err := s.MemoryState.End(ctx, key, status, note); err != nil {
 		return err
 	}
+	return s.save()
+}
+
+func (s *FileState) Drop(ctx context.Context, key model.CollectionKey) error {
+	s.mu.Lock()
+	if err := s.MemoryState.Drop(ctx, key); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
 	return s.save()
 }
 

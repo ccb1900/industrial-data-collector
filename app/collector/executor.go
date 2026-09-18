@@ -23,13 +23,20 @@ type Config struct {
 	// Zero keeps the previous behavior: gaps are synthesized only from the
 	// last succeeded business date.
 	CatchupDays int
-	// NoDataGraceHours bounds how long after a business day ends a missing
-	// source directory is still treated as Pending (the data may arrive
-	// late). Beyond the grace the day closes as terminal Skipped (无数据).
-	// Zero/negative applies the default (6 hours).
+	// NoDataGraceHours 已由实例制取代：缺失可见性由巡检（Expect/
+	// InspectLookbackDays）承担。字段保留用于兼容旧配置解析，不再参与
+	// 语义。
 	NoDataGraceHours int
-	Now              func() time.Time
-	Logger           *slog.Logger
+	// Since 是源的生命周期下界：早于它的业务日不计划、不巡检、不物化。
+	// 零值 = 无下界。
+	Since model.CollectionDate
+	// Expect 声明预期节奏（"daily" = 每个业务日应有数据）。空 = 不巡检，
+	// 缺失不物化。
+	Expect string
+	// InspectLookbackDays 巡检回看窗口（含目标日，默认 1 = 只看目标日）。
+	InspectLookbackDays int
+	Now                 func() time.Time
+	Logger              *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -64,6 +71,23 @@ type Executor struct {
 	Config   Config
 }
 
+// InspectionDue 报告一个业务日是否在巡检回看窗口内：expect 声明了预期
+// 节奏时，窗口内（以策略目标日为锚，往回数 lookback 天）的日期"该有而
+// 没有"要生成可重试的异常实例；窗口外与未声明预期的日期缺失不物化——
+// 缺失可见性由巡检承担，而不是台账。今天本身不在窗口内：今天的数据
+// 可能合法地尚未产生。
+func InspectionDue(cfg Config, date, anchor model.CollectionDate) bool {
+	if cfg.Expect == "" {
+		return false
+	}
+	lookback := cfg.InspectLookbackDays
+	if lookback < 1 {
+		lookback = 1
+	}
+	earliest := anchor.AddDate(0, 0, -(lookback - 1))
+	return !date.Before(earliest) && !date.After(anchor)
+}
+
 func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([]model.CollectionResult, error) {
 	cfg := e.Config.withDefaults()
 	target, err := cfg.DatePolicy.Resolve()
@@ -77,6 +101,20 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 	keys, err := e.Recovery.Plan(ctx, e.Source.ID(), target)
 	if err != nil {
 		return nil, err
+	}
+	// 生命周期下界：早于 since 的业务日不计划、不物化（显式指定日期的
+	// 手动触发同样遵守——since 是源的存在性事实，不是策略偏好）。
+	if !cfg.Since.IsZero() {
+		filtered := keys[:0]
+		for _, k := range keys {
+			if !k.Date.Before(cfg.Since) {
+				filtered = append(filtered, k)
+			}
+		}
+		keys = filtered
+		if target.Before(cfg.Since) {
+			return nil, nil
+		}
 	}
 	hasTarget := false
 	for _, k := range keys {
@@ -96,7 +134,7 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		res := e.collectOne(ctx, key)
+		res := e.collectOne(ctx, key, target)
 		if res != nil {
 			results = append(results, *res)
 			if res.Status == model.StatusFailed {
@@ -110,13 +148,80 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 	return results, nil
 }
 
-func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *model.CollectionResult {
+// collectOne 是实例制的核心：先探针（List），有证据才物化台账。
+//   - 有文件        → Begin → 采集 → Succeeded/Failed（可重试实例）
+//   - 无文件 + 巡检窗口内（声明了 expect）→ Failed 异常实例（下次巡检
+//     复查：文件到了则采集成功覆盖它）
+//   - 无文件 + 窗口外/未声明预期 → 不物化，并 Drop 历史遗留记录
+//   - 不稳定/不可达  → 不物化或可重试 Failed，由下次触发重探
+//
+// Pending 与 Skipped 不再产生：缺失可见性由巡检承担，台账只保留真实
+// 发生过的工作。
+func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anchor model.CollectionDate) *model.CollectionResult {
 	cfg := e.Config.withDefaults()
 	started := time.Now()
 	if cfg.Now != nil {
 		started = cfg.Now()
 	}
 	result := &model.CollectionResult{Key: key, StartedAt: started, Status: model.StatusRunning}
+	cfg.Logger.Info("collection started", "source_id", key.SourceID, "date", key.Date.String(), "key", key.String())
+	files, err := e.Source.List(ctx, model.ListRequest{SourceID: key.SourceID, Date: key.Date})
+	if err != nil {
+		switch {
+		case errs.Is(err, errs.ErrNotFound):
+			// 巡检窗口内的预期缺失：可重试的 Failed 实例（文件晚到后
+			// 下次采集成功即覆盖）。
+			if InspectionDue(cfg, key.Date, anchor) {
+				result.Status = model.StatusFailed
+				result.Error = fmt.Sprintf("inspection: expected %s data is missing: %v", cfg.Expect, err)
+				if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr != nil {
+					result.Status = model.StatusFailed
+					result.Error = fmt.Sprintf("begin state: %v", berr)
+					return result
+				} else if ok {
+					_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+				}
+				cfg.Logger.Warn("inspection: expected data missing", "key", key.String(), "error", err.Error())
+				result.EndedAt = time.Now()
+				result.Duration = result.EndedAt.Sub(started)
+				return result
+			}
+			// 无证据不物化：清掉旧语义遗留的半截记录（Skipped/Pending）。
+			_ = e.State.Drop(ctx, key)
+			result.Status = model.StatusSkipped
+			result.Error = fmt.Sprintf("no data; not materialized: %v", err)
+			cfg.Logger.Info("no data for date; not materialized", "key", key.String())
+			return result
+		case errs.Is(err, errs.ErrFileUnstable):
+			// 候选文件都在稳定窗口内：不物化，下次触发重探——
+			// 终态化会把晚到文件永久丢失。
+			result.Status = model.StatusPending
+			result.Error = fmt.Sprintf("files inside stable window: %v", err)
+			cfg.Logger.Warn("files unstable; will re-probe next trigger", "key", key.String())
+			return result
+		default:
+			// 不可达等暂时故障：可重试的 Failed 实例，ListIncomplete 会重排。
+			result.Status = model.StatusFailed
+			result.Error = err.Error()
+			if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr != nil {
+				result.Status = model.StatusFailed
+				result.Error = fmt.Sprintf("begin state: %v", berr)
+				return result
+			} else if ok {
+				_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+			}
+			cfg.Logger.Error("source list failed", "key", key.String(), "error", result.Error)
+			return result
+		}
+	}
+	if len(files) == 0 {
+		_ = e.State.Drop(ctx, key)
+		result.Status = model.StatusSkipped
+		result.Error = "no files matched"
+		cfg.Logger.Info("no files matched; not materialized", "key", key.String())
+		return result
+	}
+
 	ok, err := e.State.Begin(ctx, key, 24*time.Hour)
 	if err != nil {
 		result.Status = model.StatusFailed
@@ -134,68 +239,6 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
 		}
 	}()
-
-	cfg.Logger.Info("collection started", "source_id", key.SourceID, "date", key.Date.String(), "key", key.String())
-	files, err := e.Source.List(ctx, model.ListRequest{SourceID: key.SourceID, Date: key.Date})
-	if err != nil {
-		if errs.Is(err, errs.ErrNotFound) {
-			// A missing date directory means two different facts depending
-			// on time: for TODAY it is "not arrived yet" (Pending — the
-			// directory may still appear); for a fully past day the absence
-			// is permanent (time is irreversible), so the row closes as
-			// terminal Skipped instead of waiting forever.
-			today := model.NewCollectionDate(started)
-			if key.Date.Before(today) {
-				// 宽限期：业务日刚结束时目录可能仍在晚到（落盘延迟、
-				// 稳定窗口跨午夜），宽限小时内保持 Pending。截止按本地
-				// 墙钟的"日终午夜 + 宽限"计算——CollectionDate 是 UTC
-				// 午夜归一的，直接加 24h 会把宽限窗随本地偏移平移
-				//（UTC-时区部署的宽限被吃掉大半，迟到文件被终态化）。
-				graceEnd := graceEndFor(key.Date, time.Duration(cfg.NoDataGraceHours)*time.Hour)
-				if !started.After(graceEnd) {
-					result.Status = model.StatusPending
-					result.Error = fmt.Sprintf("date directory not available (within grace): %v", err)
-					_ = e.State.End(ctx, key, model.StatusPending, result.Error)
-					cfg.Logger.Warn("date directory absent; pending within grace", "key", key.String())
-					return result
-				}
-				result.Status = model.StatusSkipped
-				result.Error = fmt.Sprintf("date directory does not exist (day has passed): %v", err)
-				_ = e.State.End(ctx, key, model.StatusSkipped, result.Error)
-				cfg.Logger.Info("date directory absent for a past day; closed as skipped", "key", key.String())
-				result.EndedAt = time.Now()
-				result.Duration = result.EndedAt.Sub(started)
-				return result
-			}
-			result.Status = model.StatusPending
-			result.Error = fmt.Sprintf("date directory not available: %v", err)
-			_ = e.State.End(ctx, key, model.StatusPending, result.Error)
-			cfg.Logger.Warn("date directory not found; left pending for retry", "key", key.String(), "error", result.Error)
-			return result
-		}
-		if errs.Is(err, errs.ErrFileUnstable) {
-			// 候选文件都在稳定窗口内：不是空，是"还没准备好"——
-			// 保持 Pending 重试；终态化会把晚到文件永久丢失。
-			result.Status = model.StatusPending
-			result.Error = fmt.Sprintf("files inside stable window: %v", err)
-			_ = e.State.End(ctx, key, model.StatusPending, result.Error)
-			cfg.Logger.Warn("files unstable; pending for retry", "key", key.String())
-			return result
-		}
-		result.Status = model.StatusFailed
-		result.Error = err.Error()
-		_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
-		cfg.Logger.Error("source list failed", "key", key.String(), "error", result.Error)
-		return result
-	}
-	if len(files) == 0 {
-		_ = e.State.End(ctx, key, model.StatusSucceeded, "no files")
-		result.Status = model.StatusSucceeded
-		result.EndedAt = time.Now()
-		result.Duration = result.EndedAt.Sub(started)
-		cfg.Logger.Info("collection completed with no files", "key", key.String())
-		return result
-	}
 
 	var failErrs []error
 	for i := range files {
@@ -355,13 +398,4 @@ func overlayMetadata(base model.Metadata, source model.Metadata) model.Metadata 
 		out.Values[k] = v
 	}
 	return out
-}
-
-// graceEndFor 返回业务日 D 的宽限截止：本地墙钟的 D+1 零点 + 宽限。
-// CollectionDate 存的是 UTC 午夜归一的日历日，宽限必须落在采集进程的
-// 本地时区里，否则宽限窗随部署地的 UTC 偏移平移（东区被拉长是安全的
-// 错误方向，西区被吃掉大半会终态化迟到文件）。
-func graceEndFor(date model.CollectionDate, grace time.Duration) time.Time {
-	y, m, d := date.Time().Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, time.Local).AddDate(0, 0, 1).Add(grace)
 }

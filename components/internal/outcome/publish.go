@@ -48,8 +48,7 @@ func Publish(ctx context.Context, emitCtx *runtime.Context, res *model.Collectio
 			Key: res.Key, Note: res.Error, At: res.EndedAt,
 		})
 	case model.StatusSkipped:
-		_ = event.Serial(ctx, emitCtx, events.CollectionSkipped, events.CollectionSkippedPayload{
-			Key: res.Key, Note: res.Error, At: res.EndedAt,
-		})
+		// 实例制：无数据的日期不物化台账，也不入事件流——结果里的
+		// Skipped 只是日志语义，读取方（日历/列表）不应见到伪任务。
 	}
 }

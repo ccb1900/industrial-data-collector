@@ -18,6 +18,9 @@ type MachineEntry struct {
 	// Group 是可选的机台分组标签（如按格式/产线分区）。空 = 通用组，
 	// 会被所有未声明 group 的展开声明认领。
 	Group string `toml:"group"`
+	// Since 是机台的生命周期下界（YYYY-MM-DD，如投产日期）：展开出的
+	// 源不会为它之前的业务日计划、巡检或物化任何记录。空 = 不限。
+	Since string `toml:"since"`
 }
 
 // MachineFormat is one format group: it expands once per machine into a
@@ -164,6 +167,9 @@ func expandMachineList(groups []MachineFormatGroup, machines []MachineEntry) ([]
 
 func overridesFrom(m MachineEntry, g MachineFormatGroup) map[string]any {
 	ov := map[string]any{}
+	if m.Since != "" {
+		ov["since"] = m.Since
+	}
 	if g.Pattern != "" {
 		ov["pattern"] = g.Pattern
 	}
