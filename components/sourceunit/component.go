@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -710,6 +711,14 @@ func sniffCSVHeader(root, pattern string) []storage.ColumnMapping {
 			continue
 		}
 		line = strings.TrimRight(line, "\r\n")
+		if !utf8.ValidString(line) {
+			// 非 UTF-8 表头（GBK/GB18030 最常见）经自动发现会产出乱码列名，
+			// 与解码后的真实表头永远对不上——数据"采集成功"但全部列为 NULL。
+			// 这里拒绝并告警，把问题顶到启动日志里，要求显式声明列。
+			slog.Warn("source header is not valid UTF-8; auto column discovery would produce mojibake — declare columns explicitly with encoding",
+				"file", entry.Name())
+			return nil
+		}
 		names := strings.Split(line, ",")
 		var cols []storage.ColumnMapping
 		for _, name := range names {
