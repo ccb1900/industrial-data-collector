@@ -47,7 +47,7 @@ func consoleRows() []extconfig.ComponentConfig {
 			"page_id":     "overview",
 			"title":       "概览",
 			"route":       "/overview",
-			"description": "采集运行情况总览：由读模型投影，观察流失效后自动重查。",
+			"description": "哪里需要处理，一眼可见：异常置顶，健康的历史不放前台。",
 			"renderer":    "views",
 			"icon":        "dashboard",
 			"order":       0,
@@ -59,9 +59,20 @@ func consoleRows() []extconfig.ComponentConfig {
 					"kind": "stats",
 					"items": []any{
 						map[string]any{"label": "数据源", "query": "sources", "op": "count"},
-						map[string]any{"label": "采集任务", "query": "collections", "op": "count"},
+						map[string]any{"label": "待处理", "query": "collections", "op": "count", "warn": true,
+							"filter": map[string]any{"key": "status", "in": []any{"Failed", "Pending"}}},
 						map[string]any{"label": "累计记录", "query": "collections", "op": "sum", "field": "records"},
 						map[string]any{"label": "失败文件", "query": "collections", "op": "sum", "field": "filesFailed", "warn": true},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "需要处理（失败 / 等待数据）", "query": "collections", "pageSize": 8,
+					"filter": map[string]any{"key": "status", "in": []any{"Failed", "Pending"}},
+					"columns": []any{
+						map[string]any{"key": "sourceId", "title": "数据源"},
+						map[string]any{"key": "date", "title": "采集日期"},
+						map[string]any{"key": "status", "title": "状态"},
+						map[string]any{"key": "note", "title": "原因"},
 					},
 				},
 				map[string]any{
@@ -71,14 +82,48 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "filesFailed", "label": "失败"},
 					},
 				},
+			},
+		}),
+		bundle.Row("ui-page-sources", "ui-page", map[string]any{
+			"page_id":     "sources",
+			"title":       "数据源",
+			"route":       "/sources",
+			"description": "以源为中心：选一个源，采集历史、当天文件、单源操作都在这一屏。",
+			"renderer":    "views",
+			"icon":        "api",
+			"order":       10,
+			"views": []any{
 				map[string]any{
-					"kind": "table", "query": "collections", "pageSize": 8,
+					"kind": "master-detail", "query": "sources", "pageSize": 30, "focusKey": "id",
+					"rowActions": []any{
+						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.id"}},
+					},
 					"columns": []any{
-						map[string]any{"key": "sourceId", "title": "数据源"},
-						map[string]any{"key": "date", "title": "采集日期"},
-						map[string]any{"key": "files", "title": "文件进度", "format": "{filesCompleted}/{filesTotal}"},
-						map[string]any{"key": "records", "title": "记录数"},
+						map[string]any{"key": "name", "title": "数据源"},
 						map[string]any{"key": "status", "title": "状态"},
+					},
+					"detailViews": []any{
+						map[string]any{"kind": "calendar", "title": "采集状态日历", "query": "collections"},
+						map[string]any{
+							"kind": "kv", "title": "当日采集详情", "query": "collection",
+							"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
+							"fields": []any{
+								map[string]any{"key": "status", "label": "状态"},
+								map[string]any{"key": "records", "label": "记录数"},
+								map[string]any{"key": "filesCompleted", "label": "完成文件"},
+								map[string]any{"key": "filesFailed", "label": "失败文件"},
+							},
+						},
+						map[string]any{
+							"kind": "table", "title": "当日文件明细", "query": "files",
+							"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
+							"expand": "metadata", "pageSize": 10,
+							"columns": []any{
+								map[string]any{"key": "name", "title": "文件"},
+								map[string]any{"key": "records", "title": "记录数"},
+								map[string]any{"key": "status", "title": "状态"},
+							},
+						},
 					},
 				},
 			},
@@ -87,71 +132,47 @@ func consoleRows() []extconfig.ComponentConfig {
 			"page_id":     "collections",
 			"title":       "采集任务",
 			"route":       "/collections",
-			"description": "按数据源与采集日期列出任务；点选一行即在下方的文件明细与本侧详情中展示该次采集。",
+			"description": "补采中心：只把需要行动的任务放在前面，点选一行即在下方的文件明细与本侧详情中展示。",
 			"renderer":    "views",
 			"icon":        "profile",
-			"order":       10,
+			"order":       20,
 			"actions": []any{
 				map[string]any{"label": "立即采集", "command": "trigger", "datePicker": true},
 			},
 			"views": []any{
 				map[string]any{
-					"kind": "kv", "query": "schedule",
+					"kind": "kv", "title": "调度", "query": "schedule",
 					"fields": []any{
 						map[string]any{"key": "schedule", "label": "调度策略"},
-						map[string]any{"key": "time", "label": "触发时间"},
 						map[string]any{"key": "cron", "label": "Cron 表达式"},
 						map[string]any{"key": "last", "label": "上次触发"},
 						map[string]any{"key": "next", "label": "下次触发"},
 					},
 				},
 				map[string]any{
-					"kind": "list", "query": "plan", "titleKey": "sourceId",
+					"kind": "list", "title": "补采计划", "query": "plan", "titleKey": "sourceId",
 					"rowActions": []any{
 						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.sourceId", "date": "$row.date"}},
 					},
 				},
 				map[string]any{
-					"kind": "table", "query": "collections", "selectFocus": true, "pageSize": 10,
+					"kind": "table", "title": "全部任务", "query": "collections", "selectFocus": true, "pageSize": 10,
 					"columns": []any{
 						map[string]any{"key": "sourceId", "title": "数据源"},
 						map[string]any{"key": "date", "title": "采集日期"},
+						map[string]any{"key": "status", "title": "状态"},
 						map[string]any{"key": "files", "title": "文件进度", "format": "{filesCompleted}/{filesTotal}"},
 						map[string]any{"key": "records", "title": "记录数"},
-						map[string]any{"key": "status", "title": "状态"},
 					},
 				},
 				map[string]any{
 					"kind": "table", "title": "文件明细", "query": "files",
-					"expand": "metadata", "pageSize": 20,
 					"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
+					"expand": "metadata", "pageSize": 20,
 					"columns": []any{
 						map[string]any{"key": "name", "title": "文件"},
 						map[string]any{"key": "path", "title": "路径"},
 						map[string]any{"key": "records", "title": "记录数"},
-						map[string]any{"key": "status", "title": "状态"},
-					},
-				},
-			},
-		}),
-		bundle.Row("ui-page-sources", "ui-page", map[string]any{
-			"page_id":     "sources",
-			"title":       "数据源",
-			"route":       "/sources",
-			"description": "由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。",
-			"renderer":    "views",
-			"icon":        "api",
-			"order":       30,
-			"views": []any{
-				map[string]any{
-					"kind": "table", "query": "sources", "pageSize": 20,
-					"rowActions": []any{
-						// 源行的主键是 id：实参传错键会退化为全量广播触发。
-						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.id"}},
-					},
-					"columns": []any{
-						map[string]any{"key": "name", "title": "数据源"},
-						map[string]any{"key": "path", "title": "路径"},
 						map[string]any{"key": "status", "title": "状态"},
 					},
 				},

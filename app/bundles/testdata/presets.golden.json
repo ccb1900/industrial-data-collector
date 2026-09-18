@@ -11,7 +11,7 @@
             "label": "立即采集"
           }
         ],
-        "description": "采集运行情况总览：由读模型投影，观察流失效后自动重查。",
+        "description": "哪里需要处理，一眼可见：异常置顶，健康的历史不放前台。",
         "icon": "dashboard",
         "order": 0,
         "page_id": "overview",
@@ -27,9 +27,17 @@
                 "query": "sources"
               },
               {
-                "label": "采集任务",
+                "filter": {
+                  "in": [
+                    "Failed",
+                    "Pending"
+                  ],
+                  "key": "status"
+                },
+                "label": "待处理",
                 "op": "count",
-                "query": "collections"
+                "query": "collections",
+                "warn": true
               },
               {
                 "field": "records",
@@ -48,6 +56,37 @@
             "kind": "stats"
           },
           {
+            "columns": [
+              {
+                "key": "sourceId",
+                "title": "数据源"
+              },
+              {
+                "key": "date",
+                "title": "采集日期"
+              },
+              {
+                "key": "status",
+                "title": "状态"
+              },
+              {
+                "key": "note",
+                "title": "原因"
+              }
+            ],
+            "filter": {
+              "in": [
+                "Failed",
+                "Pending"
+              ],
+              "key": "status"
+            },
+            "kind": "table",
+            "pageSize": 8,
+            "query": "collections",
+            "title": "需要处理（失败 / 等待数据）"
+          },
+          {
             "dateKey": "date",
             "kind": "trend",
             "query": "collections",
@@ -62,34 +101,106 @@
               }
             ],
             "title": "按日采集量"
-          },
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
+      "ID": "ui-page-sources",
+      "Type": "ui-page",
+      "Config": {
+        "description": "以源为中心：选一个源，采集历史、当天文件、单源操作都在这一屏。",
+        "icon": "api",
+        "order": 10,
+        "page_id": "sources",
+        "renderer": "views",
+        "route": "/sources",
+        "title": "数据源",
+        "views": [
           {
             "columns": [
               {
-                "key": "sourceId",
+                "key": "name",
                 "title": "数据源"
-              },
-              {
-                "key": "date",
-                "title": "采集日期"
-              },
-              {
-                "format": "{filesCompleted}/{filesTotal}",
-                "key": "files",
-                "title": "文件进度"
-              },
-              {
-                "key": "records",
-                "title": "记录数"
               },
               {
                 "key": "status",
                 "title": "状态"
               }
             ],
-            "kind": "table",
-            "pageSize": 8,
-            "query": "collections"
+            "detailViews": [
+              {
+                "kind": "calendar",
+                "query": "collections",
+                "title": "采集状态日历"
+              },
+              {
+                "fields": [
+                  {
+                    "key": "status",
+                    "label": "状态"
+                  },
+                  {
+                    "key": "records",
+                    "label": "记录数"
+                  },
+                  {
+                    "key": "filesCompleted",
+                    "label": "完成文件"
+                  },
+                  {
+                    "key": "filesFailed",
+                    "label": "失败文件"
+                  }
+                ],
+                "kind": "kv",
+                "params": {
+                  "date": "$focus.date",
+                  "sourceId": "$focus.sourceId"
+                },
+                "query": "collection",
+                "title": "当日采集详情"
+              },
+              {
+                "columns": [
+                  {
+                    "key": "name",
+                    "title": "文件"
+                  },
+                  {
+                    "key": "records",
+                    "title": "记录数"
+                  },
+                  {
+                    "key": "status",
+                    "title": "状态"
+                  }
+                ],
+                "expand": "metadata",
+                "kind": "table",
+                "pageSize": 10,
+                "params": {
+                  "date": "$focus.date",
+                  "sourceId": "$focus.sourceId"
+                },
+                "query": "files",
+                "title": "当日文件明细"
+              }
+            ],
+            "focusKey": "id",
+            "kind": "master-detail",
+            "pageSize": 30,
+            "query": "sources",
+            "rowActions": [
+              {
+                "args": {
+                  "sourceId": "$row.id"
+                },
+                "command": "trigger",
+                "label": "采集"
+              }
+            ]
           }
         ]
       },
@@ -106,9 +217,9 @@
             "label": "立即采集"
           }
         ],
-        "description": "按数据源与采集日期列出任务；点选一行即在下方的文件明细与本侧详情中展示该次采集。",
+        "description": "补采中心：只把需要行动的任务放在前面，点选一行即在下方的文件明细与本侧详情中展示。",
         "icon": "profile",
-        "order": 10,
+        "order": 20,
         "page_id": "collections",
         "renderer": "views",
         "route": "/collections",
@@ -119,10 +230,6 @@
               {
                 "key": "schedule",
                 "label": "调度策略"
-              },
-              {
-                "key": "time",
-                "label": "触发时间"
               },
               {
                 "key": "cron",
@@ -138,7 +245,8 @@
               }
             ],
             "kind": "kv",
-            "query": "schedule"
+            "query": "schedule",
+            "title": "调度"
           },
           {
             "kind": "list",
@@ -153,6 +261,7 @@
                 "label": "采集"
               }
             ],
+            "title": "补采计划",
             "titleKey": "sourceId"
           },
           {
@@ -166,6 +275,10 @@
                 "title": "采集日期"
               },
               {
+                "key": "status",
+                "title": "状态"
+              },
+              {
                 "format": "{filesCompleted}/{filesTotal}",
                 "key": "files",
                 "title": "文件进度"
@@ -173,16 +286,13 @@
               {
                 "key": "records",
                 "title": "记录数"
-              },
-              {
-                "key": "status",
-                "title": "状态"
               }
             ],
             "kind": "table",
             "pageSize": 10,
             "query": "collections",
-            "selectFocus": true
+            "selectFocus": true,
+            "title": "全部任务"
           },
           {
             "columns": [
@@ -212,50 +322,6 @@
             },
             "query": "files",
             "title": "文件明细"
-          }
-        ]
-      },
-      "Enabled": null
-    },
-    {
-      "ID": "ui-page-sources",
-      "Type": "ui-page",
-      "Config": {
-        "description": "由共享画像组合出的独立源单元；触发其一即发出一次运行时事件。",
-        "icon": "api",
-        "order": 30,
-        "page_id": "sources",
-        "renderer": "views",
-        "route": "/sources",
-        "title": "数据源",
-        "views": [
-          {
-            "columns": [
-              {
-                "key": "name",
-                "title": "数据源"
-              },
-              {
-                "key": "path",
-                "title": "路径"
-              },
-              {
-                "key": "status",
-                "title": "状态"
-              }
-            ],
-            "kind": "table",
-            "pageSize": 20,
-            "query": "sources",
-            "rowActions": [
-              {
-                "args": {
-                  "sourceId": "$row.id"
-                },
-                "command": "trigger",
-                "label": "采集"
-              }
-            ]
           }
         ]
       },
