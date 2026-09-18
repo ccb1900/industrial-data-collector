@@ -5,3 +5,5 @@ node_modules/
 plugins/alarm-demo/alarm-demo
 /res/
 .DS_Store
+/configs/state/
+/tests/state/

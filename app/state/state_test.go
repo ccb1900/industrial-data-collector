@@ -232,7 +232,8 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 		return key
 	}
 	keep := []model.CollectionKey{mk("2026-09-05", "Succeeded"), mk("2026-09-06", "Failed")}
-	purge := []model.CollectionKey{mk("2026-09-07", "Skipped"), mk("2026-09-08", "Pending")}
+	purge := []model.CollectionKey{mk("2026-09-07", "Skipped")}
+	convert := []model.CollectionKey{mk("2026-09-08", "Pending")}
 
 	path := filepath.Join(t.TempDir(), "collection-state.json")
 	if err := os.WriteFile(path, mustJSON(t, snapshot(st)), 0o644); err != nil {
@@ -253,11 +254,15 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 		if _, ok, _ := fs.StatusOf(ctx, k); ok {
 			t.Fatalf("pre-instance record %s must be purged", k)
 		}
-		incomplete, _ := fs.ListIncomplete(ctx, "prod", k.Date, 0)
-		for _, ic := range incomplete {
-			if ic == k {
-				t.Fatalf("purged record %s still listed for recovery", k)
-			}
+	}
+	for _, k := range convert {
+		// Pending 迁移为 Failed：重试证据保留（可被补采重探）。
+		got, ok, _ := fs.StatusOf(ctx, k)
+		if !ok || got != model.StatusFailed {
+			t.Fatalf("pending record %s = %v (found=%v), want converted to Failed", k, got, ok)
+		}
+		if incomplete, _ := fs.ListIncomplete(ctx, "prod", k.Date, 0); len(incomplete) == 0 {
+			t.Fatalf("converted record %s must stay listed for recovery", k)
 		}
 	}
 	// 压实已回写：重新装载不再见到旧语义记录。
@@ -269,6 +274,9 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 		if _, ok, _ := fs2.StatusOf(ctx, k); ok {
 			t.Fatalf("purged record %s reappeared after reload", k)
 		}
+	}
+	if got, ok, _ := fs2.StatusOf(ctx, convert[0]); !ok || got != model.StatusFailed {
+		t.Fatalf("converted record survived reload: %v (found=%v)", got, ok)
 	}
 }
 
