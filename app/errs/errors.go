@@ -55,6 +55,12 @@ func ClassifySourceError(path string, err error) error {
 	if err == nil {
 		return nil
 	}
+	// 网络类判定必须先于通用 NotExist：Windows 的 syscall.Errno.Is 把
+	// ERROR_BAD_NETPATH（UNC 路径不可达）归入 fs.ErrNotExist——顺序颠倒
+	// 会把掉线当成"路径不存在"，过期日被终态化为无数据，永不补采。
+	if networkUnavailable(err) {
+		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
+	}
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) {
 		return Sourcef(ErrNotFound, "path %q: %w", path, err)
 	}
@@ -62,9 +68,6 @@ func ClassifySourceError(path string, err error) error {
 		return Sourcef(ErrPermissionDenied, "path %q: %w", path, err)
 	}
 	if errors.Is(err, syscall.ENETDOWN) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
-		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
-	}
-	if networkUnavailable(err) {
 		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

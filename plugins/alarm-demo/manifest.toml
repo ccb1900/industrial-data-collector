@@ -10,6 +10,8 @@ title = "报警示例"
 # 进程外后端：独立 OS 进程，经 stdin/stdout 的行分隔 JSON-RPC 提供契约。
 # 源码 main.go 用 go-cordis 的 proc.Serve 编写；发布前先构建：
 #   go build -o alarm-demo .
+# Windows：构建产物是 alarm-demo.exe（go build -o alarm-demo.exe .），
+# 框架启动时自动补 .exe 后缀，清单无需按平台改动。
 backend = "./alarm-demo"
 queries = ["alarms", "alarm-stats"]
 commands = ["ack-alarm"]
