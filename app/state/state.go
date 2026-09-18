@@ -126,20 +126,23 @@ func (s *MemoryState) End(ctx context.Context, key model.CollectionKey, status m
 	s.collections[ck] = rec
 	// 保留策略：Skipped（无数据）行是检查证据，保留 90 天后清理，
 	// 防止台账随"每天一条"无界增长。Succeeded/Failed 是完整历史，不清理。
-	s.pruneSkippedLocked(rec.EndedAt)
+
 	return nil
 }
 
-// skippedRetentionDays：无数据行的保留天数。
-const skippedRetentionDays = 90
-
-func (s *MemoryState) pruneSkippedLocked(now time.Time) {
-	cutoff := now.AddDate(0, 0, -skippedRetentionDays)
+// purgePreInstanceLocked 清除旧语义遗留的 Skipped/Pending 记录及其
+// 文件/失败副档，返回清除数量。调用方持有 s.mu（加载路径在解锁前）。
+func (s *MemoryState) purgePreInstanceLocked() int {
+	purged := 0
 	for k, rec := range s.collections {
-		if rec.Status == model.StatusSkipped && !rec.EndedAt.IsZero() && rec.EndedAt.Before(cutoff) {
+		if rec.Status == model.StatusSkipped || rec.Status == model.StatusPending {
 			delete(s.collections, k)
+			delete(s.files, k)
+			delete(s.failedFiles, k)
+			purged++
 		}
 	}
+	return purged
 }
 
 // Drop 移除一个采集键的全部台账（实例制：无证据不物化）。连带清理
@@ -530,6 +533,14 @@ func NewFile(path string) (*FileState, error) {
 			return nil, fmt.Errorf("state file %q: %w", path, err)
 		}
 		restore(&fs.MemoryState, snap)
+		// 加载即清污：实例制下 Skipped/Pending 是旧语义的预物化遗留，
+		// 不再合法——连同其文件/失败副档一并清除并回写压实。此后台账
+		// 里只有真实发生过的实例（Succeeded/Failed/Running）。
+		if purged := fs.MemoryState.purgePreInstanceLocked(); purged > 0 {
+			if err := fs.save(); err != nil {
+				return nil, fmt.Errorf("state file %q: compact: %w", path, err)
+			}
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("state file %q: %w", path, err)
 	}

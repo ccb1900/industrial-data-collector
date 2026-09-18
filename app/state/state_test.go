@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -208,4 +210,73 @@ func TestFailureLedgerRetiresByPathOnCorrectedReexport(t *testing.T) {
 	if len(gone) != 0 {
 		t.Fatalf("ledger after corrected re-export = %#v, want empty", gone)
 	}
+}
+
+// 加载即清污：旧语义遗留的 Skipped/Pending 记录在装载时清除并压实回写；
+// 真实实例（Succeeded/Failed）原样保留。
+func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
+	st := NewMemory()
+	ctx := context.Background()
+	mk := func(d, status string) model.CollectionKey {
+		var date model.CollectionDate
+		if err := date.UnmarshalText([]byte(d)); err != nil {
+			t.Fatal(err)
+		}
+		key := model.CollectionKey{SourceID: "prod", Date: date}
+		if _, err := st.Begin(ctx, key, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.End(ctx, key, model.Status(status), ""); err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	keep := []model.CollectionKey{mk("2026-09-05", "Succeeded"), mk("2026-09-06", "Failed")}
+	purge := []model.CollectionKey{mk("2026-09-07", "Skipped"), mk("2026-09-08", "Pending")}
+
+	path := filepath.Join(t.TempDir(), "collection-state.json")
+	if err := os.WriteFile(path, mustJSON(t, snapshot(st)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 存进文件的是带旧语义记录的快照；NewFile 必须清污并压实。
+	fs, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, k := range keep {
+		if got, ok, _ := fs.StatusOf(ctx, k); !ok || string(got) == "" {
+			t.Fatalf("real instance %s lost: %v %v", k, got, ok)
+		}
+	}
+	for _, k := range purge {
+		if _, ok, _ := fs.StatusOf(ctx, k); ok {
+			t.Fatalf("pre-instance record %s must be purged", k)
+		}
+		incomplete, _ := fs.ListIncomplete(ctx, "prod", k.Date, 0)
+		for _, ic := range incomplete {
+			if ic == k {
+				t.Fatalf("purged record %s still listed for recovery", k)
+			}
+		}
+	}
+	// 压实已回写：重新装载不再见到旧语义记录。
+	fs2, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range purge {
+		if _, ok, _ := fs2.StatusOf(ctx, k); ok {
+			t.Fatalf("purged record %s reappeared after reload", k)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
