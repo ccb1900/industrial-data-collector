@@ -47,17 +47,25 @@ func main() {
 	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
 
+	// 锚定：配置里的全部相对路径（state/源根/plugins）相对配置文件解析，
+	// 双击 exe、计划任务（默认 CWD 是 System32）与终端启动行为一致。
+	configAbs, err := apphost.AnchorConfigDir(*configPath)
+	if err != nil {
+		slog.Error("anchor config dir failed", "error", err.Error())
+		os.Exit(1)
+	}
+
 	logStore := logstore.Default()
 	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
 	logger := slog.New(logStore.NewHandler(os.Stderr))
 	if *dumpConfig {
-		if err := apphost.DumpEffectiveConfig(*configPath, patches, *configPath+".removed.json", os.Stdout); err != nil {
+		if err := apphost.DumpEffectiveConfig(configAbs, patches, configAbs+".removed.json", os.Stdout); err != nil {
 			logger.Error("dump-config failed", "error", err.Error())
 			os.Exit(1)
 		}
 		return
 	}
-	if err := run(logger, *configPath, *addr, patches); err != nil {
+	if err := run(logger, configAbs, *addr, patches); err != nil {
 		logger.Error("web-ui failed", "error", err.Error())
 		os.Exit(1)
 	}

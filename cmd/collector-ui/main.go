@@ -27,11 +27,18 @@ import (
 
 func main() {
 	configPath := flag.String("config", "configs/desktop.toml", "application TOML configuration")
-	frontendDir := flag.String("frontend", "frontend/dist", "React build directory (wails assets)")
+	frontendDir := flag.String("frontend", "frontend/dist", "React build directory (relative to the config file's directory; wails assets)")
 	flag.Parse()
 
+	// 锚定：配置与前端目录的相对路径相对配置文件解析，启动方式无关。
+	configAbs, err := apphost.AnchorConfigDir(*configPath)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stderr, nil)).Error("collector-ui failed", "error", err.Error())
+		os.Exit(1)
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(logger, *configPath, *frontendDir); err != nil {
+	if err := run(logger, configAbs, *frontendDir); err != nil {
 		logger.Error("collector-ui failed", "error", err.Error())
 		os.Exit(1)
 	}

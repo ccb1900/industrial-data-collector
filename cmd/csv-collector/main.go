@@ -27,6 +27,14 @@ func main() {
 	var patches multiFlag
 	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
 	flag.Parse()
+	// 锚定：配置里的全部相对路径（state/源根/plugins）相对配置文件解析。
+	// 计划任务（Windows Task Scheduler 默认 CWD 是 System32）与终端启动
+	// 行为一致——否则状态、锁、数据会落到启动目录里。
+	configAbs, err := host.AnchorConfigDir(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "csv-collector:", err)
+		os.Exit(1)
+	}
 	if !*dumpConfig {
 		// 单实例守卫：state/ 只允许一个采集/控制台进程。
 		releaseLock, err := applock.Acquire("state")
@@ -40,17 +48,16 @@ func main() {
 	_ = logStore.SetFile(filepath.Join("state", "logs", "app.log"), 10<<20)
 	logger := slog.New(logStore.NewHandler(os.Stderr))
 	if *dumpConfig {
-		if err := host.DumpEffectiveConfig(*configPath, patches, *configPath+".removed.json", os.Stdout); err != nil {
+		if err := host.DumpEffectiveConfig(configAbs, patches, configAbs+".removed.json", os.Stdout); err != nil {
 			logger.Error("dump-config failed", "error", err.Error())
 			os.Exit(1)
 		}
 		return
 	}
-	var err error
 	if *once {
-		err = runOnce(logger, *configPath, patches)
+		err = runOnce(logger, configAbs, patches)
 	} else {
-		err = runResident(logger, *configPath, patches)
+		err = runResident(logger, configAbs, patches)
 	}
 	if err != nil {
 		logger.Error("csv-collector failed", "error", err.Error())

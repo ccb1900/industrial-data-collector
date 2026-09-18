@@ -153,6 +153,12 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 		if path == dir || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
 			return nil // descend into real directories; skip symlinks
 		}
+		// Windows 共享目录的系统文件（缩略图缓存、桌面配置、Office 锁
+		// 文件）不是业务数据——内容探测模式下没有 pattern 过滤，必须在
+		// 走查层排除，否则会被当成候选文件读出各种解析错误。
+		if isSystemJunk(d.Name()) {
+			return nil
+		}
 		if !s.ContentDetect {
 			matched, _ := filepath.Match(s.Pattern, d.Name())
 			if !matched {
@@ -298,6 +304,18 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 		file.Hash = sum
 	}
 	return []model.FileIdentity{file}, nil
+}
+
+// isSystemJunk 报告一个目录项是否为操作系统/应用生成的非业务文件。
+func isSystemJunk(name string) bool {
+	if strings.HasPrefix(name, "~$") { // Office 打开锁文件
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "thumbs.db", "desktop.ini", ".ds_store", "ehthumbs.db", "desktop.ini.bak":
+		return true
+	}
+	return false
 }
 
 func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
