@@ -605,11 +605,14 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	default:
 		stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList, conflict)
 	}
-	metaJSON := ""
-	if len(batch.Metadata.Values) > 0 {
-		b, _ := json.Marshal(batch.Metadata.Values)
-		metaJSON = string(b)
+	// 语句整批预编译一次：database/sql 的 ExecContext 逐行调用会重复
+	// prepare，batch_size=1000 的 Oracle 批次就是 1000 次 prepare+execute；
+	// 预编译后循环内只做参数绑定与执行。
+	insertStmt, err := tx.PrepareContext(ctx, stmt)
+	if err != nil {
+		return errs.ClassifyStorageError("prepare insert", err)
 	}
+	defer insertStmt.Close()
 	for i := range batch.Records {
 		rec := &batch.Records[i]
 		values, merr := t.mapRow(batch.Key, batch.File, batch.Header, rec.Fields, batch.Metadata, rec.RowNumber)
@@ -620,8 +623,7 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 			raw, _ := json.Marshal(rec.Fields)
 			values = append(values, string(raw))
 		}
-		_ = metaJSON
-		if _, err := tx.ExecContext(ctx, stmt, values...); err != nil {
+		if _, err := insertStmt.ExecContext(ctx, values...); err != nil {
 			return errs.ClassifyStorageError("write row "+batch.File.Name, err)
 		}
 	}

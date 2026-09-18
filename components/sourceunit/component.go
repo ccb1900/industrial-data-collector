@@ -429,6 +429,13 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
 	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
+	// no_data_grace_hours 已被实例制取代：缺失可见性由巡检（expect +
+	// inspection_lookback_days）承担。保留解析仅为兼容旧配置，但显式
+	// 配置时必须告警，避免操作员以为它还在起作用。
+	if _, present := cc.Config["no_data_grace_hours"]; present {
+		slog.Warn("no_data_grace_hours is superseded by inspection (expect + inspection_lookback_days) and is ignored",
+			"source", cc.ID)
+	}
 	// 实例制语义：since = 源生命周期下界；expect = 预期节奏（daily）；
 	// inspection_lookback_days = 预期缺失的巡检回看窗口（含目标日）。
 	since := model.CollectionDate{}
