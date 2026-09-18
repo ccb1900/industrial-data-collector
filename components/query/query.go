@@ -89,13 +89,6 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := runtime.On(ctx, events.CollectionSkipped, func(dctx context.Context, p events.CollectionSkippedPayload) error {
-		c.model.OnCollectionSkipped(p.Key, p.Note, p.At)
-		c.obs.Publish(query.ObservationEvent{Type: "CollectionSkipped", Key: p.Key})
-		return nil
-	}); err != nil {
-		return nil, err
-	}
 	if err := runtime.On(ctx, events.CollectionPending, func(dctx context.Context, p events.CollectionPendingPayload) error {
 		c.model.OnCollectionPending(p.Key, p.Note, p.At)
 		c.obs.Publish(query.ObservationEvent{Type: "CollectionPending", Key: p.Key})

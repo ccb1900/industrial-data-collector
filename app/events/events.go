@@ -17,10 +17,6 @@ var (
 	FileFailed          = runtime.NewEventKey[FileFailedPayload]("file.failed")
 	CollectionCompleted = runtime.NewEventKey[CollectionCompletedPayload]("collection.completed")
 	CollectionFailed    = runtime.NewEventKey[CollectionFailedPayload]("collection.failed")
-	// CollectionSkipped reports a business date closed as terminal "no
-	// data": its source directory does not exist and the day has fully
-	// passed, so the absence is permanent — distinct from Pending.
-	CollectionSkipped = runtime.NewEventKey[CollectionSkippedPayload]("collection.skipped")
 
 	// CollectionPending reports a business date that could not be collected
 	// yet (typically the date directory does not exist so far). Publishing it
@@ -28,12 +24,6 @@ var (
 	// instead of leaving it invisible between Pending and Failed.
 	CollectionPending = runtime.NewEventKey[CollectionPendingPayload]("collection.pending")
 )
-
-type CollectionSkippedPayload struct {
-	Key  model.CollectionKey
-	Note string
-	At   time.Time
-}
 
 type CollectionPendingPayload struct {
 	Key  model.CollectionKey

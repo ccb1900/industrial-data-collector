@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -168,6 +169,7 @@ type TableStorage struct {
 	autoOnce    sync.Once
 	autoCols    atomic.Pointer[[]ColumnMapping]
 	autoSchema  atomic.Bool
+	driftWarned map[string]bool // 写路径串行访问
 }
 
 // effectiveColumns returns the column set in force: declared columns win;
@@ -190,13 +192,17 @@ func deriveColumns(header []string) []ColumnMapping {
 		if name == "" || seen[name] {
 			continue
 		}
-		seen[name] = true
 		name = strings.Map(func(r rune) rune {
 			if r < 0x20 || r == 0x7f {
 				return -1 // 控制字符不进标识符
 			}
 			return r
 		}, name)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue // 剥离控制字符后为空（如纯 \x01 的表头）——跳过
+		}
+		seen[name] = true
 		cols = append(cols, ColumnMapping{From: SourceCSV, Name: raw, Column: name, Type: "text"})
 	}
 	return cols
@@ -209,6 +215,9 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 	}
 	ensureSQLiteDir(cfg)
 	db, err := sql.Open(cfg.Driver, sqliteDSN(cfg))
+	if err != nil {
+		return nil, errs.ClassifyStorageError("open", err)
+	}
 	if cfg.Dialect == "sqlite" {
 		// SQLite 单写者：进程内串行化避免 "database is locked"，跨进程由
 		// busy_timeout 兜底；:memory: 的池化多连接各自独立库，也由此根治。
@@ -238,6 +247,10 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 	db, err := sql.Open(t.cfg.Driver, sqliteDSN(t.cfg))
 	if err != nil {
 		return errs.ClassifyStorageError("open", err)
+	}
+	if t.cfg.Dialect == "sqlite" {
+		// 惰性路径与 OpenTable 同约定：进程内单连接，跨进程 busy_timeout。
+		db.SetMaxOpenConns(1)
 	}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
@@ -530,6 +543,9 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		})
 		if t.autoCols.Load() != nil && !t.autoSchema.Swap(true) {
 			if err := t.ensureSchema(ctx); err != nil {
+				// 建列失败必须回退闸门：否则一次瞬时错误（如 SQLITE_BUSY
+				// 超时）就让后续所有批次永久引用不存在的列。
+				t.autoSchema.Store(false)
 				return err
 			}
 		}
@@ -554,8 +570,28 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	}
 
 	cols := []string{"source_id", "collection_date", "file_id", "row_number"}
+	declared := map[string]bool{}
 	for _, c := range t.effectiveColumns() {
 		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
+		declared[c.Name] = true
+	}
+	if t.cfg.AutoColumns {
+		// 自动映射模式下列集在首批评次固定：后续文件新增的表头字段无法
+		// 落列，必须告警而不是静默丢弃。
+		for _, h := range batch.Header {
+			name := strings.TrimSpace(h)
+			if name == "" || declared[name] {
+				continue
+			}
+			if t.driftWarned == nil {
+				t.driftWarned = map[string]bool{}
+			}
+			if !t.driftWarned[name] {
+				t.driftWarned[name] = true
+				slog.Warn("auto-mapped source grew a new header column after first batch; value ignored (declare columns or re-create table)",
+					"table", t.cfg.Table, "column", name)
+			}
+		}
 	}
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values")

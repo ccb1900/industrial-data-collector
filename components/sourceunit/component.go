@@ -6,15 +6,12 @@
 package sourceunit
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -439,6 +436,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		if err := since.UnmarshalText([]byte(raw)); err != nil {
 			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q since must be YYYY-MM-DD: %v", cc.ID, err)
 		}
+		if !since.IsZero() && since.After(model.NewCollectionDate(time.Now())) {
+			slog.Warn("source since is in the future; planning and inspection are suspended until then",
+				"source", cc.ID, "since", raw)
+		}
 	}
 	expect := configutil.OptionalString(cc, "expect", "")
 	if expect != "" && expect != "daily" {
@@ -450,14 +451,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	group := configutil.OptionalString(cc, "group", "")
 	header := configutil.OptionalBool(cc, "header", true)
-	// 自动列发现：columns 未声明 + header=true 时，扫描源目录第一个
-	// 匹配文件读表头生成列定义（TEXT 起步）。启动时最佳努力——文件不
-	// 存在则跳过，后续热加载文件出现时自动补全。
-	if tableCfg != nil && len(tableCfg.Columns) == 0 {
-		if cols := sniffCSVHeader(root, pattern); len(cols) > 0 {
-			tableCfg.Columns = cols
-		}
-	}
+	// 自动字段映射在运行时用首个批次的解码表头建列（table.go 的
+	// AutoColumns），不做启动期裸读——裸读不解码编码且产出受
+	// 标识符约束的列名，会让部署成败取决于启动时目录里有没有文件。
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
@@ -733,55 +729,3 @@ func datePolicy(cfg map[string]any) (date.Policy, error) {
 }
 
 var _ runtime.Component = (*SourceUnitComponent)(nil)
-
-// sniffCSVHeader 从源目录中第一个匹配 pattern 的文件读取表头行，生成
-// TEXT 列定义。启动时最佳努力——文件不存在或读取失败时返回空。
-func sniffCSVHeader(root, pattern string) []storage.ColumnMapping {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		matched, _ := filepath.Match(pattern, entry.Name())
-		if !matched {
-			continue
-		}
-		f, err := os.Open(filepath.Join(root, entry.Name()))
-		if err != nil {
-			continue
-		}
-		line, err := bufio.NewReader(f).ReadString('\n')
-		f.Close()
-		if err != nil || line == "" {
-			continue
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if !utf8.ValidString(line) {
-			// 非 UTF-8 表头（GBK/GB18030 最常见）经自动发现会产出乱码列名，
-			// 与解码后的真实表头永远对不上——数据"采集成功"但全部列为 NULL。
-			// 这里拒绝并告警，把问题顶到启动日志里，要求显式声明列。
-			slog.Warn("source header is not valid UTF-8; auto column discovery would produce mojibake — declare columns explicitly with encoding",
-				"file", entry.Name())
-			return nil
-		}
-		names := strings.Split(line, ",")
-		var cols []storage.ColumnMapping
-		for _, name := range names {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			cols = append(cols, storage.ColumnMapping{
-				From:   "csv",
-				Name:   name,
-				Column: name,
-				Type:   "text",
-			})
-		}
-		return cols
-	}
-	return nil
-}

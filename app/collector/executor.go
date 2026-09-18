@@ -113,7 +113,12 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		}
 		keys = filtered
 		if target.Before(cfg.Since) {
-			return nil, nil
+			cfg.Logger.Info("target date is before source since; nothing to collect",
+				"source", e.Source.ID(), "target", target.String(), "since", cfg.Since.String())
+			return []model.CollectionResult{{
+				Key:    model.CollectionKey{SourceID: e.Source.ID(), Date: target},
+				Status: model.StatusSkipped, Error: "target date is before source since",
+			}}, nil
 		}
 	}
 	hasTarget := false
@@ -169,8 +174,17 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anch
 	if err != nil {
 		switch {
 		case errs.Is(err, errs.ErrNotFound):
+			// 历史已成功：文件后来被共享清理——台账保留成功事实，
+			// 不告警、不降级（否则每次触发都会对成功日重复假警报）。
+			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok && st == model.StatusSucceeded {
+				result.Status = model.StatusSkipped
+				result.Error = "no data; already collected previously"
+				cfg.Logger.Info("files removed after success; ledger kept", "key", key.String())
+				return result
+			}
 			// 巡检窗口内的预期缺失：可重试的 Failed 实例（文件晚到后
-			// 下次采集成功即覆盖）。
+			// 下次采集成功即覆盖）。已 Succeeded 的日期在上方被拦下，
+			// 不会出现台账与结果互相矛盾的假警报。
 			if InspectionDue(cfg, key.Date, anchor) {
 				result.Status = model.StatusFailed
 				result.Error = fmt.Sprintf("inspection: expected %s data is missing: %v", cfg.Expect, err)
@@ -186,8 +200,12 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anch
 				result.Duration = result.EndedAt.Sub(started)
 				return result
 			}
-			// 无证据不物化：清掉旧语义遗留的半截记录（Skipped/Pending）。
-			_ = e.State.Drop(ctx, key)
+			// 无证据不物化：只清旧语义遗留（Skipped/Pending），
+			// Succeeded/Failed 是真实历史，绝不抹掉。
+			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok &&
+				(st == model.StatusSkipped || st == model.StatusPending) {
+				_ = e.State.Drop(ctx, key)
+			}
 			result.Status = model.StatusSkipped
 			result.Error = fmt.Sprintf("no data; not materialized: %v", err)
 			cfg.Logger.Info("no data for date; not materialized", "key", key.String())
@@ -215,7 +233,10 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anch
 		}
 	}
 	if len(files) == 0 {
-		_ = e.State.Drop(ctx, key)
+		if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok &&
+			(st == model.StatusSkipped || st == model.StatusPending) {
+			_ = e.State.Drop(ctx, key)
+		}
 		result.Status = model.StatusSkipped
 		result.Error = "no files matched"
 		cfg.Logger.Info("no files matched; not materialized", "key", key.String())

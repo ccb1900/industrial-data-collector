@@ -142,14 +142,19 @@ func (s *MemoryState) pruneSkippedLocked(now time.Time) {
 	}
 }
 
-// Drop 移除一个采集键的全部台账（实例制：无证据不物化）。
+// Drop 移除一个采集键的全部台账（实例制：无证据不物化）。连带清理
+// 该键的文件记录与失败台账——否则留下"采集记录不存在但失败账还在"
+// 的孤儿，文件重新出现时也会被已完成门误挡。
 func (s *MemoryState) Drop(ctx context.Context, key model.CollectionKey) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.collections, stateKey(key))
+	ck := stateKey(key)
+	delete(s.collections, ck)
+	delete(s.files, ck)
+	delete(s.failedFiles, ck)
 	return nil
 }
 

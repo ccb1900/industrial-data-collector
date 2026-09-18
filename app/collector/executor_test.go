@@ -181,12 +181,13 @@ func TestSinceClampsPlanning(t *testing.T) {
 	writeDateCSV(t, root, "2026-09-04", "old.csv", "id\n1\n")
 	writeDateCSV(t, root, "2026-09-06", "new.csv", "id\n1\n")
 
+	// 显式指定 since 之前的日期：返回带原因的空结果，不物化台账。
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-04"))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 0 {
-		t.Fatalf("before-since trigger = %#v, want nothing planned", res)
+	if len(res) != 1 || res[0].Status != model.StatusSkipped || !strings.Contains(res[0].Error, "before source since") {
+		t.Fatalf("before-since trigger = %#v, want clamped skip with reason", res)
 	}
 	if _, ok, _ := st.StatusOf(context.Background(), model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-04")}); ok {
 		t.Fatal("before-since date must not be materialized")
