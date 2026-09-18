@@ -568,6 +568,25 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 				driver = "godror"
 			}
 		}
+		// columns 未声明 + header=true：自动字段映射（默认）。首个批次用
+		// 解码后的表头建列（全部 TEXT，列名即表头文本），不再落入 generic
+		// JSON 模式——编码由解析器处理，GBK 等旧编码在映射前已正确解码。
+		header := configutil.OptionalBool(cc, "header", true)
+		if _, present := cfg["columns"]; !present && header {
+			tableCfg := &storage.TableConfig{
+				Driver:      driver,
+				DSN:         configutil.OptionalString(cc, "dsn", ""),
+				Dialect:     dialect,
+				Table:       configutil.OptionalString(cc, "table", "records"),
+				FileTable:   configutil.OptionalString(cc, "file_table", ""),
+				AutoColumns: true,
+				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
+			}
+			if err := tableCfg.Validate(); err != nil {
+				return nil, nil, nil, err
+			}
+			return nil, nil, tableCfg, nil
+		}
 		// Typed relational mode: declared columns become real database
 		// columns and the CSV header lands in the file registry table.
 		if rawColumns, present := cfg["columns"]; present {

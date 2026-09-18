@@ -67,6 +67,10 @@ func OpenSQL(ctx context.Context, cfg SQLConfig) (*SQLStore, error) {
 	if err != nil {
 		return nil, errs.ClassifyStorageError("open", err)
 	}
+	if cfg.Dialect == "sqlite" {
+		// 同 OpenTable：进程内单连接，跨进程 busy_timeout。
+		db.SetMaxOpenConns(1)
+	}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, errs.ClassifyStorageError("ping", err)
@@ -236,19 +240,24 @@ func (s *SQLStore) Close() error {
 }
 
 func quoteIdent(dialect, name string) string {
-	if !tableNamePattern.MatchString(name) {
-		return name
-	}
-	switch dialect {
-	case "mysql":
-		return "`" + name + "`"
-	case "oracle":
-		// Oracle：不加引号 → 服务器按大写折叠存储/匹配，与 user_tables
-		// 的 UPPER 查询、非引号查询路径保持一致。
-		return strings.ToUpper(name)
-	default:
+	if tableNamePattern.MatchString(name) {
+		switch dialect {
+		case "mysql":
+			return "`" + name + "`"
+		case "oracle":
+			// Oracle：不加引号 → 服务器按大写折叠存储/匹配，与 user_tables
+			// 的 UPPER 查询、非引号查询路径保持一致。
+			return strings.ToUpper(name)
+		}
 		return `"` + name + `"`
 	}
+	// 非常规标识符（自动字段映射的列名来自 CSV 表头，是任意文本）：
+	// 显式引号包裹并转义内嵌引号——这是注入与语法错误的唯一防线，
+	// 引号内内容永不参与 SQL 解析。
+	if dialect == "mysql" {
+		return "`" + strings.ReplaceAll(strings.ReplaceAll(name, "`", "``"), "\x00", "") + "`"
+	}
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(name, `"`, `""`), "\x00", "") + `"`
 }
 
 func safeConstraintName(name string) string {

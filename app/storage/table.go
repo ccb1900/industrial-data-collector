@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"dynamic-runtime/runtime"
@@ -53,6 +55,9 @@ type TableConfig struct {
 	ExtraRows bool            // store unmapped CSV fields into row_values TEXT
 	Exposer   bool            // expose the RowsQuery capability for consoles
 	Lazy      bool            // defer connection to first use
+	// AutoColumns 自动字段映射：Columns 未声明时，首个批次的解码表头
+	// 自动建列（全部 TEXT，列名即表头文本）。声明了 Columns 时本开关无效。
+	AutoColumns bool
 }
 
 func (c *TableConfig) Validate() error {
@@ -73,6 +78,9 @@ func (c *TableConfig) Validate() error {
 	}
 	if c.FileTable != "" && !tableNamePattern.MatchString(c.FileTable) {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage file_table %q is not a simple identifier", c.FileTable)
+	}
+	if len(c.Columns) == 0 && !c.AutoColumns {
+		return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: no columns declared (set columns or auto_columns)", c.Table)
 	}
 	seen := map[string]bool{}
 	for i := range c.Columns {
@@ -153,6 +161,45 @@ type TableStorage struct {
 	lazy    bool
 	cfg     TableConfig
 	closeMe func() error
+
+	// 自动字段映射：columns 未声明时，首个批次用解码后的表头建列。
+	// effectiveColumns 是全部读路径的列来源；原子指针保证控制台查询
+	// 与采集写入并发时的可见性与无竞争。
+	autoOnce    sync.Once
+	autoCols    atomic.Pointer[[]ColumnMapping]
+	autoSchema  atomic.Bool
+}
+
+// effectiveColumns returns the column set in force: declared columns win;
+// with AutoColumns the first batch's decoded header derives them.
+func (t *TableStorage) effectiveColumns() []ColumnMapping {
+	if cs := t.autoCols.Load(); cs != nil {
+		return *cs
+	}
+	return t.cfg.Columns
+}
+
+// deriveColumns 从解码表头生成列声明：Name 保留表头原文（mapRow 按表头
+// 名精确取值），Column 即表头文本（quoteIdent 负责安全引用）。空白列跳
+// 过；重复表头只声明一次（按名取值本就取最后一次出现）。
+func deriveColumns(header []string) []ColumnMapping {
+	cols := make([]ColumnMapping, 0, len(header))
+	seen := map[string]bool{}
+	for _, raw := range header {
+		name := strings.TrimSpace(raw)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		name = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1 // 控制字符不进标识符
+			}
+			return r
+		}, name)
+		cols = append(cols, ColumnMapping{From: SourceCSV, Name: raw, Column: name, Type: "text"})
+	}
+	return cols
 }
 
 // OpenTable opens the typed sink eagerly.
@@ -162,6 +209,11 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 	}
 	ensureSQLiteDir(cfg)
 	db, err := sql.Open(cfg.Driver, sqliteDSN(cfg))
+	if cfg.Dialect == "sqlite" {
+		// SQLite 单写者：进程内串行化避免 "database is locked"，跨进程由
+		// busy_timeout 兜底；:memory: 的池化多连接各自独立库，也由此根治。
+		db.SetMaxOpenConns(1)
+	}
 	if err != nil {
 		return nil, errs.ClassifyStorageError("open", err)
 	}
@@ -238,8 +290,8 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			"row_number NUMBER(19) NOT NULL",
 		}
 	}
-	for _, c := range t.cfg.Columns {
-		cols = append(cols, c.Column+" "+dt[c.Type])
+	for _, c := range t.effectiveColumns() {
+		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column)+" "+dt[c.Type])
 	}
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values "+dt["text"])
@@ -265,7 +317,7 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	for _, c := range existing {
 		have[strings.ToLower(c)] = true
 	}
-	for _, c := range t.cfg.Columns {
+	for _, c := range t.effectiveColumns() {
 		if have[strings.ToLower(c.Column)] {
 			continue
 		}
@@ -427,7 +479,7 @@ func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, 
 		file.Identity(),
 		rowNumber,
 	}
-	for _, c := range t.cfg.Columns {
+	for _, c := range t.effectiveColumns() {
 		var raw string
 		var present bool
 		switch c.From {
@@ -463,9 +515,23 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// 连接先行：惰性库在首个批次才打开，派生列后的补建表必须持有 db。
 	if t.db == nil {
 		if err := t.EnsureConnected(ctx); err != nil {
 			return err
+		}
+	}
+	// 自动字段映射：以首个批次的解码表头建列。派生后补一次 ensureSchema
+	//（幂等：CREATE IF NOT EXISTS + 增量 ALTER 补齐新列）。
+	if t.cfg.AutoColumns && len(t.cfg.Columns) == 0 && len(batch.Header) > 0 {
+		t.autoOnce.Do(func() {
+			cols := deriveColumns(batch.Header)
+			t.autoCols.Store(&cols)
+		})
+		if t.autoCols.Load() != nil && !t.autoSchema.Swap(true) {
+			if err := t.ensureSchema(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
@@ -488,8 +554,8 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	}
 
 	cols := []string{"source_id", "collection_date", "file_id", "row_number"}
-	for _, c := range t.cfg.Columns {
-		cols = append(cols, c.Column)
+	for _, c := range t.effectiveColumns() {
+		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
 	}
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values")
@@ -548,7 +614,7 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		offset = 0
 	}
 	declared := map[string]bool{}
-	for _, c := range t.cfg.Columns {
+	for _, c := range t.effectiveColumns() {
 		declared[strings.ToLower(c.Column)] = true
 	}
 	// sourceID/date 留空表示该维度不过滤：控制台的跨批次查询依赖这一点。
@@ -580,7 +646,7 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	}
 	cols := append([]string{"source_id", "collection_date", "file_id", "row_number"}, func() []string {
 		out := make([]string, 0, len(t.cfg.Columns))
-		for _, c := range t.cfg.Columns {
+		for _, c := range t.effectiveColumns() {
 			out = append(out, c.Column)
 		}
 		return out
@@ -600,17 +666,17 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 			"SELECT * FROM (SELECT q.*, ROWNUM rn FROM (SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number) q WHERE ROWNUM <= %d) WHERE rn > %d",
 			strings.Join(quoted, ", "), tbl, w, offset+limit, offset)
 	}
+	// Total 先算：页面 SELECT 会在单连接池（SQLite）里占用唯一连接，
+	// 结果集未关就发 COUNT 会同池自锁（无限连接池掩盖了这一顺序缺陷）。
+	if err := t.db.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s %s", tbl, w), args...).Scan(&page.Total); err != nil {
+		return page, errs.ClassifyStorageError("count rows", err)
+	}
 	rows, err := t.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return page, errs.ClassifyStorageError("query rows", err)
 	}
 	defer rows.Close()
-	// Total reflects the same filters without paging, so the console can show
-	// how much the query matched beyond the current page.
-	if err := t.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT COUNT(*) FROM %s %s", tbl, w), args...).Scan(&page.Total); err != nil {
-		return page, errs.ClassifyStorageError("count rows", err)
-	}
 	page.Columns = cols
 	for rows.Next() {
 		vals := make([]any, len(cols))
