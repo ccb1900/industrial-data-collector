@@ -3,14 +3,14 @@
 ## Layers
 
 ```text
-cmd/csv-collector
-app/host
-components/config
-components/collector + components/scheduler
-components/query + plugins/ui + components/ui-contrib + components/explorer
-components/source + components/metadata + components/parser + components/storage + components/state
-app/collector + app/recovery + app/scheduler + app/metadata + app/query + app/ui + app/explorer
-app/source + app/parser + app/storage + app/state + app/model
+cmd/csv-collector, cmd/web-ui
+app/host, app/bundles
+components/config (factories) + app/sourcecomp (four-layer composition)
+components/sourceunit + components/scheduler + components/watchtrigger
+components/storage + components/metadata + components/query
+components/consolebridge + components/ui-contrib (+ plugins/*)
+app/collector + app/recovery + app/parser + app/storage + app/state + app/model
+app/source + app/date + app/encoding + app/errs + app/events + app/metadata + app/query + app/scheduler
 dynamic-runtime (github.com/ccb1900/gocordis)
 ```
 
@@ -25,11 +25,11 @@ Component, Fiber (observed only), Activation Context, Capability, Dependency,
 Effect, Event, Realm, Ownership, and Reconciliation. Application layer code is
 in `app/`; the runtime source is untouched.
 
-`app/sourcecomp` is the Configuration Composition layer: `[profiles.*]` and
-`[[sources]]` tables are resolved into one `csv-source-unit` component per
-logical Source before Runtime sees the config. Profiles are never Runtime
-components, and each Source keeps independent state under its logical Source
-ID.
+`app/sourcecomp` is the Configuration Composition layer: the four-layer
+declaration tables (defaults/sinks/formats/format_groups/machines/schedules)
+are expanded into one `csv-source-unit` component per (machine, format) pair
+before Runtime sees the config. Declarations are never Runtime components,
+and each source unit keeps independent state under its source ID.
 
 ## Package boundaries
 
@@ -48,27 +48,24 @@ Each config component type maps to one Component:
 
 | Config type | Provides | Purpose |
 | --- | --- | --- |
-| `local-file-source` / `unc-file-source` | FileSource | list/read dated files |
-| `csv-source-unit` | none | one independent Source Effect produced by `app/sourcecomp`; owns FileSource/parser/sink/state/metadata |
-| `csv-parser` | CSVParser | streaming CSV rows |
-| `mysql-storage` / `postgresql-storage` / `oracle-storage` / `memory-storage` | Storage | idempotent batch writes |
-| `memory-state` / `file-state` | CollectionState | idempotency + recovery state |
-| `path-metadata` (one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
+| `csv-source-unit` | none | one independent Source Effect produced by `app/sourcecomp` fleet expansion; owns FileSource/parser/sink/state/metadata |
+| `memory-storage` / `mysql-storage` / `postgresql-storage` / `oracle-storage` / `sqlite-storage` / `sqlserver-storage` | Storage | idempotent batch writes (five SQL dialects + memory) |
+| `path-metadata` (at most one per Realm) | MetadataExtractor | single provider; per-source rule sets (SourceID -> RuleSet) |
+| `scheduler` | Trigger | daily/cron/multi-entry timelines emitted as Runtime Events; entries target machine groups |
+| `watch-file-trigger` | Trigger | change-triggered counterpart: emits the collection event after content stabilizes |
 | `query-provider` | Query/Observation/Command | Application Observation Adapter + read model |
 | `ui` | UI Composition Registry | UI Host: owns one Registry per activation, Query/Observation/Command bridge, isolated `Snapshot()`/DTO transport |
-| `ui-page` / `ui-panel` | none (contributor) | independent components: register one declarative Page/Panel through Effect-owned cleanup |
-| `ui-contribution` | none (contributor) | one component registers multiple Pages/Panels; every registration is a Runtime Effect |
+| `ui-page` / `ui-panel` / `ui-contribution` | none (contributor) | independent components registering declarative Pages/Panels; every registration is a Runtime Effect with owned cleanup |
 | `plugin-explorer` | none (Console contributor + transport Host) | Plugin Explorer page; Runtime data/control through `app/explorer.Service` and public Fiber API |
-| `scheduler` | Trigger | daily tick to Runtime Event |
-| `csv-collector` | none | worker + event handler |
+| `console-bridge` / `console-rows` | none (Console bridge) | application vocabulary (named queries/commands) injected into the domain-free console platform |
 
-Collector declares exactly five required dependencies. There is no
-`switch databaseType` or `switch sourceKind` in Collector and no source-specific
-metadata routing: the Collector depends only on the one `MetadataExtractor`
-capability. The Metadata plugin is an ordinary Component: one component is the
-single `MetadataExtractor` Provider of the Realm and internally routes by
-`FileIdentity.SourceID`; it is replaced by Config Reconciliation when any
-source's rules change.
+Each source unit declares exactly its own dependencies (storage, state,
+metadata). There is no `switch databaseType` or `switch sourceKind` in the
+collector and no source-specific metadata routing: the collector depends
+only on the one `MetadataExtractor` capability. The Metadata plugin is an
+ordinary Component: one component is the single `MetadataExtractor` Provider
+of the Realm and internally routes by `FileIdentity.SourceID`; it is
+replaced by Config Reconciliation when any source's rules change.
 
 ## Event flow
 

@@ -32,23 +32,24 @@ Section. Ordinary CSV without the structured configuration keeps
 
 ## 2. Configuration
 
-The layout is declared explicitly on the `csv-parser` component. Row numbers
-are physical rows starting at 1:
+The layout is declared explicitly on the format (or source unit) — the
+`csv` key sits next to `header`/`encoding` in the same config table. Row
+numbers are physical rows starting at 1:
 
 ```toml
-[[components]]
-id = "csv-parser"
-type = "csv-parser"
-
-[components.config]
+[[formats]]
+name = "structured-reading"
+match = "reading_YYMMDD.csv"
+table = "READINGS"
+sink = "plant-oracle"
 header = true
 
-[components.config.csv.metadata]
+[formats.csv.metadata]
 mode = "key_value"
 start_row = 1
 end_row = 5
 
-[components.config.csv.data]
+[formats.csv.data]
 header_row = 7
 ```
 

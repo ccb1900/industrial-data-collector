@@ -81,7 +81,7 @@ for pkg in watchtrigger storage scheduler metadata query ui-contrib consolebridg
   check "components/$pkg/manifest.toml" test -f "components/$pkg/manifest.toml"
 done
 total=$(python3 -c "import glob; print(sum(open(f).read().count('[[types]]') for f in glob.glob('components/*/manifest.toml')))")
-check "manifest 类型总数 = 19（实际 ${total}）" test "$total" = "19"
+check "manifest 类型总数 = 20（实际 ${total}）" test "$total" = "20"
 check "pluginmeta 聚合存在" test -f internal/pluginmeta/pluginmeta.go
 check "validate 聚合引用"   grep_q 'pluginmeta.Types()' app/config/validate.go
 

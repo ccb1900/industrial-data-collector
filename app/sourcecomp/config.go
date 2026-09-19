@@ -31,22 +31,35 @@ type ParseResult struct {
 }
 
 // The file-collection domain joins the composition pipeline as one Layer:
-// it consumes the profiles/sources tables and contributes source-unit rows
-// plus provider enrichment. Layering itself (bundles, plugin discovery,
-// explicit rows, merge order) is the framework pipeline's job — this package
-// never re-implements it.
+// it consumes the four-layer declaration tables (defaults/sinks/formats/
+// format_groups/machines/schedules) and contributes source-unit rows plus
+// provider enrichment. Layering itself (bundles, plugin discovery, explicit
+// rows, merge order) is the framework pipeline's job — this package never
+// re-implements it.
 //
 // Parse decodes the extended TOML document:
 //
 //	bundles = ["collector-core", "collector-console"]
 //
-//	[profiles.csv_machine]
-//	...
+//	[defaults]
+//	state_dir = "../state"
 //
-//	[[sources]]
-//	id = "machine001"
-//	path = "\\\\machine001\\data"
-//	profiles = ["csv_machine"]
+//	[[sinks]]
+//	name = "plant-oracle"
+//	driver = "oracle"
+//	dsn = "oracle://..."
+//
+//	[[formats]]
+//	name = "aaa"
+//	match = "aaa_YYMMDD.log"
+//	table = "LASER_AAA"
+//	sink = "plant-oracle"
+//
+//	[[machines]]
+//	no = "laser"
+//	path = "../res/laser/YYYYMM"
+//	group = "laser-set"
+//	schedule = "nightly"
 //
 // ExpandWithPlugins is Parse with plugin discovery rooted at pluginsDir.
 func Parse(data []byte) (*ParseResult, error) {

@@ -43,12 +43,12 @@ components never hard-code colors.
   renderer-derived glyph), composition size (pages/panels), boundary chip,
   working indicator while a command is accepted but unfinished.
 - **Page card** — hero (title + one-line explanation of what the view
-  projects) + content. Pages: Overview (summary + recent collections),
-  Collections (selectable rows = focus), Files (expandable file rows with
-  open-ended metadata), Sources (profile chips + per-source trigger),
-  Plugins (master-detail Runtime console).
-- **Focus model** — selecting a collection row re-points the dependent
-  surfaces (Files page, Metadata panel) at that source/date; "latest" is the
+  projects) + content. Four pages (source-centric IA): Overview 概览
+  (summary + 需要处理 + daily trend), Collect 采集 (schedule state +
+  per-source trigger + calendar), Data 数据 (source × date matrix with
+  file drill-down), Plugins 插件 (master-detail Runtime console).
+- **Focus model** — selecting a source/date cell re-points the dependent
+  surfaces (Data page drill-down, metadata panels); "latest" is the
   default focus. This is view state only; it lives in the React shell.
 - **Observation Feed** — reversed invalidation stream with tone chips
   (file completed / file failed / collection completed / composition

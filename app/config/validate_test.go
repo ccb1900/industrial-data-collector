@@ -16,23 +16,18 @@ import (
 
 // Validation reads the aggregated type table from the component packages'
 // embedded manifests; a unit test of this package links none of them, so it
-// registers the metadata its fixtures need.
+// registers the metadata its fixtures need — mirroring the production
+// manifest kinds (no retired types).
 func init() {
 	pluginmeta.MustRegister([]byte(`
 name = "validate-test"
 title = "Validate Test"
 
 [[types]]
-name = "local-file-source"
-kind = "source"
-capability = "filesource"
-title = "Local File Source"
-
-[[types]]
-name = "csv-parser"
-kind = "parser"
-capability = "csvparser"
-title = "CSV Parser"
+name = "csv-source-unit"
+kind = "source-unit"
+capability = "source-unit"
+title = "CSV Source Unit"
 
 [[types]]
 name = "memory-storage"
@@ -41,10 +36,16 @@ capability = "storage"
 title = "Memory Storage"
 
 [[types]]
-name = "memory-state"
-kind = "state"
-capability = "state"
-title = "Memory State"
+name = "sqlite-storage"
+kind = "storage"
+capability = "storage"
+title = "SQLite Storage"
+
+[[types]]
+name = "sqlserver-storage"
+kind = "storage"
+capability = "storage"
+title = "SQL Server Storage"
 
 [[types]]
 name = "scheduler"
@@ -57,12 +58,6 @@ name = "path-metadata"
 kind = "metadata"
 capability = "metadataextractor"
 title = "Path Metadata"
-
-[[types]]
-name = "csv-collector"
-kind = "collector"
-capability = "collector"
-title = "CSV Collector"
 
 [[types]]
 name = "query-provider"
@@ -105,29 +100,17 @@ name = "plugin-explorer"
 kind = "ui-console-plugin"
 capability = "plugin-explorer"
 title = "Plugin Explorer"
-
-[[types]]
-name = "csv-source-unit"
-kind = "source-unit"
-capability = "source-unit"
-title = "CSV Source Unit"
-
-[[types]]
-name = "file-state"
-kind = "state"
-capability = "state"
-title = "File State"
-
-[[types]]
-name = "text-parser"
-kind = "parser"
-capability = "csvparser"
-title = "Text Parser"
 `), "validate_test")
 }
 
 func component(id, typ string, cfg map[string]any) extconfig.ComponentConfig {
 	return extconfig.ComponentConfig{ID: id, Type: typ, Config: cfg}
+}
+
+func sourceUnit(id, path string) extconfig.ComponentConfig {
+	return component(id, "csv-source-unit", map[string]any{
+		"source_id": id, "path": path, "file_stable_window_seconds": 0,
+	})
 }
 
 func rule(name, from, pattern string, required bool) map[string]any {
@@ -152,16 +135,8 @@ func metadataConfig(entries ...map[string]any) map[string]any {
 
 func validConfig() extconfig.Config {
 	return extconfig.Config{Components: []extconfig.ComponentConfig{
-		component("src", "local-file-source", map[string]any{"root": "/data", "file_stable_window_seconds": 0}),
-		component("parser", "csv-parser", map[string]any{"header": true}),
-		component("store", "memory-storage", map[string]any{}),
-		component("state", "memory-state", map[string]any{}),
+		sourceUnit("src", "/data"),
 		component("sched", "scheduler", map[string]any{"schedule": "daily", "time": "02:00"}),
-		component("meta", "path-metadata", metadataConfig(metadataEntry("src", "/data"))),
-		component("col", "csv-collector", map[string]any{
-			"source": "src", "parser": "parser", "storage": "store", "state": "state",
-			"date_policy": "yesterday", "batch_size": 100,
-		}),
 	}}
 }
 
@@ -171,35 +146,49 @@ func TestValidateAcceptCompleteConfig(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsMissingReference(t *testing.T) {
+// console-bridge 依赖控制台宿主与查询/调度能力，缺一不可就绪。
+func TestValidateRejectsMissingConsoleDependency(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[6].Config["storage"] = "missing-store"
+	cfg.Components = append(cfg.Components,
+		component("bridge", "console-bridge", map[string]any{}),
+	)
 	if err := Validate(cfg); err == nil {
-		t.Fatal("missing component reference must be rejected")
+		t.Fatal("console-bridge without ui/query-provider/scheduler must be rejected")
+	}
+	cfg = validConfig()
+	cfg.Components = append(cfg.Components,
+		component("query-provider", "query-provider", map[string]any{}),
+		component("ui", "ui", map[string]any{}),
+		component("bridge", "console-bridge", map[string]any{}),
+	)
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("complete console stack must be accepted: %v", err)
 	}
 }
 
-func TestValidateRejectsWrongReferenceKind(t *testing.T) {
+func TestValidateRejectsMetadataOnNonSource(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[6].Config["storage"] = "src"
+	cfg.Components = append(cfg.Components,
+		component("meta", "path-metadata", metadataConfig(metadataEntry("sched", "/data"))),
+	)
 	if err := Validate(cfg); err == nil {
-		t.Fatal("wrong reference kind must be rejected")
+		t.Fatal("metadata referencing a non-source-unit must be rejected")
 	}
 }
 
 func TestValidateRejectsBadScheduleAndBatch(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[4].Config["schedule"] = "weekly"
+	cfg.Components[1].Config["schedule"] = "weekly"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("invalid schedule must be rejected")
 	}
 	cfg = validConfig()
-	cfg.Components[6].Config["batch_size"] = 0
+	cfg.Components[0].Config["batch_size"] = 0
 	if err := Validate(cfg); err == nil {
 		t.Fatal("zero batch size must be rejected")
 	}
 	cfg = validConfig()
-	cfg.Components[6].Config["batch_size"] = "not-a-number"
+	cfg.Components[0].Config["batch_size"] = "not-a-number"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("non-numeric batch size must be rejected")
 	}
@@ -207,7 +196,7 @@ func TestValidateRejectsBadScheduleAndBatch(t *testing.T) {
 
 func TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues(t *testing.T) {
 	cfg := validConfig()
-	delete(cfg.Components[6].Config, "batch_size")
+	delete(cfg.Components[0].Config, "batch_size")
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("absent batch_size should use the factory default: %v", err)
 	}
@@ -225,11 +214,13 @@ func TestValidateAcceptsDefaultedAndRejectsInvalidNumericValues(t *testing.T) {
 
 func TestValidateAcceptsMetadataRules(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
-		rule("line", "path", "{line}/{station}/*.csv", true),
-		rule("station", "path", "{line}/{station}/*.csv", true),
-		rule("product", "filename", "{product}.csv", true),
-	))
+	cfg.Components = append(cfg.Components,
+		component("meta", "path-metadata", metadataConfig(metadataEntry("src", "/data",
+			rule("line", "path", "{line}/{station}/*.csv", true),
+			rule("station", "path", "{line}/{station}/*.csv", true),
+			rule("product", "filename", "{product}.csv", true),
+		))),
+	)
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("valid metadata rules rejected: %v", err)
 	}
@@ -237,11 +228,8 @@ func TestValidateAcceptsMetadataRules(t *testing.T) {
 
 func TestValidateAcceptsMultipleSourcesWithOwnRules(t *testing.T) {
 	cfg := extconfig.Config{Components: []extconfig.ComponentConfig{
-		component("src-a", "local-file-source", map[string]any{"root": "/data/a", "file_stable_window_seconds": 0}),
-		component("src-b", "local-file-source", map[string]any{"root": "/data/b", "file_stable_window_seconds": 0}),
-		component("parser", "csv-parser", map[string]any{"header": true}),
-		component("store", "memory-storage", map[string]any{}),
-		component("state", "memory-state", map[string]any{}),
+		sourceUnit("src-a", "/data/a"),
+		sourceUnit("src-b", "/data/b"),
 		component("sched", "scheduler", map[string]any{"schedule": "daily", "time": "02:00"}),
 		component("meta", "path-metadata", metadataConfig(
 			metadataEntry("src-a", "/data/a",
@@ -252,10 +240,6 @@ func TestValidateAcceptsMultipleSourcesWithOwnRules(t *testing.T) {
 				rule("product", "path", "{product}/{batch}/{date}.csv", true),
 			),
 		)),
-		component("col", "csv-collector", map[string]any{
-			"source": "src-a", "parser": "parser", "storage": "store", "state": "state",
-			"date_policy": "yesterday", "batch_size": 100,
-		}),
 	}}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("two sources with independent metadata rule sets must be accepted: %v", err)
@@ -263,80 +247,56 @@ func TestValidateAcceptsMultipleSourcesWithOwnRules(t *testing.T) {
 }
 
 func TestValidateRejectsMetadataConfigErrors(t *testing.T) {
+	withMeta := func(entries ...map[string]any) extconfig.Config {
+		cfg := validConfig()
+		cfg.Components = append(cfg.Components,
+			component("meta", "path-metadata", metadataConfig(entries...)))
+		return cfg
+	}
 	cases := []struct {
 		name   string
-		mutate func(extconfig.Config) extconfig.Config
+		config extconfig.Config
 	}{
 		{
 			"duplicate key within one source",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
-					rule("line", "path", "{line}/*.csv", true),
-					rule("line", "filename", "{line}.csv", true),
-				))
-				return c
-			},
+			withMeta(metadataEntry("src", "/data",
+				rule("line", "path", "{line}/*.csv", true),
+				rule("line", "filename", "{line}.csv", true),
+			)),
 		},
 		{
 			"bad from value",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
-					rule("line", "content", "{line}/*.csv", true)))
-				return c
-			},
+			withMeta(metadataEntry("src", "/data",
+				rule("line", "content", "{line}/*.csv", true))),
 		},
 		{
 			"rule key missing from pattern",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(metadataEntry("src", "/data",
-					rule("station", "path", "{line}/*.csv", true)))
-				return c
-			},
+			withMeta(metadataEntry("src", "/data",
+				rule("station", "path", "{line}/*.csv", true))),
 		},
 		{
 			"entry missing source reference",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(map[string]any{"root": "/data"})
-				return c
-			},
+			withMeta(map[string]any{"root": "/data"}),
 		},
 		{
-			"source reference is not a source",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(metadataEntry("store", "/data"))
-				return c
-			},
+			"source reference is not a source-unit",
+			withMeta(metadataEntry("sched", "/data")),
 		},
 		{
 			"source root mismatch",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(metadataEntry("src", "/other"))
-				return c
-			},
+			withMeta(metadataEntry("src", "/other")),
 		},
 		{
 			"duplicate source entry",
-			func(c extconfig.Config) extconfig.Config {
-				c.Components[5].Config = metadataConfig(
-					metadataEntry("src", "/data"),
-					metadataEntry("src", "/data"),
-				)
-				return c
-			},
-		},
-		{
-			"metadata component missing when collector present",
-			func(c extconfig.Config) extconfig.Config {
-				comps := c.Components
-				c.Components = append(comps[:5], comps[6:]...)
-				return c
-			},
+			withMeta(
+				metadataEntry("src", "/data"),
+				metadataEntry("src", "/data"),
+			),
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.mutate(validConfig())
-			if err := Validate(cfg); err == nil {
+			if err := Validate(tc.config); err == nil {
 				t.Fatal("invalid metadata configuration must be rejected")
 			}
 		})
@@ -348,14 +308,16 @@ func TestValidateRejectsMetadataConfigErrors(t *testing.T) {
 // valid multi-source configuration remains accepted (old config stays valid).
 func TestValidateRejectsOneSourceLeavesOtherValid(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[5].Config = metadataConfig(
-		metadataEntry("src", "/data",
-			rule("line", "path", "{line}/*.csv", true),
-			rule("line", "filename", "{line}.csv", true),
-		),
-		metadataEntry("other", "/data",
-			rule("product", "filename", "{product}.csv", true),
-		),
+	cfg.Components = append(cfg.Components,
+		component("meta", "path-metadata", metadataConfig(
+			metadataEntry("src", "/data",
+				rule("line", "path", "{line}/*.csv", true),
+				rule("line", "filename", "{line}.csv", true),
+			),
+			metadataEntry("other", "/data",
+				rule("product", "filename", "{product}.csv", true),
+			),
+		)),
 	)
 	// The invalid source makes the whole desired config invalid...
 	if err := Validate(cfg); err == nil {
@@ -370,48 +332,50 @@ func TestValidateRejectsOneSourceLeavesOtherValid(t *testing.T) {
 func TestValidateRejectsMoreThanOneMetadataComponent(t *testing.T) {
 	cfg := validConfig()
 	cfg.Components = append(cfg.Components,
+		component("meta", "path-metadata", metadataConfig(metadataEntry("src", "/data"))),
 		component("meta2", "path-metadata", metadataConfig(metadataEntry("src", "/data"))))
 	if err := Validate(cfg); err == nil {
 		t.Fatal("multiple path-metadata components must be rejected (one provider per Realm)")
 	}
 }
 
-func TestValidateParserSkipLines(t *testing.T) {
+func TestValidateSourceUnitSkipLines(t *testing.T) {
 	cfg := validConfig()
-	cfg.Components[1].Config["skip_lines"] = 3
+	cfg.Components[0].Config["skip_lines"] = 3
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("positive skip_lines must be accepted: %v", err)
 	}
 	cfg = validConfig()
-	cfg.Components[1].Config["skip_lines"] = -1
+	cfg.Components[0].Config["skip_lines"] = -1
 	if err := Validate(cfg); err == nil {
 		t.Fatal("negative skip_lines must be rejected")
 	}
 	cfg = validConfig()
-	cfg.Components[1].Config["skip_lines"] = "many"
+	cfg.Components[0].Config["skip_lines"] = "many"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("non-numeric skip_lines must be rejected")
 	}
 }
 
-func TestValidateParserStructuredMetadataConfig(t *testing.T) {
+func TestValidateSourceUnitStructuredMetadataConfig(t *testing.T) {
 	structured := func(start, end, header int, extra func(map[string]any)) extconfig.Config {
 		cfg := validConfig()
-		parserCfg := map[string]any{
-			"header": true,
+		cfg.Components[0].Config = map[string]any{
+			"source_id": "src",
+			"path":      "/data",
+			"header":    true,
 			"csv": map[string]any{
 				"metadata": map[string]any{"mode": "key_value", "start_row": start, "end_row": end},
 				"data":     map[string]any{"header_row": header},
 			},
 		}
 		if extra != nil {
-			extra(parserCfg)
+			extra(cfg.Components[0].Config)
 		}
-		cfg.Components[1].Config = parserCfg
 		return cfg
 	}
 	if err := Validate(structured(1, 2, 4, nil)); err != nil {
-		t.Fatalf("valid structured parser config rejected: %v", err)
+		t.Fatalf("valid structured metadata config rejected: %v", err)
 	}
 	bad := []func() extconfig.Config{
 		func() extconfig.Config { return structured(0, 2, 4, nil) },
@@ -426,7 +390,7 @@ func TestValidateParserStructuredMetadataConfig(t *testing.T) {
 	}
 	for i, makeCfg := range bad {
 		if err := Validate(makeCfg()); err == nil {
-			t.Fatalf("invalid structured parser case %d must be rejected", i)
+			t.Fatalf("invalid structured metadata case %d must be rejected", i)
 		}
 	}
 }
@@ -473,13 +437,41 @@ func TestValidateRejectsSameTableDifferentColumns(t *testing.T) {
 	}
 }
 
+// sqlserver 是五个 SQL 后端之一：source-unit 的存储白名单必须放行
+// （漏配会在启动时以 unknown storage type 拒绝整个配置）。
+func TestValidateAcceptsSQLServerSourceUnit(t *testing.T) {
+	registerSQLServerStubOnce()
+	cfg := extconfig.Config{Components: []extconfig.ComponentConfig{{
+		ID: "src", Type: "csv-source-unit",
+		Config: map[string]any{
+			"source_id": "src", "path": "/tmp/x", "storage": "sqlserver",
+			"dsn": "sqlserver://sa:x@127.0.0.1:1433?database=plant", "table": "LOGS",
+			"columns": []any{
+				map[string]any{"name": "v", "column": "v", "type": "text"},
+			},
+		},
+	}}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("sqlserver storage must be accepted: %v", err)
+	}
+}
+
 // 桩驱动：单元测试二进制不链接真实驱动包，驱动探针只查 sql.Drivers()
 // 成员名，注册一个同名桩即可让组合校验走到交叉检查。
-var registerSQLiteStub sync.Once
+var (
+	registerSQLiteStub sync.Once
+	registerSQLSrvStub sync.Once
+)
 
 func registerSQLiteDriverOnce() {
 	registerSQLiteStub.Do(func() {
 		sql.Register("sqlite", stubDriver{})
+	})
+}
+
+func registerSQLServerStubOnce() {
+	registerSQLSrvStub.Do(func() {
+		sql.Register("sqlserver", stubDriver{})
 	})
 }
 

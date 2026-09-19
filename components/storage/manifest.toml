@@ -34,3 +34,9 @@ kind = "storage"
 capability = "storage"
 title = "SQLite Storage"
 
+[[types]]
+name = "sqlserver-storage"
+kind = "storage"
+capability = "storage"
+title = "SQL Server Storage"
+

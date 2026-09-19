@@ -103,8 +103,8 @@ func Validate(cfg extconfig.Config) error {
 			if !ok {
 				return fmt.Errorf("metadata component %q references missing source component %q", id, ref)
 			}
-			if knownTypes()[target.Type].Kind != "source" && knownTypes()[target.Type].Kind != "source-unit" {
-				return fmt.Errorf("metadata component %q source %q must reference a source component", id, ref)
+			if knownTypes()[target.Type].Kind != "source-unit" {
+				return fmt.Errorf("metadata component %q source %q must reference a source-unit component", id, ref)
 			}
 			targetRoot := str(target.Config, "root")
 			if targetRoot == "" {
@@ -115,121 +115,14 @@ func Validate(cfg extconfig.Config) error {
 			}
 		}
 	}
-	collectorCount := 0
-	for id, cc := range byID {
-		if cc.Type != "csv-collector" {
-			continue
-		}
-		collectorCount++
-		for _, field := range []string{"source", "parser", "storage", "state"} {
-			ref := str(cc.Config, field)
-			target, ok := byID[ref]
-			if !ok {
-				return fmt.Errorf("collector %q references missing component %q", id, ref)
-			}
-			want := map[string]string{
-				"source":  "source",
-				"parser":  "parser",
-				"storage": "storage",
-				"state":   "state",
-			}[field]
-			if knownTypes()[target.Type].Kind != want {
-				return fmt.Errorf("collector %q field %s must reference a %s component", id, field, want)
-			}
-		}
-	}
-	if collectorCount > 1 {
-		return errors.New("v0.1 supports one csv-collector per Runtime realm")
-	}
 	if metadataCount > 1 {
 		return errors.New("v0.1 supports exactly one path-metadata component per Runtime realm (single MetadataExtractor provider)")
-	}
-	if collectorCount == 1 && metadataCount == 0 {
-		return errors.New("csv-collector requires one path-metadata component (metadata dependency)")
 	}
 	return nil
 }
 
 func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginmeta.TypeInfo) error {
 	switch ti.Kind {
-	case "source":
-		if cc.Type == "single-file-source" {
-			if str(cc.Config, "path") == "" {
-				return fmt.Errorf("single-file-source %q missing path", cc.ID)
-			}
-			if raw, ok := cc.Config["dedupe_content_hash"]; ok {
-				if _, valid := boolCfgValue(raw); !valid {
-					return fmt.Errorf("single-file-source %q dedupe_content_hash must be a boolean", cc.ID)
-				}
-			}
-			break
-		}
-		if str(cc.Config, "root") == "" {
-			return fmt.Errorf("source %q missing root", cc.ID)
-		}
-		if raw, ok := cc.Config["file_stable_window_seconds"]; ok {
-			w, valid := intCfgValue(raw)
-			if !valid {
-				return fmt.Errorf("source %q file_stable_window_seconds must be an integer", cc.ID)
-			}
-			if w < 0 {
-				return fmt.Errorf("source %q file_stable_window_seconds must be >= 0", cc.ID)
-			}
-		}
-		if err := validateDetectContent(cc, "source"); err != nil {
-			return err
-		}
-		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
-			return fmt.Errorf("source %q: %v", cc.ID, err)
-		}
-	case "parser":
-		if _, err := appencoding.Normalize(str(cc.Config, "encoding")); err != nil {
-			return fmt.Errorf("parser %q: %v", cc.ID, err)
-		}
-		if cc.Type == "text-parser" {
-			format := str(cc.Config, "text_format")
-			if format == "" {
-				format = "single-value"
-			}
-			switch format {
-			case "single-value", "line-regex", "key-value":
-			default:
-				return fmt.Errorf("text-parser %q unknown text_format %q", cc.ID, format)
-			}
-			if format == "line-regex" && str(cc.Config, "pattern") == "" {
-				return fmt.Errorf("text-parser %q line-regex requires pattern", cc.ID)
-			}
-			break
-		}
-		skip := 0
-		if raw, ok := cc.Config["skip_lines"]; ok {
-			n, valid := intCfgValue(raw)
-			if !valid {
-				return fmt.Errorf("parser %q skip_lines must be an integer", cc.ID)
-			}
-			if n < 0 {
-				return fmt.Errorf("parser %q skip_lines must be >= 0", cc.ID)
-			}
-			skip = n
-		}
-		header := true
-		if raw, ok := cc.Config["header"]; ok {
-			b, valid := boolCfgValue(raw)
-			if !valid {
-				return fmt.Errorf("parser %q header must be a boolean", cc.ID)
-			}
-			header = b
-		}
-		docCfg, err := appparser.ParseDocumentConfig(cc.Config)
-		if err != nil {
-			return fmt.Errorf("parser %q: %v", cc.ID, err)
-		}
-		if docCfg.Enabled() && !header {
-			return fmt.Errorf("parser %q structured csv.metadata mode requires header=true", cc.ID)
-		}
-		if docCfg.Enabled() && skip != 0 {
-			return fmt.Errorf("parser %q structured csv.metadata mode cannot be combined with skip_lines", cc.ID)
-		}
 	case "storage":
 		switch cc.Type {
 		case "memory-storage":
@@ -245,10 +138,6 @@ func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginme
 			if !tableNameRE.MatchString(table) {
 				return fmt.Errorf("storage %q table is not a simple identifier", cc.ID)
 			}
-		}
-	case "state":
-		if cc.Type == "file-state" && str(cc.Config, "path") == "" {
-			return fmt.Errorf("file-state %q missing path", cc.ID)
 		}
 	case "scheduler":
 		// 多条目 [[schedules]]：每条独立时间线（cron 或 daily+time），
@@ -308,40 +197,6 @@ func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginme
 				if str(cc.Config, field) == "" {
 					return fmt.Errorf("ui-panel %q missing %s", cc.ID, field)
 				}
-			}
-		}
-	case "collector":
-		for _, field := range []string{"source", "parser", "storage", "state"} {
-			if str(cc.Config, field) == "" {
-				return fmt.Errorf("collector %q missing %s", cc.ID, field)
-			}
-		}
-		policy := str(cc.Config, "date_policy")
-		if policy == "" {
-			policy = "yesterday"
-		}
-		if policy != "yesterday" && policy != "specific" && policy != "today" {
-			return fmt.Errorf("collector %q invalid date_policy %q", cc.ID, policy)
-		}
-		if policy == "specific" {
-			d := str(cc.Config, "specific_date")
-			if _, err := time.Parse("2006-01-02", d); err != nil {
-				return fmt.Errorf("collector %q specific_date invalid", cc.ID)
-			}
-		}
-		if raw, ok := cc.Config["batch_size"]; ok {
-			b, valid := intCfgValue(raw)
-			if !valid {
-				return fmt.Errorf("collector %q batch_size must be an integer", cc.ID)
-			}
-			if b <= 0 {
-				return fmt.Errorf("collector %q batch_size must be positive", cc.ID)
-			}
-		}
-		if raw, ok := cc.Config["catchup_days"]; ok {
-			d, valid := intCfgValue(raw)
-			if !valid || d < 0 {
-				return fmt.Errorf("collector %q catchup_days must be a non-negative integer", cc.ID)
 			}
 		}
 	case "source-unit":
@@ -523,7 +378,7 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	}
 	storageType = strings.ToLower(storageType)
 	switch storageType {
-	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage", "sqlite", "sqlite-storage":
+	case "memory", "memory-storage", "mysql", "mysql-storage", "postgres", "postgresql", "postgresql-storage", "oracle", "oracle-storage", "sqlite", "sqlite-storage", "sqlserver", "mssql", "sqlserver-storage":
 	default:
 		return fmt.Errorf("source-unit %q unknown storage type %q", cc.ID, storageType)
 	}
@@ -613,18 +468,15 @@ func ConsoleCritical(typ string) bool {
 	return false
 }
 
-func AllowedSourceType(typ string) bool {
-	return typ == "local-file-source" || typ == "unc-file-source"
-}
-
 // sqlDriverByType: 每个 SQL 存储类型期望的 database/sql 驱动名（与
 // components/storage 的驱动注册一致）。mysql/postgres 需要在构建时引入
-// 对应驱动包；oracle/sqlite 已内建。
+// 对应驱动包；oracle/sqlite/sqlserver 已内建。
 var sqlDriverByType = map[string]string{
 	"mysql-storage":      "mysql",
 	"postgresql-storage": "pgx",
 	"oracle-storage":     "oracle",
 	"sqlite-storage":     "sqlite",
+	"sqlserver-storage":  "sqlserver",
 }
 
 // validateSQLDriver 把"驱动未注册"的失败从运行时首次写库提前到配置校验：

@@ -1,40 +1,72 @@
 # Configuration
 
-Configuration is TOML only. The supported document shape is:
+Configuration is TOML only. Deployments declare the **four-layer fleet model**
+(defaults / sinks / formats / format_groups / machines, plus named
+schedules); the composition layer (`app/sourcecomp`) expands it before
+Runtime into one `csv-source-unit` component per (machine, format) pair plus
+one scheduler row:
 
 ```toml
-[[components]]
-id = "production-source"
-type = "local-file-source"
+[defaults]
+state_dir = "../state"
+date_policy = "yesterday"
+catchup_days = 31
+batch_size = 1000
 
-[components.config]
-root = "./data/production"
-pattern = "*.csv"
-file_stable_window_seconds = 30
+[[sinks]]
+name = "plant-oracle"
+driver = "oracle"
+dsn = "oracle://user:pass@host:1521/XE"
+file_table = "plant_files"
+
+[[formats]]
+name = "aaa"
+match = "aaa_YYMMDD.log"          # date tokens route by file-name date
+table = "LASER_AAA"
+sink = "plant-oracle"
+
+[[format_groups]]
+name = "laser-set"
+formats = ["aaa"]
+
+[[machines]]
+no = "laser"                       # machine_no becomes a data column
+path = "../res/laser/YYYYMM"
+group = "laser-set"
+since = "2026-09-01"
+schedule = "nightly"               # machines reference schedules by name
+
+[[schedules]]
+name = "nightly"
+cron = "23 3 * * *"
 ```
+
+Full runnable examples: `configs/laser.toml` (one machine, 15 formats,
+Oracle), `configs/unc-machines.toml` (3 UNC machines), `configs/desktop.toml`
+(two rhythms: frequent + weekly).
 
 The configuration path is validated by `app/config/Validate` before
 `config.Controller.Reconcile` is called. Validation covers component IDs/types,
-required references, allowed source/storage/metadata kinds, metadata rule
+required references, allowed storage/metadata kinds, metadata rule
 semantics, schedule/time syntax, date policy, and positive batch size.
 
-Two equivalent top-level forms are accepted:
+Raw `[[components]]` tables are also passed through unchanged (the shape the
+Runtime consumes directly) — the four-layer tables are the operator-facing
+form that composes into them. See `Fleet Composition` below.
 
-- `[[components]]` tables are passed through unchanged (the original shape).
-- `[profiles.*]` + `[[sources]]` tables are resolved before Runtime into one
-  `csv-source-unit` component per Source (the Configuration Composition shape).
+## Source Unit
 
-See `Source Composition` below.
+One `csv-source-unit` component = one (machine, format) collection unit. In
+fleet deployments the composition layer synthesizes these rows; the keys
+below are what each row carries (and what a raw `[[components]]` row sets):
 
-## Source
-
-- `type`: `local-file-source` or `unc-file-source`.
-- `root`: local path or UNC path; UNC is treated as an ordinary configuration
+- `source_id`: logical identity and state namespace; unique per deployment.
+- `path`: local path or UNC path; UNC is treated as an ordinary configuration
   value.
 - `pattern`: file name glob (default `*.csv`). Discovery is recursive: files
-  whose base name matches the glob are found at any depth below `<root>/<date>`,
-  so nested business directories (`<root>/<date>/line-A/station-03/...`) are
-  supported.
+  whose base name matches the glob are found at any depth below
+  `<root>/<date>`, so nested business directories
+  (`<root>/<date>/line-A/station-03/...`) are supported.
 - `detect_content`: bool, default `false`. When set, discovery ignores file
   names entirely (`pattern` must be empty) and selects files whose leading
   bytes look like delimited text under the configured `encoding`, so exports
@@ -47,6 +79,18 @@ See `Source Composition` below.
   with U+FFFD; `auto` resolves BOM-less files as UTF-8 when valid, else
   GB18030 (best-effort — prefer an explicit value in production).
 - `file_stable_window_seconds`: minimum mtime age for discovery (default 30).
+- `date_policy`: `yesterday` (default), `today`, or `specific`.
+- `specific_date`: `YYYY-MM-DD` when policy is `specific`.
+- `batch_size`: rows per Storage batch (default 1000).
+- `catchup_days`: non-negative int (default 0). Bounds how many calendar
+  days one trigger synthesizes as catch-up when no succeeded date exists
+  inside the window (first deployment or lost state). See `docs/OPERATIONS.md`.
+- `since`: `YYYY-MM-DD` lifecycle lower bound — earlier dates are never
+  planned, and state records older than `since` are swept once at startup.
+- `group`: internal routing group. Scheduler requests carry a group and only
+  same-group sources respond (empty group = broadcast, e.g. manual
+  triggers). Fleet composition writes the synthesized schedule group
+  (`__sched_<name>`) for machines that reference a schedule.
 
 ## Metadata
 
@@ -109,8 +153,10 @@ identity, so rule changes do not cause re-collection. See
 
 ## Parser
 
-- `type`: `csv-parser`.
-- `encoding`: character encoding (see Source above; default `utf8`).
+Parser settings are declared inline on the format / source unit
+(`parser = "csv"` is the default kind):
+
+- `encoding`: character encoding (see Source Unit above; default `utf8`).
 - `header`: bool, default true.
 - `skip_lines`: number of leading physical lines to drop before the table
   (default 0). Use it when an exported CSV starts with metadata/comment lines
@@ -127,12 +173,14 @@ identity, so rule changes do not cause re-collection. See
 
 ## Storage
 
-- `type`: `memory-storage`, `mysql-storage`, `postgresql-storage`, or
-  `oracle-storage`.
+- `type`: `memory-storage`, `mysql-storage`, `postgresql-storage`,
+  `oracle-storage`, `sqlite-storage`, or `sqlserver-storage`.
 - Memory uses no target schema.
 - SQL storage uses `driver`, `dsn`, and `table`. `driver` is a
   `database/sql` driver name registered by the host binary. The adapter
   creates an idempotency schema on Apply and writes each batch transactionally.
+  In fleet deployments the storage keys are inlined into each source unit
+  from the referenced sink (`driver` is the sink's `driver`).
 
 ## State
 
@@ -150,11 +198,13 @@ identity, so rule changes do not cause re-collection. See
 - `debounce`: duration, default `2s`; bursts of write events collapse into
   one trigger after this quiet window.
 
-## Single File Source
+## Flat Layout (single file)
 
-- `type`: `single-file-source`. A source pinned to one file (layout=flat):
-  no date directories, no pattern. Pairs with `watch-file-trigger`.
-- `path`: the file path (root IS the file).
+A source pinned to one file: no date directories, no pattern. Pairs with
+`watch-file-trigger`. In fleet deployments declare it as a format with
+`layout = "flat"` and a machine whose `path` IS the file.
+
+- `layout = "flat"` on the source unit / format; root IS the file.
 - `dedupe_content_hash`: bool, default `true`. Discovery hashes the content
   (SHA-256, recorded as the file identity) so an identical rewrite is not
   re-collected — recording happens when the content actually changes. Each
@@ -164,7 +214,8 @@ identity, so rule changes do not cause re-collection. See
 
 ## Text Parser
 
-- `type`: `text-parser` (or in a source profile: `parser = "text"`).
+- `parser = "text"` on the source unit / format (standalone `text-parser`
+  component rows are no longer part of compositions).
 - `text_format`: `single-value` (whole trimmed content is one field named
   `value_name`), `line-regex` (each non-empty line matches `pattern`, named
   capture groups become columns; non-matching lines are skipped unless
@@ -179,9 +230,17 @@ the collection) while file-level content dedup still prevents duplicates.
 
 ## Scheduler
 
-- `type`: `scheduler`.
-- `schedule`: `daily` only in v0.1.
-- `time`: local `HH:MM` trigger time.
+Schedules are named entities targeting **machines**: a `[[machines]]` row
+references a schedule by name via `schedule = "<name>"`; machines without a
+`schedule` never auto-collect (manual and watch triggers still work). The
+composition layer aggregates all schedules into one `scheduler` component
+row (exclusive provider).
+
+- Single-entry form: `schedule = "daily"` + `time = "HH:MM"` (local), or
+  `cron = "<expr>"` (minute-hour-dom-month-dow).
+- Multi-entry form `[[schedules]]`: each entry needs `name` (unique) and
+  either `cron` or `time`; machine rows reference entries by `name`.
+  Referencing a missing name fails at startup.
 
 ## Query provider (UI)
 
@@ -284,74 +343,43 @@ optional `order` integer as well; the UI Composition Registry sorts by this
 field before registration sequence, so page order no longer depends on which
 plugin happened to activate first.
 
-## Collector
+## Fleet Composition
 
-- `source`, `parser`, `storage`, `state`: component IDs.
-- `date_policy`: `yesterday` or `specific`.
-- `specific_date`: `YYYY-MM-DD` when policy is `specific`.
-- `batch_size`: rows per Storage batch (default 1000).
-- `catchup_days`: non-negative int (default 0). Bounds how many calendar days
-  one trigger synthesizes as catch-up when no succeeded date exists inside
-  the window (first deployment or lost state). See `docs/OPERATIONS.md`.
+The composition layer (`app/sourcecomp`) is one configuration Layer in the
+framework pipeline. It consumes the four-layer declaration tables and
+contributes the expanded Runtime rows before the Controller reconciles:
 
-## Source Composition
+| Layer | Declares | Keys |
+|---|---|---|
+| `defaults` | cross-cutting defaults | state_dir, date_policy, catchup_days, batch_size, file_stable_window_seconds |
+| `[[sinks]]` | connection = credential | name, driver (sqlite/mysql/postgresql/oracle/sqlserver), dsn, file_table, lazy_connect |
+| `[[formats]]` | one data file family = one table contract | name, match (file-name signature), table, sink reference, parser (encoding/header/allow_ragged/delimiter/skip_lines), columns (optional; default header auto-mapping), metadata (path/filename rules), layout |
+| `[[format_groups]]` | the collection scope of a machine type | name, formats (references to format names) |
+| `[[machines]]` | pure facts | no, ip, path (`{ip}`/`{no}` templates + date tokens YYYY/YY/MM/DD), group (references a format group), since, schedule (references a schedule name), metadata |
+| `[[schedules]]` | named rhythms | name (unique), cron — or time for a daily clock |
 
-For many similar collection roots (for example UNC machines sharing one CSV
-layout, parser, sink, and schedule), declare the shared parts once as
-Profiles and keep each Source as a small table:
+Semantics:
 
-```toml
-[profiles.csv_machine]
-parser = "csv"
-header = true
-delimiter = ","
-encoding = "utf8"
-
-[profiles.memory_sink]
-sink = "memory-storage"
-
-[profiles.file_state]
-state_type = "file-state"
-state_dir = "./state"
-
-[[sources]]
-id = "machine001"
-path = "\\\\machine001\\data"
-profiles = ["csv_machine", "memory_sink", "file_state"]
-
-[sources.metadata]
-plant = "A"
-line = "01"
-machine = "001"
-
-[[sources]]
-id = "machine002"
-path = "\\\\machine002\\data"
-profiles = ["csv_machine", "memory_sink", "file_state"]
-
-[sources.metadata]
-plant = "A"
-line = "02"
-machine = "002"
-```
-
-Rules:
-
-- Profiles are deterministic configuration merge units. They have no
-  lifecycle, no state, and are never emitted as Runtime Components.
-- Source keys override Profile keys; Profile list order is deterministic;
-  neither environment variables nor runtime state override configuration.
-- `id` is the logical Source identity and state namespace. It must be unique
-  and independent from `path`, so a later path change still identifies the
-  same Source.
-- Source `metadata` becomes static business metadata on every discovered file
-  and cannot be overwritten by path/CSV derived metadata.
-- Legacy `[source.machine001]` tables are migrated into Source definitions
-  without an inheritance model.
-
-The Composition Resolver (`app/sourcecomp`) expands every Source into one
-`csv-source-unit` Runtime Component. Each unit owns its own FileSource/parser
-configuration, MemoryStore or SQL sink, CollectionState file below
-`<state_dir>/<source_id>/`, lifecycle, and outcome events. Deleting or changing
-one Source leaves every other Source untouched. A runnable two-machine example
-is `configs/source-composition.toml`.
+- **Tables belong to formats.** One format = one table; the same format
+  across machines shares one table, and `machine_no` (a data column)
+  distinguishes machines — machines never participate in table composition.
+- **Expansion** is machine × its group's formats → source units
+  (`id = <machine>-<format>`); path/since/schedule come from the machine,
+  match/parser/columns/table/sink from the format.
+- **Schedules target machines.** The group a machine collects (format
+  group) and the rhythm it collects on (schedule) are orthogonal. Machines
+  referencing a schedule get the synthesized internal group
+  (`__sched_<name>`); the scheduler row emits the same group, so the
+  scheduler → source-unit exact-match chain is untouched. Machines without
+  a schedule never auto-collect.
+- **Referential integrity fails loudly at startup**: formats missing from a
+  group, machines referencing a missing group or schedule name, formats
+  referencing a missing sink, machines with no date tokens in path and
+  match (date cannot be attributed), duplicate names.
+- Each expanded unit owns its own FileSource/parser configuration, Memory
+  or SQL sink, CollectionState file below `<state_dir>/<source_id>/`,
+  lifecycle, and outcome events. Deleting or changing one machine leaves
+  every other source untouched.
+- Runnable examples: `configs/laser.toml` (1 machine × 15 formats → Oracle),
+  `configs/unc-machines.toml` (3 UNC machines × 3 formats),
+  `configs/desktop.toml` (3 machines, two schedules).

@@ -55,8 +55,8 @@ source.
 
 - The target business date is `date_policy` (`yesterday` by default). A run
   collects the whole `<root>/<date>` tree recursively.
-- **Discovery does not depend on file extensions** when the source profile
-  sets `detect_content = true`: every regular file's leading bytes are judged
+- **Discovery does not depend on file extensions** when the format sets
+  `detect_content = true`: every regular file's leading bytes are judged
   (delimited text vs binary/UTF-16/prose), so `20260908.dat` exports are
   collected and a renamed binary blob is not. Without it, the `pattern` glob
   (default `*.csv`) applies to file names.
@@ -112,7 +112,7 @@ Recovery is planned at every trigger, in the collector application layer
   Pending dates ("date directory not available yet"), and the failure ledger
   are visible immediately after a process restart — not only the events of
   the current process window.
-- **`lazy_connect = true`** (SQL profiles): the store defers the connection
+- **`lazy_connect = true`** (SQL sinks): the store defers the connection
   to the first write and re-connects after an outage. The process starts
   even when the remote database is down; files fail into the ledger and the
   next trigger replays them. Without it (default), an unreachable target

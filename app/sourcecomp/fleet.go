@@ -33,7 +33,7 @@ type FleetDefaults struct {
 // database means editing one sink entry, not N format definitions.
 type SinkDef struct {
 	Name           string
-	Driver         string // sqlite | mysql | postgresql | oracle（存储家族）
+	Driver         string // sqlite | mysql | postgresql | oracle | sqlserver（存储家族）
 	DriverOverride string // 可选：实际 sql driver 注册名（如测试桩）
 	DSN            string
 	FileTable      string // 可选：该 sink 的文件登记表（跨格式共享）
@@ -466,6 +466,12 @@ func parseSinks(raw any) ([]SinkDef, error) {
 		}
 		if sk.Name == "" || sk.Driver == "" {
 			return nil, fmt.Errorf("sinks #%d: name/driver are required", i)
+		}
+		// 驱动白名单：打错驱动名在启动时响亮失败，而不是等到首采。
+		switch strings.ToLower(sk.Driver) {
+		case "memory", "sqlite", "mysql", "postgresql", "oracle", "sqlserver":
+		default:
+			return nil, fmt.Errorf("sinks #%d: unknown driver %q (memory/sqlite/mysql/postgresql/oracle/sqlserver)", i, sk.Driver)
 		}
 		out = append(out, sk)
 	}
