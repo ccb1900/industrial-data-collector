@@ -68,7 +68,7 @@ echo "== source-unit 配置键 =="
 for k in source_id path pattern detect_content encoding header delimiter skip_lines date_policy specific_date catchup_days batch_size collection_mode file_stable_window_seconds dedupe_content_hash state_type state_dir storage sink driver dsn table file_table expose_console lazy_connect metadata_source layout; do
   check "配置键 $k" grep_q "\"$k\"" components/sourceunit/component.go
 done
-check "配置键 no_data_grace_hours" grep_q '"no_data_grace_hours"' components/sourceunit/component.go
+check "配置键 no_data_grace_hours 弃用告警" grep_q "is superseded by inspection" components/sourceunit/component.go
   check "配置键 date_dir_layout" grep_q '"date_dir_layout"' components/sourceunit/component.go
   check "配置键 filename_date_layout" grep_q '"filename_date_layout"' components/sourceunit/component.go
 check "分组标签解析 group" grep_q '"group"' app/sourcecomp/machines.go
@@ -77,11 +77,11 @@ check "脱敏哨兵" grep_q '__REDACTED__' app/host/redact.go
 check "explorer 投影脱敏" grep_q 'SetDesired(redactConfigForDisplay(cfg))' app/host/host.go
 
 echo "== 组件类型（manifest 自描述）=="
-for pkg in source parser watchtrigger storage state scheduler collector metadata query ui-contrib consolebridge sourceunit config; do
+for pkg in watchtrigger storage scheduler metadata query ui-contrib consolebridge sourceunit config; do
   check "components/$pkg/manifest.toml" test -f "components/$pkg/manifest.toml"
 done
 total=$(python3 -c "import glob; print(sum(open(f).read().count('[[types]]') for f in glob.glob('components/*/manifest.toml')))")
-check "manifest 类型总数 = 27（实际 ${total}）" test "$total" = "27"
+check "manifest 类型总数 = 19（实际 ${total}）" test "$total" = "19"
 check "pluginmeta 聚合存在" test -f internal/pluginmeta/pluginmeta.go
 check "validate 聚合引用"   grep_q 'pluginmeta.Types()' app/config/validate.go
 
@@ -97,7 +97,7 @@ check "详情面板绑定 collections" grep_q '"pages":    \[\]any{"collections"
 check "页面图标声明" grep_q '"icon":        "dashboard"' app/bundles/collector.go
 
 echo "== 目录与脚本 =="
-for p in configs/desktop.toml configs/example.toml configs/windows-task.toml data/production data/quality plugins/alarm-demo/manifest.toml plugins/alarm-demo/main.go plugins/alarm-demo/src/ui.tsx scripts/build-console.sh scripts/install-plugin.sh docs/用户指南.md docs/开发者指南.md; do
+for p in configs/desktop.toml configs/laser.toml configs/unc-machines.toml data/production data/quality plugins/alarm-demo/manifest.toml plugins/alarm-demo/main.go plugins/alarm-demo/src/ui.tsx scripts/build-console.sh scripts/install-plugin.sh docs/用户指南.md docs/开发者指南.md; do
   check "路径 $p" test -e "$p"
 done
 check "补丁文件格式 version" grep_q '"version":1' docs/用户指南.md || true

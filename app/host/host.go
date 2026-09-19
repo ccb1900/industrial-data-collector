@@ -24,7 +24,6 @@ import (
 	queryplugin "gocordis-csv-collector/components/query"
 	schedulerplugin "gocordis-csv-collector/components/scheduler"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
-	stateplugin "gocordis-csv-collector/components/state"
 )
 
 type Host struct {
@@ -490,8 +489,6 @@ func (h *Host) attachStateProjection() {
 		case *sourceunitplugin.SourceUnitComponent:
 			unitComps = append(unitComps, comp)
 			units = append(units, comp.Projection())
-		case *stateplugin.StateComponent:
-			units = append(units, projectSharedState(comp.State()))
 		case *queryplugin.QueryComponent:
 			qp = comp
 		case *consolebridge.Component:
@@ -514,35 +511,6 @@ func (h *Host) attachStateProjection() {
 
 // projectSharedState builds one unit projection from a legacy shared
 // CollectionState, enumerating the sources it holds records for.
-func projectSharedState(svc model.CollectionState) query.UnitState {
-	ctx := context.Background()
-	u := query.UnitState{}
-	sources, err := svc.RecordSources(ctx)
-	if err != nil {
-		return u
-	}
-	for _, id := range sources {
-		if id == "" {
-			continue
-		}
-		recs, err := svc.CollectionRecords(ctx, id)
-		if err != nil {
-			continue
-		}
-		u.SourceID = string(id)
-		u.Collections = append(u.Collections, recs...)
-		for _, rec := range recs {
-			if files, err := svc.FileRecords(ctx, rec.Key); err == nil {
-				u.CompletedFiles = append(u.CompletedFiles, files...)
-			}
-		}
-		if failures, err := svc.ListFileFailures(ctx, id); err == nil {
-			u.Failures = append(u.Failures, failures...)
-		}
-	}
-	return u
-}
-
 func (h *Host) Trigger(ctx context.Context, req model.CollectionRequested) error {
 	sch, err := h.scheduler()
 	if err != nil {

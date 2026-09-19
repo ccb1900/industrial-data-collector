@@ -231,32 +231,36 @@ func TestPE11ActivationFailureDoesNotFakeActive(t *testing.T) {
 	cs := basicComponents(root, "src", "local-file-source", "store", "", "specific", "2026-09-06")
 	active(ctx, t, h, cfg(p34Console(append(cs, uiPageComponent("ui-page-a", "page-a", "Page A", "/a", "collections"))...)...))
 	exp := findExplorer(t, h)
-	if got := explorerState(t, exp, "production-collector"); got != "Active" {
-		t.Fatalf("collector initial state = %q", got)
+	if got := explorerState(t, exp, "src"); got != "Active" {
+		t.Fatalf("source unit initial state = %q", got)
 	}
 
-	p34Control(t, ctx, exp, "src", false)
-	// The collector's dependency has disappeared, so Runtime keeps it Waiting.
+	// source-unit 的依赖是 metadata 组件（metadata_source=component）：
+	// 禁用它之后，Runtime 让 source-unit 进入 Waiting。
+	p34Control(t, ctx, exp, "metadata", false)
+	waitFor(t, "source unit leaves Active after dependency disabled", func() bool {
+		return explorerState(t, exp, "src") != "Active"
+	})
 	// Try to activate it anyway: the bounded runtime wait must report Failed
 	// instead of pretending Active.
 	short, shortCancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer shortCancel()
-	res, ue := exp.HostAdapter().ControlPluginContext(short, explorerplugin.ExplorerControlRequest{PluginID: "production-collector", Enable: true})
+	res, ue := exp.HostAdapter().ControlPluginContext(short, explorerplugin.ExplorerControlRequest{PluginID: "src", Enable: true})
 	if ue != nil {
 		t.Fatal(ue)
 	}
 	if !res.Failed || res.Accepted || res.Rejected || res.State == "Active" || res.Error == "" {
 		t.Fatalf("activation failure result = %#v", res)
 	}
-	if got := explorerState(t, exp, "production-collector"); got == "Active" {
+	if got := explorerState(t, exp, "src"); got == "Active" {
 		t.Fatal("UI reported Active after Runtime activation failure")
 	}
 
-	// Restoring the source lets Runtime converge again without Explorer
+	// Restoring the dependency lets Runtime converge again without Explorer
 	// guessing state.
-	p34Control(t, ctx, exp, "src", true)
-	waitFor(t, "collector active after source restore", func() bool {
-		return explorerState(t, exp, "production-collector") == "Active"
+	p34Control(t, ctx, exp, "metadata", true)
+	waitFor(t, "source unit active after dependency restore", func() bool {
+		return explorerState(t, exp, "src") == "Active"
 	})
 }
 

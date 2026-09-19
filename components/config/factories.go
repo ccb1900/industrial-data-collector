@@ -15,16 +15,12 @@ import (
 	explorerplugin "dynamic-runtime/extensions/console/explorer"
 	uiplugin "dynamic-runtime/extensions/console/host"
 	procplugin "dynamic-runtime/extensions/console/procplugin"
-	collectorplugin "gocordis-csv-collector/components/collector"
 	bridgeplugin "gocordis-csv-collector/components/consolebridge"
 	"gocordis-csv-collector/components/internal/pluginkit"
 	metadataplugin "gocordis-csv-collector/components/metadata"
-	parserplugin "gocordis-csv-collector/components/parser"
 	queryplugin "gocordis-csv-collector/components/query"
 	schedulerplugin "gocordis-csv-collector/components/scheduler"
-	sourceplugin "gocordis-csv-collector/components/source"
 	sourceunit "gocordis-csv-collector/components/sourceunit"
-	stateplugin "gocordis-csv-collector/components/state"
 	storageplugin "gocordis-csv-collector/components/storage"
 	uicontrib "gocordis-csv-collector/components/ui-contrib"
 	watchtrigger "gocordis-csv-collector/components/watchtrigger"
@@ -37,25 +33,13 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 		explorerSvc = explorerServices[0]
 	}
 
-	if err := sourceplugin.Register(reg); err != nil {
-		return err
-	}
-	if err := parserplugin.Register(reg); err != nil {
-		return err
-	}
 	if err := watchtrigger.Register(reg); err != nil {
 		return err
 	}
 	if err := storageplugin.Register(reg); err != nil {
 		return err
 	}
-	if err := stateplugin.Register(reg); err != nil {
-		return err
-	}
 	if err := schedulerplugin.Register(reg); err != nil {
-		return err
-	}
-	if err := collectorplugin.Register(reg, logger); err != nil {
 		return err
 	}
 	if err := sourceunit.Register(reg, logger); err != nil {
