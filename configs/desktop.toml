@@ -1,161 +1,102 @@
-# Desktop configuration: composition-shape demo.
-# The deployment-independent composition lives in named bundles (app/bundle):
-#   collector-core     — scheduler, console bridge/rows, query provider, ui,
-#                        plugin explorer (the runtime backbone)
-#   collector-console  — the standard pages/panels as declarative view stacks
-# This file declares what is specific to THIS deployment: shared profiles
-# and sources. An explicit [[components]] row replaces the bundle row with
-# the same id wholesale — e.g. to retune the schedule:
+# Desktop 配置：组合形态演示（四层声明模型）。
+# 部署无关的组合在命名 bundle（app/bundles）里；本文件声明本部署的
+# 四层清单：defaults / sink / 格式 / 格式清单组 / 机台。
 #
-#   [[components]]
-#   id = "scheduler"
-#   type = "scheduler"
-#
-#   [components.config]
-#   cron = "0 */6 * * *"        # every 6 hours; cron 与 schedule/time 二选一
-#
-# `--dump-config` (and the "effective-config" hub query) prints the expanded
-# effective tree — what actually runs, patches applied.
-# NOTE: top-level keys must precede every table in TOML — keep this line here.
+#   --dump-config（与 effective-config 查询）打印展开后的有效树。
+# NOTE: 顶层键必须先于一切表（TOML 语义），保持在本文件靠前位置。
 bundles = ["collector-core", "collector-console"]
 
-# 报警示例插件不再在此声明：plugins/alarm-demo/manifest.toml 由框架自
-# 发现并生成组件行（进程外后端 + 前端模块 + 页面），同样受组合治理。
+# 调度：不同组可以有不同节奏。group 引用格式清单组（即机台类型）。
+[[schedules]]
+cron = "0 */6 * * *"
+group = "demo-csv-set"
 
-# 与生产配置一致：默认采集昨天；catchup_days 在停机/缺勤后
-# 第一次触发最多回看 7 天补齐缺口，已成功的批次因幂等写入不会重复。
-[profiles.csv_machine]
-parser = "csv"
-header = true
-pattern = "*.csv"
-file_stable_window_seconds = 0
+[[schedules]]
+cron = "0 4 * * 0"
+group = "demo-dat-set"
+
+[defaults]
+state_dir = "../state"
 date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
-# 采集台账持久化（与生产一致）：重启后采集历史/失败账本/补采链都在，
-# 不再是内存态即忘。
-state_type = "file-state"
-state_dir = "../state"
+file_stable_window_seconds = 0
 
-# 遗留导出的独立入库表：不同格式的文件写到不同的表。
-[profiles.legacy_sink]
-storage = "sqlite-storage"
+[[sinks]]
+name = "demo-sqlite"
 driver = "sqlite"
 dsn = "../state/collect.db"
-table = "legacy_readings"
-expose_console = true
-lazy_connect = true
-
-[[profiles.legacy_sink.columns]]
-from = "csv"
-name = "ts"
-column = "ts"
-type = "timestamp"
-required = true
-
-[[profiles.legacy_sink.columns]]
-from = "csv"
-name = "temperature"
-column = "temperature"
-type = "float"
-
-[[profiles.legacy_sink.columns]]
-from = "csv"
-name = "unit"
-column = "unit"
-type = "text"
-
-[[profiles.legacy_sink.columns]]
-from = "metadata"
-name = "product"
-column = "product"
-type = "text"
-
-[profiles.typed_sqlite]
-storage = "sqlite-storage"
-driver = "sqlite"
-dsn = "../state/collect.db"
-table = "readings"
 file_table = "source_files"
-expose_console = true
 lazy_connect = true
 
-[[profiles.typed_sqlite.columns]]
-from = "csv"
-name = "ts"
-column = "ts"
-type = "timestamp"
-required = true
+# ===== 格式清单：一类数据文件 = 一张表的契约 =====
 
-[[profiles.typed_sqlite.columns]]
-from = "csv"
-name = "temperature"
-column = "temperature"
-type = "float"
+# readings：日期目录 + 任意命名 CSV（日期在目录段，match 无日期记号
+# → 目录发现模式）；列显式声明（timestamp/float 类型列演示）。
+[[formats]]
+name = "readings"
+match = "*.csv"
+table = "readings"
+sink = "demo-sqlite"
+columns = [
+  { from = "csv", name = "ts", column = "ts", type = "timestamp", required = true },
+  { from = "csv", name = "temperature", column = "temperature", type = "float" },
+  { from = "csv", name = "unit", column = "unit", type = "text" },
+  { from = "metadata", name = "product", column = "product", type = "text" },
+]
+metadata = [
+  { name = "product", from = "filename", pattern = "{product}.csv", required = true },
+]
 
-[[profiles.typed_sqlite.columns]]
-from = "csv"
-name = "unit"
-column = "unit"
-type = "text"
+# legacy-dat：同目录不同格式的分工演示——*.dat（GBK 历史导出）与
+# *.csv 以模式分属两个格式；行入库后以 source_id 列区分。
+[[formats]]
+name = "legacy-dat"
+match = "*.dat"
+table = "legacy_readings"
+sink = "demo-sqlite"
+[formats.parser]
+encoding = "gbk"
+header = true
+columns = [
+  { from = "csv", name = "ts", column = "ts", type = "timestamp", required = true },
+  { from = "csv", name = "temperature", column = "temperature", type = "float" },
+  { from = "csv", name = "unit", column = "unit", type = "text" },
+  { from = "metadata", name = "product", column = "product", type = "text" },
+]
+metadata = [
+  { name = "product", from = "filename", pattern = "{product}.dat", required = true },
+]
 
-[[profiles.typed_sqlite.columns]]
-from = "metadata"
-name = "product"
-column = "product"
-type = "text"
+# ===== 格式清单组：机台的采集范围 =====
 
-# 多源同格式：任意多个 source 复用同一组 profiles（同格式、同入库表），
-# 各自展开为独立的 source-unit 组件——独立目录、独立补采链、可单独卸载；
-# 行入库后以 source_id 列区分。
-[[sources]]
-id = "production-source"
-path = "./data/production"
-profiles = ["csv_machine", "typed_sqlite"]
+[[format_groups]]
+name = "demo-csv-set"
+formats = ["readings"]
 
-[sources.metadata]
+[[format_groups]]
+name = "demo-dat-set"
+formats = ["legacy-dat"]
+
+# ===== 机台清单：目录即机台（演示）=====
+
+[[machines]]
+no = "production"
+path = "data/production/YYYY-MM-DD"
+group = "demo-csv-set"
+[machines.metadata]
 plant = "demo"
 
-[[sources.path_metadata]]
-name = "product"
-from = "filename"
-pattern = "{product}.csv"
-required = true
+[[machines]]
+no = "quality"
+path = "data/quality/YYYY-MM-DD"
+group = "demo-csv-set"
+[machines.metadata]
+plant = "demo"
 
-# 同目录不同格式：legacy-source 与 production-source 共享 ./data/production，
-# 以模式分工——*.dat（GBK 编码的历史导出）归 legacy-source，*.csv 归
-# production-source；行入库后以 source_id 区分。注意：共目录时不要与
-# detect_content = true 的源混用（内容探测会无视扩展名认领所有文件）。
-[profiles.legacy_machine]
-parser = "csv"
-header = true
-pattern = "*.dat"
-encoding = "gbk"
-file_stable_window_seconds = 0
-date_policy = "yesterday"
-catchup_days = 7
-batch_size = 1000
-state_type = "file-state"
-state_dir = "../state"
-
-[[sources]]
-id = "legacy-source"
-path = "./data/production"
-profiles = ["legacy_machine", "legacy_sink"]
-
-[[sources.path_metadata]]
-name = "product"
-from = "filename"
-pattern = "{product}.dat"
-required = true
-
-[[sources]]
-id = "quality-source"
-path = "./data/quality"
-profiles = ["csv_machine", "typed_sqlite"]
-
-[[sources.path_metadata]]
-name = "product"
-from = "filename"
-pattern = "{product}.csv"
-required = true
+[[machines]]
+no = "legacy"
+path = "data/production/YYYY-MM-DD"
+group = "demo-dat-set"
+[machines.metadata]
+plant = "demo"

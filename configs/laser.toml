@@ -1,46 +1,58 @@
 # ========================================================================
-# 激光加工机本机日志采集（res/laser 真实数据）
+# 激光加工机本机日志采集（res/laser 真实数据）— 四层声明模型
 #
-# 目录形状：res/laser/202609/<prefix>_YYMMDD.log —— 月份目录 + 两位年份
-# 文件名内嵌日期；GBK/GB18030 编码，CRLF 行尾，首行表头。
-# 15 种格式 = 15 个源，各自独立入库表（列按表头名精确匹配）。
-# 列全部声明为 TEXT：数据原样落库，避免个别脏值（如 "- 0.190"）中断整行。
-# 数据目录 res/laser 为机台真实导出样本，不入版本库；部署时把 path
-# 指向现场目录即可，列声明无需改动（按表头名匹配）。
-# 相对路径锚定：state/源根等相对路径相对本配置文件所在目录解析，
-# 与启动方式（终端/双击/计划任务）无关。
+# 目录形状：res/laser/202609/<前缀>_YYMMDD.log —— 月份目录 + 两位年份
+# 文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
+# 15 种格式 = 15 个源（1 台虚拟机台 × 15 格式），各自独立入库表。
+# 列全部 TEXT 原样落库（199 列显式声明，按表头名精确匹配）；
+# 不声明 columns 时按表头自动映射。
+#
+# 跨平台书写：\ 与 / 都按分隔符统一（Windows 全 \，mac/Linux 全 /）。
+# 相对路径锚定：相对本配置文件所在目录解析，与启动方式无关。
 # ========================================================================
 
 bundles = ["collector-core", "collector-console"]
 
-[profiles.laser]
-parser = "csv"
-header = true
-encoding = "gb18030"
-allow_ragged = true
+[defaults]
+state_dir = "../state"
 date_policy = "yesterday"
 catchup_days = 31
-since = "2026-09-01"                 # 数据起点：之前的日期不计划、不物化
-expect = "daily"
-inspection_lookback_days = 2
 batch_size = 1000
-state_type = "file-state"
-state_dir = "../state"
-storage = "sqlite-storage"
+
+[[sinks]]
+name = "laser-sqlite"
 driver = "sqlite"
 dsn = "../state/collect.db"
 file_table = "laser_files"
-expose_console = true
 lazy_connect = true
 
-[[sources]]
-id = "laser_aaa"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "aaa_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "aaa_YYMMDD.log"
+# Oracle 中心库：go-ora 驱动的 URL 格式
+# oracle://user:password@host:port/serviceName
+[[sinks]]
+name = "plant-oracle"
+driver = "oracle"
+dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+lazy_connect = true
+
+[[machines]]
+no = "laser"
+path = "../res/laser/YYYYMM"
+group = "laser-set"
+since = "2026-09-01"
+
+[[schedules]]
+cron = "23 3 * * *"
+group = "laser-set"
+
+[[format_groups]]
+name = "laser-set"
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "sin_statis", "sinsyuku", "table", "zaxis"]
+
+[[formats]]
+name = "aaa"
+match = "aaa_YYMMDD.log"
 table = "laser_aaa"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -60,15 +72,16 @@ columns = [
   { name = "尺寸", column = "size", type = "text" },
   { name = "Score", column = "score", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_aaa_gosa"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "aaaGosa_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "aaaGosa_YYMMDD.log"
+[[formats]]
+name = "aaa_gosa"
+match = "aaaGosa_YYMMDD.log"
 table = "laser_aaa_gosa"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -77,30 +90,32 @@ columns = [
   { name = "最大误差 X", column = "max_err_x", type = "text" },
   { name = "最大误差 Y", column = "max_err_y", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_alm_log"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "Almlog_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "Almlog_YYMMDD.log"
+[[formats]]
+name = "alm_log"
+match = "Almlog_YYMMDD.log"
 table = "laser_alm_log"
+sink = "plant-oracle"
 columns = [
   { name = "DATE", column = "biz_date", type = "text" },
   { name = "TIME", column = "biz_time", type = "text" },
   { name = "CAPTION", column = "caption", type = "text" },
   { name = "ALARM", column = "alarm", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_cnd_selct"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "cndselct_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "cndselct_YYMMDD.log"
+[[formats]]
+name = "cnd_selct"
+match = "cndselct_YYMMDD.log"
 table = "laser_cnd_selct"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -123,15 +138,16 @@ columns = [
   { name = "测量频率", column = "measured_freq", type = "text" },
   { name = "容许范围", column = "tolerance", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_length"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "length_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "length_YYMMDD.log"
+[[formats]]
+name = "length"
+match = "length_YYMMDD.log"
 table = "laser_length"
+sink = "plant-oracle"
 columns = [
   { name = "Stage", column = "stage", type = "text" },
   { name = "日期", column = "biz_date", type = "text" },
@@ -148,15 +164,16 @@ columns = [
   { name = "伸缩率最小值", column = "stretch_rate_min", type = "text" },
   { name = "伸缩率最大值", column = "stretch_rate_max", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_m307"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "m307data_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "m307data_YYMMDD.log"
+[[formats]]
+name = "m307"
+match = "m307data_YYMMDD.log"
 table = "laser_m307"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -172,15 +189,16 @@ columns = [
   { name = "准备ON时间", column = "ready_on_time", type = "text" },
   { name = "判断", column = "judgement", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_m370"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "m370data_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "m370data_YYMMDD.log"
+[[formats]]
+name = "m370"
+match = "m370data_YYMMDD.log"
 table = "laser_m370"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -189,15 +207,16 @@ columns = [
   { name = "偏置 Y", column = "offset_y", type = "text" },
   { name = "偏置 Z", column = "offset_z", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_m377"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "M377data_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "M377data_YYMMDD.log"
+[[formats]]
+name = "m377"
+match = "M377data_YYMMDD.log"
 table = "laser_m377"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -214,30 +233,32 @@ columns = [
   { name = "light A-L", column = "light_a_l", type = "text" },
   { name = "light B-L", column = "light_b_l", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_mainte1"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "mainte1_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "mainte1_YYMMDD.log"
+[[formats]]
+name = "mainte1"
+match = "mainte1_YYMMDD.log"
 table = "laser_mainte1"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
   { name = "清除项目", column = "clear_item", type = "text" },
   { name = "清除次数", column = "clear_count", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_mask_gosa"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "maskGosa_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "maskGosa_YYMMDD.log"
+[[formats]]
+name = "mask_gosa"
+match = "maskGosa_YYMMDD.log"
 table = "laser_mask_gosa"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -247,15 +268,16 @@ columns = [
   { name = "最大误差 Y", column = "max_err_y", type = "text" },
   { name = "光罩No.", column = "mask_no", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_pwr"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "pwrdata_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "pwrdata_YYMMDD.log"
+[[formats]]
+name = "pwr"
+match = "pwrdata_YYMMDD.log"
 table = "laser_pwr"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -284,15 +306,16 @@ columns = [
   { name = "条件文件", column = "cond_file", type = "text" },
   { name = "脉级", column = "pulse_class", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_sin_statis"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "Sinstatis_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "Sinstatis_YYMMDD.log"
+[[formats]]
+name = "sin_statis"
+match = "Sinstatis_YYMMDD.log"
 table = "laser_sin_statis"
+sink = "plant-oracle"
 columns = [
   { name = "Stage", column = "stage", type = "text" },
   { name = "日期", column = "biz_date", type = "text" },
@@ -322,15 +345,16 @@ columns = [
   { name = "θ标准偏差", column = "theta_std", type = "text" },
   { name = "加工张数", column = "sheet_count", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_sinsyuku"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "sinsyuku_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "sinsyuku_YYMMDD.log"
+[[formats]]
+name = "sinsyuku"
+match = "sinsyuku_YYMMDD.log"
 table = "laser_sinsyuku"
+sink = "plant-oracle"
 columns = [
   { name = "Stage", column = "stage", type = "text" },
   { name = "日期", column = "biz_date", type = "text" },
@@ -353,16 +377,16 @@ columns = [
   { name = "停止程序块", column = "stop_block", type = "text" },
   { name = "结束程序块", column = "end_block", type = "text" },
 ]
-# 注意: 表头存在重复列名 ['状态']，按名匹配取最后一次出现
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_table"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "table_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "table_YYMMDD.log"
+[[formats]]
+name = "table"
+match = "table_YYMMDD.log"
 table = "laser_table"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
@@ -379,31 +403,36 @@ columns = [
   { name = "LZ-range", column = "lz_range", type = "text" },
   { name = "加工程序", column = "prog_path", type = "text" },
 ]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
 
-[[sources]]
-id = "laser_zaxis"
-path = "../res/laser"
-profiles = ["laser"]
-pattern = "Zaxis_*.log"
-date_dir_layout = "YYYYMM"
-filename_date_layout = "Zaxis_YYMMDD.log"
+[[formats]]
+name = "zaxis"
+match = "Zaxis_YYMMDD.log"
 table = "laser_zaxis"
+sink = "plant-oracle"
 columns = [
   { name = "日期", column = "biz_date", type = "text" },
   { name = "时间", column = "biz_time", type = "text" },
-  { name = "ZR轴", column = "zr_axis", type = "text" },
-  { name = "ZL轴", column = "zl_axis", type = "text" },
-  { name = "加工程序", column = "prog_path", type = "text" },
-  { name = "计划开始", column = "planned_start", type = "text" },
-  { name = "LdDir", column = "ld_dir", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "识别结果 X", column = "result_x", type = "text" },
+  { name = "识别结果 Y", column = "result_y", type = "text" },
+  { name = "工件坐标 X", column = "workpiece_x", type = "text" },
+  { name = "工件坐标 Y", column = "workpiece_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "主程序的序列编号", column = "main_prog_seq", type = "text" },
+  { name = "主程序的程序块编号", column = "main_prog_block", type = "text" },
+  { name = "子程序的程序编号", column = "sub_prog_no", type = "text" },
+  { name = "子程序的序列编号", column = "sub_prog_seq", type = "text" },
+  { name = "子程序的程序块编号", column = "sub_prog_block", type = "text" },
+  { name = "机械坐标 X", column = "machine_x", type = "text" },
+  { name = "机械坐标 Y", column = "machine_y", type = "text" },
+  { name = "尺寸", column = "size", type = "text" },
+  { name = "Score", column = "score", type = "text" },
 ]
-
-# ----------------------------------------------------------------
-# 调度：每日 03:23 采集昨日数据
-# ----------------------------------------------------------------
-[[components]]
-id = "scheduler"
-type = "scheduler"
-
-[components.config]
-cron = "23 3 * * *"
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true

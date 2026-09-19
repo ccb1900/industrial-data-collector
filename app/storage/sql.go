@@ -245,9 +245,10 @@ func quoteIdent(dialect, name string) string {
 		case "mysql":
 			return "`" + name + "`"
 		case "oracle":
-			// Oracle：不加引号 → 服务器按大写折叠存储/匹配，与 user_tables
-			// 的 UPPER 查询、非引号查询路径保持一致。
-			return strings.ToUpper(name)
+			// Oracle：一律加引号。裸标识符会撞保留字（SIZE/DATE/LEVEL/
+			// COMMENT...，ORA-00904），且引号内大写与服务器折叠行为一致
+			//（生成侧统一 ToUpper，两侧大小写匹配）。
+			return `"` + strings.ToUpper(name) + `"`
 		}
 		return `"` + name + `"`
 	}

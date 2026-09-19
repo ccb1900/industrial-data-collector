@@ -486,9 +486,17 @@ func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, 
 			byHeader[h] = fields[i]
 		}
 	}
+	// collection_date：Oracle 方言绑 time.Time（DATE 列的严格类型匹配；
+	// 字符串会触发 ORA-01861），其余方言绑字符串（TEXT/DATE 隐式转换）。
+	var dateVal any
+	if t.cfg.Dialect == "oracle" {
+		dateVal = key.Date.Time()
+	} else {
+		dateVal = key.Date.String()
+	}
 	values := []any{
 		string(key.SourceID),
-		key.Date.String(),
+		dateVal,
 		file.Identity(),
 		rowNumber,
 	}
@@ -560,10 +568,28 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if t.cfg.FileTable != "" && batch.Sequence == 1 {
 		header := strings.Join(batch.Header, ",")
 		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
-		stmt := fmt.Sprintf("INSERT INTO %s (source_id, collection_date, file_id, path, name, records, header, collected_at) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id) DO NOTHING",
-			ft, placeholders(t.cfg.Dialect, 1, 8))
+		fCols := []string{"source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
+		var fStmt string
+		if t.cfg.Dialect == "oracle" {
+			var selected, icols, ivals, fOn []string
+			for i, c := range fCols {
+				alias := fmt.Sprintf("c%d", i)
+				selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
+				icols = append(icols, c)
+				ivals = append(ivals, "src."+alias)
+				if i < 3 { // 前三列 = 主键 (source_id, collection_date, file_id)
+					fOn = append(fOn, fmt.Sprintf("dst.%s = src.%s", c, alias))
+				}
+			}
+			fStmt = fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s FROM DUAL) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+				ft, strings.Join(selected, ", "), strings.Join(fOn, " AND "), strings.Join(icols, ", "), strings.Join(ivals, ", "))
+		} else {
+			fStmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id) DO NOTHING",
+				ft, strings.Join(fCols, ", "), placeholders(t.cfg.Dialect, 1, len(fCols)))
+		}
+		stmt := fStmt
 		if _, err := tx.ExecContext(ctx, stmt,
-			string(batch.Key.SourceID), batch.Key.Date.String(), batch.File.Identity(),
+			string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
 			batch.File.Path, batch.File.Name, 0, header, batch.CreatedAt); err != nil {
 			return errs.ClassifyStorageError("file registry "+batch.File.Name, err)
 		}
@@ -602,6 +628,28 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	switch t.cfg.Dialect {
 	case "mysql":
 		stmt = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList)
+	case "oracle":
+		// Oracle 无 ON CONFLICT：MERGE 幂等写入（与 generic 路径同语义）。
+		// src 子查询的每个绑定参数都以目标列的引用名作为输出别名，
+		// ON/INSERT 两处引用该别名——全部经 quoteIdent 保证一致。
+		var selected, insertCols, insertVals, on []string
+		keySet := map[string]bool{}
+		for _, k := range strings.Split(conflict, ", ") {
+			keySet[strings.ToLower(k)] = true
+		}
+		for i, c := range cols {
+			alias := fmt.Sprintf("c%d", i)
+			selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
+			insertCols = append(insertCols, c)
+			insertVals = append(insertVals, "src."+alias)
+			lower := strings.ToLower(strings.Trim(c, `"`))
+			if keySet[lower] {
+				on = append(on, fmt.Sprintf("dst.%s = src.%s", c, alias))
+			}
+		}
+		stmt = fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s FROM DUAL) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+			quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(selected, ", "),
+			strings.Join(on, " AND "), strings.Join(insertCols, ", "), strings.Join(insertVals, ", "))
 	default:
 		stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList, conflict)
 	}
@@ -802,4 +850,13 @@ func ensureSQLiteDir(cfg TableConfig) {
 	if dir := filepath.Dir(cfg.DSN); dir != "" && dir != "." {
 		_ = os.MkdirAll(dir, 0o755)
 	}
+}
+
+// dateBind 按方言绑定业务日期：Oracle 用 time.Time（DATE 列严格类型），
+// 其余方言用 ISO 字符串。
+func (t *TableStorage) dateBind(d model.CollectionDate) any {
+	if t.cfg.Dialect == "oracle" {
+		return d.Time()
+	}
+	return d.String()
 }

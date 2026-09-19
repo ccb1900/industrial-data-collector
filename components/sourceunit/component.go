@@ -61,7 +61,6 @@ type SourceUnitComponent struct {
 	group                 string
 	header                bool
 	catchupDays           int
-	noDataGraceHours      int
 	since                 model.CollectionDate
 	expect                string
 	inspectLookbackDays   int
@@ -229,14 +228,11 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:           c.batchSize,
-			DatePolicy:          c.policy,
-			CatchupDays:         c.catchupDays,
-			NoDataGraceHours:    c.noDataGraceHours,
-			Since:               c.since,
-			Expect:              c.expect,
-			InspectLookbackDays: c.inspectLookbackDays,
-			Logger:              c.logger,
+			BatchSize:   c.batchSize,
+			DatePolicy:  c.policy,
+			CatchupDays: c.catchupDays,
+			Since:       c.since,
+			Logger:      c.logger,
 		},
 	}
 	c.emitCtx = ctx
@@ -428,14 +424,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
-	noDataGraceHours := configutil.OptionalInt(cc, "no_data_grace_hours", 6)
 	// no_data_grace_hours 已被实例制取代：缺失可见性由巡检（expect +
 	// inspection_lookback_days）承担。保留解析仅为兼容旧配置，但显式
 	// 配置时必须告警，避免操作员以为它还在起作用。
-	if _, present := cc.Config["no_data_grace_hours"]; present {
-		slog.Warn("no_data_grace_hours is superseded by inspection (expect + inspection_lookback_days) and is ignored",
-			"source", cc.ID)
-	}
 	// 实例制语义：since = 源生命周期下界；expect = 预期节奏（daily）；
 	// inspection_lookback_days = 预期缺失的巡检回看窗口（含目标日）。
 	since := model.CollectionDate{}
@@ -447,14 +438,6 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 			slog.Warn("source since is in the future; planning and inspection are suspended until then",
 				"source", cc.ID, "since", raw)
 		}
-	}
-	expect := configutil.OptionalString(cc, "expect", "")
-	if expect != "" && expect != "daily" {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q expect must be \"daily\"", cc.ID)
-	}
-	lookback := configutil.OptionalInt(cc, "inspection_lookback_days", 1)
-	if lookback < 1 {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q inspection_lookback_days must be >= 1", cc.ID)
 	}
 	group := configutil.OptionalString(cc, "group", "")
 	header := configutil.OptionalBool(cc, "header", true)
@@ -484,10 +467,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		sourceID:              model.SourceID(sourceID),
 		group:                 group,
 		header:                header,
-		noDataGraceHours:      noDataGraceHours,
 		since:                 since,
-		expect:                expect,
-		inspectLookbackDays:   lookback,
 		path:                  root,
 		src:                   src,
 		parser:                parserModel,
@@ -610,7 +590,8 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 		case "oracle-storage":
 			dialect = "oracle"
 			if driver == "" {
-				driver = "godror"
+				// go-ora 注册的驱动名（纯 Go，无 CGO）；godror 未引入。
+				driver = "oracle"
 			}
 		}
 		// columns 未声明 + header=true：自动字段映射（默认）。首个批次用
