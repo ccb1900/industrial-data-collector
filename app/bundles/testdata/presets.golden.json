@@ -107,17 +107,36 @@
       "Enabled": null
     },
     {
-      "ID": "ui-page-sources",
+      "ID": "ui-page-collect",
       "Type": "ui-page",
       "Config": {
-        "description": "以源为中心：选一个源，采集历史、当天文件、单源操作都在这一屏。",
-        "icon": "api",
+        "description": "以源为中心的运营台：选源 → 日历选日期 → 当日任务、文件、失败与数据样本都在这一屏。",
+        "icon": "profile",
         "order": 10,
-        "page_id": "sources",
+        "page_id": "collect",
         "renderer": "views",
-        "route": "/sources",
-        "title": "数据源",
+        "route": "/collect",
+        "title": "采集",
         "views": [
+          {
+            "fields": [
+              {
+                "key": "schedule",
+                "label": "调度策略"
+              },
+              {
+                "key": "cron",
+                "label": "Cron 表达式"
+              },
+              {
+                "key": "next",
+                "label": "下次触发"
+              }
+            ],
+            "kind": "kv",
+            "query": "schedule",
+            "title": "调度"
+          },
           {
             "columns": [
               {
@@ -186,6 +205,43 @@
                 },
                 "query": "files",
                 "title": "当日文件明细"
+              },
+              {
+                "columns": [
+                  {
+                    "key": "date",
+                    "title": "采集日"
+                  },
+                  {
+                    "key": "name",
+                    "title": "文件"
+                  },
+                  {
+                    "key": "attempts",
+                    "title": "次数"
+                  },
+                  {
+                    "key": "error",
+                    "title": "错误"
+                  }
+                ],
+                "kind": "table",
+                "pageSize": 5,
+                "params": {
+                  "sourceId": "$focus.sourceId"
+                },
+                "query": "failures",
+                "title": "该源失败账本"
+              },
+              {
+                "kind": "table",
+                "pageSize": 5,
+                "params": {
+                  "limit": "5",
+                  "sourceId": "$focus.sourceId"
+                },
+                "query": "rows",
+                "title": "数据样本（按采集顺序）"
               }
             ],
             "focusKey": "id",
@@ -207,137 +263,16 @@
       "Enabled": null
     },
     {
-      "ID": "ui-page-collections",
-      "Type": "ui-page",
-      "Config": {
-        "actions": [
-          {
-            "command": "trigger",
-            "datePicker": true,
-            "label": "立即采集"
-          }
-        ],
-        "description": "补采中心：只把需要行动的任务放在前面，点选一行即在下方的文件明细与本侧详情中展示。",
-        "icon": "profile",
-        "order": 20,
-        "page_id": "collections",
-        "renderer": "views",
-        "route": "/collections",
-        "title": "采集任务",
-        "views": [
-          {
-            "fields": [
-              {
-                "key": "schedule",
-                "label": "调度策略"
-              },
-              {
-                "key": "cron",
-                "label": "Cron 表达式"
-              },
-              {
-                "key": "last",
-                "label": "上次触发"
-              },
-              {
-                "key": "next",
-                "label": "下次触发"
-              }
-            ],
-            "kind": "kv",
-            "query": "schedule",
-            "title": "调度"
-          },
-          {
-            "kind": "list",
-            "query": "plan",
-            "rowActions": [
-              {
-                "args": {
-                  "date": "$row.date",
-                  "sourceId": "$row.sourceId"
-                },
-                "command": "trigger",
-                "label": "采集"
-              }
-            ],
-            "title": "补采计划",
-            "titleKey": "sourceId"
-          },
-          {
-            "columns": [
-              {
-                "key": "sourceId",
-                "title": "数据源"
-              },
-              {
-                "key": "date",
-                "title": "采集日期"
-              },
-              {
-                "key": "status",
-                "title": "状态"
-              },
-              {
-                "format": "{filesCompleted}/{filesTotal}",
-                "key": "files",
-                "title": "文件进度"
-              },
-              {
-                "key": "records",
-                "title": "记录数"
-              }
-            ],
-            "kind": "table",
-            "pageSize": 10,
-            "query": "collections",
-            "selectFocus": true,
-            "title": "全部任务"
-          },
-          {
-            "columns": [
-              {
-                "key": "name",
-                "title": "文件"
-              },
-              {
-                "key": "path",
-                "title": "路径"
-              },
-              {
-                "key": "records",
-                "title": "记录数"
-              },
-              {
-                "key": "status",
-                "title": "状态"
-              }
-            ],
-            "expand": "metadata",
-            "kind": "table",
-            "pageSize": 20,
-            "params": {
-              "date": "$focus.date",
-              "sourceId": "$focus.sourceId"
-            },
-            "query": "files",
-            "title": "文件明细"
-          }
-        ]
-      },
-      "Enabled": null
-    },
-    {
       "ID": "ui-page-data",
       "Type": "ui-page",
       "Config": {
         "description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
         "icon": "search",
-        "order": 35,
+        "order": 20,
         "page_id": "data",
         "renderer": "views",
         "route": "/data",
-        "title": "数据查询",
+        "title": "数据",
         "views": [
           {
             "filters": [
@@ -415,109 +350,12 @@
       "Config": {
         "order": 20,
         "pages": [
-          "overview",
-          "collections"
+          "overview"
         ],
         "panel_id": "event-feed",
         "position": "bottom",
         "renderer": "event-feed",
         "title": "事件流"
-      },
-      "Enabled": null
-    },
-    {
-      "ID": "ui-panel-failures",
-      "Type": "ui-panel",
-      "Config": {
-        "order": 30,
-        "pages": [
-          "overview",
-          "collections"
-        ],
-        "panel_id": "failures",
-        "position": "bottom",
-        "renderer": "views",
-        "title": "失败账本",
-        "views": [
-          {
-            "columns": [
-              {
-                "key": "sourceId",
-                "title": "数据源"
-              },
-              {
-                "key": "date",
-                "title": "采集日"
-              },
-              {
-                "key": "name",
-                "title": "文件"
-              },
-              {
-                "key": "attempts",
-                "title": "次数"
-              },
-              {
-                "key": "error",
-                "title": "错误"
-              }
-            ],
-            "kind": "table",
-            "pageSize": 8,
-            "query": "failures"
-          }
-        ]
-      },
-      "Enabled": null
-    },
-    {
-      "ID": "ui-panel-collection-detail",
-      "Type": "ui-panel",
-      "Config": {
-        "order": 10,
-        "pages": [
-          "collections"
-        ],
-        "panel_id": "collection-detail",
-        "position": "right",
-        "renderer": "views",
-        "title": "采集详情",
-        "views": [
-          {
-            "fields": [
-              {
-                "key": "sourceId",
-                "label": "数据源"
-              },
-              {
-                "key": "date",
-                "label": "采集日期"
-              },
-              {
-                "key": "status",
-                "label": "状态"
-              },
-              {
-                "key": "records",
-                "label": "记录数"
-              },
-              {
-                "key": "filesCompleted",
-                "label": "完成文件"
-              },
-              {
-                "key": "filesFailed",
-                "label": "失败文件"
-              }
-            ],
-            "kind": "kv",
-            "params": {
-              "date": "$focus.date",
-              "sourceId": "$focus.sourceId"
-            },
-            "query": "collection"
-          }
-        ]
       },
       "Enabled": null
     }

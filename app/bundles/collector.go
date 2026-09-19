@@ -84,15 +84,23 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
-		bundle.Row("ui-page-sources", "ui-page", map[string]any{
-			"page_id":     "sources",
-			"title":       "数据源",
-			"route":       "/sources",
-			"description": "以源为中心：选一个源，采集历史、当天文件、单源操作都在这一屏。",
+		bundle.Row("ui-page-collect", "ui-page", map[string]any{
+			"page_id":     "collect",
+			"title":       "采集",
+			"route":       "/collect",
+			"description": "以源为中心的运营台：选源 → 日历选日期 → 当日任务、文件、失败与数据样本都在这一屏。",
 			"renderer":    "views",
-			"icon":        "api",
+			"icon":        "profile",
 			"order":       10,
 			"views": []any{
+				map[string]any{
+					"kind": "kv", "title": "调度", "query": "schedule",
+					"fields": []any{
+						map[string]any{"key": "schedule", "label": "调度策略"},
+						map[string]any{"key": "cron", "label": "Cron 表达式"},
+						map[string]any{"key": "next", "label": "下次触发"},
+					},
+				},
 				map[string]any{
 					"kind": "master-detail", "query": "sources", "pageSize": 30, "focusKey": "id",
 					"rowActions": []any{
@@ -124,68 +132,34 @@ func consoleRows() []extconfig.ComponentConfig {
 								map[string]any{"key": "status", "title": "状态"},
 							},
 						},
-					},
-				},
-			},
-		}),
-		bundle.Row("ui-page-collections", "ui-page", map[string]any{
-			"page_id":     "collections",
-			"title":       "采集任务",
-			"route":       "/collections",
-			"description": "补采中心：只把需要行动的任务放在前面，点选一行即在下方的文件明细与本侧详情中展示。",
-			"renderer":    "views",
-			"icon":        "profile",
-			"order":       20,
-			"actions": []any{
-				map[string]any{"label": "立即采集", "command": "trigger", "datePicker": true},
-			},
-			"views": []any{
-				map[string]any{
-					"kind": "kv", "title": "调度", "query": "schedule",
-					"fields": []any{
-						map[string]any{"key": "schedule", "label": "调度策略"},
-						map[string]any{"key": "cron", "label": "Cron 表达式"},
-						map[string]any{"key": "last", "label": "上次触发"},
-						map[string]any{"key": "next", "label": "下次触发"},
-					},
-				},
-				map[string]any{
-					"kind": "list", "title": "补采计划", "query": "plan", "titleKey": "sourceId",
-					"rowActions": []any{
-						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.sourceId", "date": "$row.date"}},
-					},
-				},
-				map[string]any{
-					"kind": "table", "title": "全部任务", "query": "collections", "selectFocus": true, "pageSize": 10,
-					"columns": []any{
-						map[string]any{"key": "sourceId", "title": "数据源"},
-						map[string]any{"key": "date", "title": "采集日期"},
-						map[string]any{"key": "status", "title": "状态"},
-						map[string]any{"key": "files", "title": "文件进度", "format": "{filesCompleted}/{filesTotal}"},
-						map[string]any{"key": "records", "title": "记录数"},
-					},
-				},
-				map[string]any{
-					"kind": "table", "title": "文件明细", "query": "files",
-					"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
-					"expand": "metadata", "pageSize": 20,
-					"columns": []any{
-						map[string]any{"key": "name", "title": "文件"},
-						map[string]any{"key": "path", "title": "路径"},
-						map[string]any{"key": "records", "title": "记录数"},
-						map[string]any{"key": "status", "title": "状态"},
+						map[string]any{
+							"kind": "table", "title": "该源失败账本", "query": "failures",
+							"params":   map[string]any{"sourceId": "$focus.sourceId"},
+							"pageSize": 5,
+							"columns": []any{
+								map[string]any{"key": "date", "title": "采集日"},
+								map[string]any{"key": "name", "title": "文件"},
+								map[string]any{"key": "attempts", "title": "次数"},
+								map[string]any{"key": "error", "title": "错误"},
+							},
+						},
+						map[string]any{
+							"kind": "table", "title": "数据样本（按采集顺序）", "query": "rows",
+							"params":   map[string]any{"sourceId": "$focus.sourceId", "limit": "5"},
+							"pageSize": 5,
+						},
 					},
 				},
 			},
 		}),
 		bundle.Row("ui-page-data", "ui-page", map[string]any{
 			"page_id":     "data",
-			"title":       "数据查询",
+			"title":       "数据",
 			"route":       "/data",
 			"description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
 			"renderer":    "views",
 			"icon":        "search",
-			"order":       35,
+			"order":       20,
 			"views": []any{
 				map[string]any{
 					"kind": "query-table", "title": "记录查询", "query": "rows", "pageSize": 20,
@@ -223,53 +197,11 @@ func consoleRows() []extconfig.ComponentConfig {
 		}),
 		bundle.Row("ui-panel-event-feed", "ui-panel", map[string]any{
 			"panel_id": "event-feed",
-			"pages":    []any{"overview", "collections"},
+			"pages":    []any{"overview"},
 			"title":    "事件流",
 			"position": "bottom",
 			"renderer": "event-feed",
 			"order":    20,
-		}),
-		bundle.Row("ui-panel-failures", "ui-panel", map[string]any{
-			"panel_id": "failures",
-			"pages":    []any{"overview", "collections"},
-			"title":    "失败账本",
-			"position": "bottom",
-			"renderer": "views",
-			"order":    30,
-			"views": []any{
-				map[string]any{
-					"kind": "table", "query": "failures", "pageSize": 8,
-					"columns": []any{
-						map[string]any{"key": "sourceId", "title": "数据源"},
-						map[string]any{"key": "date", "title": "采集日"},
-						map[string]any{"key": "name", "title": "文件"},
-						map[string]any{"key": "attempts", "title": "次数"},
-						map[string]any{"key": "error", "title": "错误"},
-					},
-				},
-			},
-		}),
-		bundle.Row("ui-panel-collection-detail", "ui-panel", map[string]any{
-			"panel_id": "collection-detail",
-			"pages":    []any{"collections"},
-			"title":    "采集详情",
-			"position": "right",
-			"renderer": "views",
-			"order":    10,
-			"views": []any{
-				map[string]any{
-					"kind": "kv", "query": "collection",
-					"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
-					"fields": []any{
-						map[string]any{"key": "sourceId", "label": "数据源"},
-						map[string]any{"key": "date", "label": "采集日期"},
-						map[string]any{"key": "status", "label": "状态"},
-						map[string]any{"key": "records", "label": "记录数"},
-						map[string]any{"key": "filesCompleted", "label": "完成文件"},
-						map[string]any{"key": "filesFailed", "label": "失败文件"},
-					},
-				},
-			},
 		}),
 	}
 	return rows

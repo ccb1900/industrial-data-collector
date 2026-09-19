@@ -86,14 +86,16 @@ check "pluginmeta 聚合存在" test -f internal/pluginmeta/pluginmeta.go
 check "validate 聚合引用"   grep_q 'pluginmeta.Types()' app/config/validate.go
 
 echo "== 页面与面板（collector-console 预设）=="
-for pg in overview collections sources data; do
+for pg in overview collect data; do
   check "页面 $pg" grep_q "\"page_id\":     \"$pg\"" app/bundles/collector.go
 done
-check "无独立文件页（主从合并）" test -z "$(grep -h 'ui-page-files' app/bundles/collector.go)"
-for pn in logs event-feed failures collection-detail; do
-  check "面板 $pn" grep_q "\"panel_id\": \"$pn\"\|\"panel_id\": \"$pn\"" app/bundles/collector.go
+check "采集页为主从视图" grep_q '"kind": "master-detail"' app/bundles/collector.go
+check "采集页含状态日历" grep_q '"kind": "calendar"' app/bundles/collector.go
+for pn in logs event-feed; do
+  check "面板 $pn" grep_q "\"panel_id\": \"$pn\"" app/bundles/collector.go
 done
-check "详情面板绑定 collections" grep_q '"pages":    \[\]any{"collections"}' app/bundles/collector.go
+check "失败账本面板已并入采集页" test -z "$(grep -h 'ui-panel-failures' app/bundles/collector.go)"
+check "详情右面板已并入采集页" test -z "$(grep -h 'ui-panel-collection-detail' app/bundles/collector.go)"
 check "页面图标声明" grep_q '"icon":        "dashboard"' app/bundles/collector.go
 
 echo "== 目录与脚本 =="
