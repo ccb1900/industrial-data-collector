@@ -47,11 +47,12 @@ lazy_connect = true
 no = "laser"
 path = "../res/laser/YYYYMM"
 group = "laser-set"
+schedule = "nightly"                 # 该机台按 nightly 节奏自动采集
 since = "2026-09-01"
 
 [[schedules]]
+name = "nightly"
 cron = "23 3 * * *"
-group = "laser-set"
 
 [[format_groups]]
 name = "laser-set"

@@ -12,12 +12,13 @@ import (
 )
 
 // 四层声明模型（features/20260919.md）：机台清单（事实）× 格式清单组
-// （分配）× 格式清单（语义 = 一张表的契约）× sink 清单（连接）。装载时
-// 展开为 机台 × 格式 的源定义——实例制语义不变：无证据不物化，缺失
-// 可见性由巡检（expect）承担。
+// （分配）× 格式清单（语义 = 一张表的契约）× sink 清单（连接），外加
+// 命名调度 [[schedules]]（机台通过 schedule 引用，对象是机台）。装载时
+// 展开为 机台 × 格式 的源定义——实例制语义不变：无证据不物化；文件
+// 不存在不是失败（无实例、无重试），网络不可达才是可重试 Failed。
 
 // FleetDefaults 是横切默认值，逐级可被格式/组/机台覆盖（本期实现的
-// 覆盖点：expect / inspection_lookback_days / file_stable_window_seconds）。
+// 覆盖点：file_stable_window_seconds）。
 type FleetDefaults struct {
 	StateDir            string
 	DatePolicy          string
@@ -40,9 +41,8 @@ type SinkDef struct {
 }
 
 // FormatDef is the complete semantic contract of one data file family:
-// what it looks like (match), how it parses (parser), where it lands
-// (table + sink), and how its absence is judged (expect). One format = one
-// table = one column contract.
+// what it looks like (match), how it parses (parser), and where it lands
+// (table + sink). One format = one table = one column contract.
 type FormatDef struct {
 	Name        string
 	Match       string // 文件名签名（可含日期词表 YYYY/YY/MM/DD）
@@ -75,6 +75,7 @@ type MachineDef struct {
 	Path     string
 	Group    string
 	Since    string
+	Schedule string // 引用 [[schedules]] 的 name：该机台按此节奏自动采集
 	Metadata map[string]string
 }
 
@@ -154,12 +155,12 @@ func nativeSep(p string) string {
 	return strings.ReplaceAll(p, "\\", "/")
 }
 
-// ScheduleDef 是一条调度声明：cron 或每日 time 二选一，group 引用
-// 格式清单组（该组机台按此节奏采集）。空 group = 全局广播。
+// ScheduleDef 是一条命名的调度声明：cron 或每日 time 二选一。
+// 机台通过 schedule 字段引用调度名——调度的对象是机台，不是格式组。
 type ScheduleDef struct {
-	Cron  string
-	Time  string
-	Group string
+	Name string
+	Cron string
+	Time string
 }
 
 // expandFleet 展开：机台 × 其组的格式 → 源定义。引用完整性在此强校验
@@ -296,6 +297,14 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if m.Since != "" {
 				cfg["since"] = m.Since
 			}
+			// 调度以机台为对象：引用调度的机台，其 source group 直接指向
+			// 该调度的合成内部组（__sched_<名>）——调度引擎与 source-unit
+			// 的 group 精确匹配链路零改动，而"机台属于哪个节奏"与"机台采
+			// 哪些格式"（格式清单组）彻底解耦。未引用调度的机台不自动采集
+			// （仍可手动/watch 触发）。
+			if m.Schedule != "" {
+				cfg["group"] = "__sched_" + m.Schedule
+			}
 			if d.SpecificDate != "" {
 				cfg["specific_date"] = d.SpecificDate
 			}
@@ -326,45 +335,46 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 
-	// 调度声明 → 单个 scheduler 组件行（exclusive provider 只允许一个
-	// scheduler；多条目由 [[schedules]] 数组承载，每条 group 定向）。
-	var schedEntries []any
-	seen := map[string]bool{}
+	// 调度是命名实体：校验机台引用的名字存在；引用关系已在展开时写入
+	// 各 source 的 group（见上方展开循环）。
+	schedByName := map[string]ScheduleDef{}
 	for i, sc := range schedules {
-		if sc.Cron == "" && sc.Time == "" {
-			return nil, nil, fmt.Errorf("schedules #%d: cron or time is required", i)
+		if sc.Name == "" {
+			return nil, nil, fmt.Errorf("schedules #%d: name is required", i)
 		}
-		if sc.Group != "" {
-			if _, ok := groupByName[sc.Group]; !ok {
-				return nil, nil, fmt.Errorf("schedules #%d references unknown format group %q", i, sc.Group)
+		if sc.Cron == "" && sc.Time == "" {
+			return nil, nil, fmt.Errorf("schedule %q: cron or time is required", sc.Name)
+		}
+		if _, dup := schedByName[sc.Name]; dup {
+			return nil, nil, fmt.Errorf("schedules: duplicate schedule name %q", sc.Name)
+		}
+		schedByName[sc.Name] = sc
+	}
+	for _, m := range machines {
+		if m.Schedule != "" {
+			if _, ok := schedByName[m.Schedule]; !ok {
+				return nil, nil, fmt.Errorf("machine %q references unknown schedule %q", m.No, m.Schedule)
 			}
 		}
-		id := sc.Group
-		if id == "" {
-			id = fmt.Sprintf("sched-%d", i)
-		}
-		if seen[id] {
-			return nil, nil, fmt.Errorf("schedules: duplicate group %q", sc.Group)
-		}
-		seen[id] = true
-		e := map[string]any{}
-		if sc.Cron != "" {
-			e["cron"] = sc.Cron
-		} else {
-			e["time"] = sc.Time
-		}
-		if sc.Group != "" {
-			e["group"] = sc.Group
-		}
-		schedEntries = append(schedEntries, e)
 	}
 	var rows []extconfig.ComponentConfig
-	if len(schedEntries) > 0 {
+	if len(schedules) > 0 {
+		entries := make([]any, 0, len(schedules))
+		for _, sc := range schedules {
+			e := map[string]any{}
+			if sc.Cron != "" {
+				e["cron"] = sc.Cron
+			} else {
+				e["time"] = sc.Time
+			}
+			e["group"] = "__sched_" + sc.Name
+			entries = append(entries, e)
+		}
 		rows = append(rows, extconfig.ComponentConfig{
 			ID:   "scheduler",
 			Type: "scheduler",
 			Config: map[string]any{
-				"schedules": schedEntries,
+				"schedules": entries,
 			},
 		})
 	}
@@ -494,8 +504,8 @@ func parseFormats(raw any) ([]FormatDef, error) {
 			f.Layout = l
 		}
 		known := map[string]bool{
-			"name": true, "match": true, "table": true, "sink": true, "expect": true,
-			"inspection_lookback_days": true, "parser": true, "columns": true,
+			"name": true, "match": true, "table": true, "sink": true,
+			"parser": true, "columns": true,
 			"metadata": true, "layout": true,
 		}
 		for k, v := range m {
@@ -559,6 +569,7 @@ func parseMachines(raw any) ([]MachineDef, error) {
 		md.Path, _ = m["path"].(string)
 		md.Group, _ = m["group"].(string)
 		md.Since, _ = m["since"].(string)
+		md.Schedule, _ = m["schedule"].(string)
 		if meta, ok := m["metadata"].(map[string]any); ok {
 			md.Metadata = map[string]string{}
 			for k, v := range meta {
@@ -587,9 +598,9 @@ func parseSchedules(raw any) ([]ScheduleDef, error) {
 			return nil, fmt.Errorf("schedules #%d must be a table", i)
 		}
 		sd := ScheduleDef{}
+		sd.Name, _ = m["name"].(string)
 		sd.Cron, _ = m["cron"].(string)
 		sd.Time, _ = m["time"].(string)
-		sd.Group, _ = m["group"].(string)
 		out = append(out, sd)
 	}
 	return out, nil

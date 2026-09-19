@@ -54,6 +54,7 @@ no = "MT-001"
 ip = "192.168.1.100"
 path = '\\{ip}\\logs\\YYYYMM'
 group = "unc-set"
+schedule = "nightly"
 since = "2026-09-01"
 
 [[machines]]
@@ -61,6 +62,7 @@ no = "MT-002"
 ip = "192.168.1.101"
 path = '\\{ip}\\logs\\YYYYMM'
 group = "unc-set"
+schedule = "nightly"
 since = "2026-09-01"
 
 [[machines]]
@@ -68,8 +70,9 @@ no = "MT-003"
 ip = "192.168.1.102"
 path = '\\{ip}\\logs\\YYYYMM'
 group = "unc-set"
+schedule = "nightly"
 since = "2026-09-01"
 
 [[schedules]]
+name = "nightly"
 cron = "23 3 * * *"
-group = "unc-set"

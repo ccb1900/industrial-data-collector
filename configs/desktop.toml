@@ -6,14 +6,14 @@
 # NOTE: 顶层键必须先于一切表（TOML 语义），保持在本文件靠前位置。
 bundles = ["collector-core", "collector-console"]
 
-# 调度：不同组可以有不同节奏。group 引用格式清单组（即机台类型）。
+# 调度：以机台为对象。机台行 schedule 引用调度名，不同机台不同节奏。
 [[schedules]]
+name = "frequent"
 cron = "0 */6 * * *"
-group = "demo-csv-set"
 
 [[schedules]]
+name = "weekly"
 cron = "0 4 * * 0"
-group = "demo-dat-set"
 
 [defaults]
 state_dir = "../state"
@@ -84,6 +84,7 @@ formats = ["legacy-dat"]
 no = "production"
 path = "data/production/YYYY-MM-DD"
 group = "demo-csv-set"
+schedule = "frequent"
 [machines.metadata]
 plant = "demo"
 
@@ -91,6 +92,7 @@ plant = "demo"
 no = "quality"
 path = "data/quality/YYYY-MM-DD"
 group = "demo-csv-set"
+schedule = "frequent"
 [machines.metadata]
 plant = "demo"
 
@@ -98,5 +100,6 @@ plant = "demo"
 no = "legacy"
 path = "data/production/YYYY-MM-DD"
 group = "demo-dat-set"
+schedule = "weekly"
 [machines.metadata]
 plant = "demo"

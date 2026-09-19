@@ -62,8 +62,6 @@ type SourceUnitComponent struct {
 	header                bool
 	catchupDays           int
 	since                 model.CollectionDate
-	expect                string
-	inspectLookbackDays   int
 	logger                *slog.Logger
 
 	emitCtx *runtime.Context
@@ -424,18 +422,15 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
-	// no_data_grace_hours 已被实例制取代：缺失可见性由巡检（expect +
-	// inspection_lookback_days）承担。保留解析仅为兼容旧配置，但显式
-	// 配置时必须告警，避免操作员以为它还在起作用。
-	// 实例制语义：since = 源生命周期下界；expect = 预期节奏（daily）；
-	// inspection_lookback_days = 预期缺失的巡检回看窗口（含目标日）。
+	// 实例制语义：since = 源生命周期下界。文件不存在不是失败——无证据
+	// 不物化；网络不可达才是可重试 Failed（分类见 executor）。
 	since := model.CollectionDate{}
 	if raw := configutil.OptionalString(cc, "since", ""); raw != "" {
 		if err := since.UnmarshalText([]byte(raw)); err != nil {
 			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source %q since must be YYYY-MM-DD: %v", cc.ID, err)
 		}
 		if !since.IsZero() && since.After(model.NewCollectionDate(time.Now())) {
-			slog.Warn("source since is in the future; planning and inspection are suspended until then",
+			slog.Warn("source since is in the future; planning is suspended until then",
 				"source", cc.ID, "since", raw)
 		}
 	}

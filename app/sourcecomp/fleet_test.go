@@ -175,3 +175,44 @@ type = "query-provider"
 		t.Fatalf("path template not substituted: %q", mainte.Path)
 	}
 }
+
+// 调度以机台为对象：机台行 schedule 引用调度名，展开时合成为内部组
+// （__sched_<名>）——机台的节奏归属与格式分组解耦。
+func TestExpandFleetMachineSchedule(t *testing.T) {
+	d := FleetDefaults{DatePolicy: "yesterday", StateDir: "../state"}
+	sinks := []SinkDef{{Name: "db", Driver: "sqlite", DSN: ":memory:"}}
+	formats := []FormatDef{{Name: "f", Match: "x_YYMMDD.csv", Table: "t", Sink: "db"}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"f"}}}
+	schedules := []ScheduleDef{{Name: "nightly", Cron: "23 3 * * *"}}
+	machines := []MachineDef{
+		{No: "m1", Path: `\\h\YYYYMM`, Group: "g", Schedule: "nightly"},
+		{No: "m2", Path: `\\h\YYYYMM`, Group: "g"}, // 未引用调度：不自动采集
+	}
+	out, rows, err := expandFleet(d, sinks, formats, groups, machines, schedules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "scheduler" {
+		t.Fatalf("scheduler rows = %#v", rows)
+	}
+	entries := rows[0].Config["schedules"].([]any)
+	e0 := entries[0].(map[string]any)
+	if e0["group"] != "__sched_nightly" {
+		t.Fatalf("schedule group = %#v, want synthetic internal group", e0)
+	}
+	// 引用了调度的机台其源 group 被改写为合成组；未引用的保持原组。
+	for _, r := range out {
+		g, _ := r.Config["group"].(string)
+		if r.ID == "m1-f" && g != "__sched_nightly" {
+			t.Fatalf("m1-f group = %q, want synthetic", g)
+		}
+		if r.ID == "m2-f" && g == "__sched_nightly" {
+			t.Fatalf("m2-f must not be scheduled")
+		}
+	}
+	// 引用不存在的调度 → 响亮失败。
+	machines[1].Schedule = "ghost"
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, schedules); err == nil || !strings.Contains(err.Error(), "unknown schedule") {
+		t.Fatalf("unknown schedule: %v", err)
+	}
+}
