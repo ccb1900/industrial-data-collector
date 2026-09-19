@@ -132,42 +132,6 @@ func TestMissingDirectoryForPastDaySkips(t *testing.T) {
 	}
 }
 
-// 巡检：expect=daily 时，回看窗口内的预期缺失生成可重试的 Failed 实例；
-// 文件晚到后，下次采集成功覆盖它。
-func TestInspectionCreatesRetryableFailure(t *testing.T) {
-	root := t.TempDir()
-	st := state.NewMemory()
-	mem := storage.NewMemory(storage.MemoryOptions{})
-	e := newExecutor(t, root, st, mem)
-	e.Config.Expect = "daily"
-	e.Config.InspectLookbackDays = 1
-
-	// 巡检窗口相对"今天"：昨天。
-	yesterday := model.NewCollectionDate(time.Now().AddDate(0, 0, -1))
-	// Handle 对 Failed 结果同时返回非 nil error（与不可达路径同语义）。
-	_, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(yesterday)})
-	if err == nil || !strings.Contains(err.Error(), "inspection") {
-		t.Fatalf("err = %v, want the inspection failure", err)
-	}
-	incomplete, _ := st.ListIncomplete(context.Background(), "prod", yesterday, 0)
-	if len(incomplete) != 1 {
-		t.Fatal("inspection failure must stay listed for retry")
-	}
-
-	// 文件晚到：下次触发采集成功，覆盖巡检失败。
-	writeDateCSV(t, root, yesterday.String(), "a.csv", "id,name\n1,a\n")
-	res2, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(yesterday)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res2) != 1 || res2[0].Status != model.StatusSucceeded {
-		t.Fatalf("late-arrival result = %#v, want Succeeded", res2)
-	}
-	if incomplete2, _ := st.ListIncomplete(context.Background(), "prod", yesterday, 0); len(incomplete2) != 0 {
-		t.Fatal("succeeded date must leave the retry list")
-	}
-}
-
 // since 生命周期下界：早于它的业务日不计划、不物化；显式指定日期的
 // 触发同样遵守。
 func TestSinceClampsPlanning(t *testing.T) {
@@ -276,7 +240,6 @@ func TestUnstableFilesNotMaterialized(t *testing.T) {
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	e.Config.NoDataGraceHours = 6
 	// 文件写入后立刻采集：mtime 在稳定窗口内。
 	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
 	// 源的稳定窗口 30s：文件刚写入，List 报 ErrFileUnstable。

@@ -23,28 +23,16 @@ type Config struct {
 	// Zero keeps the previous behavior: gaps are synthesized only from the
 	// last succeeded business date.
 	CatchupDays int
-	// NoDataGraceHours 已由实例制取代：缺失可见性由巡检（Expect/
-	// InspectLookbackDays）承担。字段保留用于兼容旧配置解析，不再参与
-	// 语义。
-	NoDataGraceHours int
-	// Since 是源的生命周期下界：早于它的业务日不计划、不巡检、不物化。
+	// Since 是源的生命周期下界：早于它的业务日不计划、不物化。
 	// 零值 = 无下界。
-	Since model.CollectionDate
-	// Expect 声明预期节奏（"daily" = 每个业务日应有数据）。空 = 不巡检，
-	// 缺失不物化。
-	Expect string
-	// InspectLookbackDays 巡检回看窗口（含目标日，默认 1 = 只看目标日）。
-	InspectLookbackDays int
-	Now                 func() time.Time
-	Logger              *slog.Logger
+	Since  model.CollectionDate
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 1000
-	}
-	if c.NoDataGraceHours <= 0 {
-		c.NoDataGraceHours = 6
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -69,23 +57,6 @@ type Executor struct {
 
 	Recovery recovery.Planner
 	Config   Config
-}
-
-// InspectionDue 报告一个业务日是否在巡检回看窗口内：expect 声明了预期
-// 节奏时，窗口内（以策略目标日为锚，往回数 lookback 天）的日期"该有而
-// 没有"要生成可重试的异常实例；窗口外与未声明预期的日期缺失不物化——
-// 缺失可见性由巡检承担，而不是台账。今天本身不在窗口内：今天的数据
-// 可能合法地尚未产生。
-func InspectionDue(cfg Config, date, anchor model.CollectionDate) bool {
-	if cfg.Expect == "" {
-		return false
-	}
-	lookback := cfg.InspectLookbackDays
-	if lookback < 1 {
-		lookback = 1
-	}
-	earliest := anchor.AddDate(0, 0, -(lookback - 1))
-	return !date.Before(earliest) && !date.After(anchor)
 }
 
 func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([]model.CollectionResult, error) {
@@ -139,7 +110,7 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		res := e.collectOne(ctx, key, target)
+		res := e.collectOne(ctx, key)
 		if res != nil {
 			results = append(results, *res)
 			if res.Status == model.StatusFailed {
@@ -154,15 +125,8 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 }
 
 // collectOne 是实例制的核心：先探针（List），有证据才物化台账。
-//   - 有文件        → Begin → 采集 → Succeeded/Failed（可重试实例）
-//   - 无文件 + 巡检窗口内（声明了 expect）→ Failed 异常实例（下次巡检
-//     复查：文件到了则采集成功覆盖它）
-//   - 无文件 + 窗口外/未声明预期 → 不物化，并 Drop 历史遗留记录
-//   - 不稳定/不可达  → 不物化或可重试 Failed，由下次触发重探
-//
-// Pending 与 Skipped 不再产生：缺失可见性由巡检承担，台账只保留真实
-// 发生过的工作。
-func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anchor model.CollectionDate) *model.CollectionResult {
+// 文件不存在 = 当天没有数据 = 不产生任何记录。
+func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *model.CollectionResult {
 	cfg := e.Config.withDefaults()
 	started := time.Now()
 	if cfg.Now != nil {
@@ -174,41 +138,11 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey, anch
 	if err != nil {
 		switch {
 		case errs.Is(err, errs.ErrNotFound):
-			// 历史已成功：文件后来被共享清理——台账保留成功事实，
-			// 不告警、不降级（否则每次触发都会对成功日重复假警报）。
-			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok && st == model.StatusSucceeded {
-				result.Status = model.StatusSkipped
-				result.Error = "no data; already collected previously"
-				cfg.Logger.Info("files removed after success; ledger kept", "key", key.String())
-				return result
-			}
-			// 巡检窗口内的预期缺失：可重试的 Failed 实例（文件晚到后
-			// 下次采集成功即覆盖）。已 Succeeded 的日期在上方被拦下，
-			// 不会出现台账与结果互相矛盾的假警报。
-			if InspectionDue(cfg, key.Date, anchor) {
-				result.Status = model.StatusFailed
-				result.Error = fmt.Sprintf("inspection: expected %s data is missing: %v", cfg.Expect, err)
-				if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr != nil {
-					result.Status = model.StatusFailed
-					result.Error = fmt.Sprintf("begin state: %v", berr)
-					return result
-				} else if ok {
-					_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
-				}
-				cfg.Logger.Warn("inspection: expected data missing", "key", key.String(), "error", err.Error())
-				result.EndedAt = time.Now()
-				result.Duration = result.EndedAt.Sub(started)
-				return result
-			}
-			// 无证据不物化：只清旧语义遗留（Skipped/Pending），
-			// Succeeded/Failed 是真实历史，绝不抹掉。
-			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok &&
-				(st == model.StatusSkipped || st == model.StatusPending) {
-				_ = e.State.Drop(ctx, key)
-			}
+			// 文件不存在 = 无数据 = 不物化。没有实例、没有重试、没有
+			// 告警——"没有"就是没有。这不是失败，只是当天没有数据。
+			_ = e.State.Drop(ctx, key)
 			result.Status = model.StatusSkipped
-			result.Error = fmt.Sprintf("no data; not materialized: %v", err)
-			cfg.Logger.Info("no data for date; not materialized", "key", key.String())
+			result.Error = "no data for this date"
 			return result
 		case errs.Is(err, errs.ErrFileUnstable):
 			// 候选文件都在稳定窗口内：不物化，下次触发重探——

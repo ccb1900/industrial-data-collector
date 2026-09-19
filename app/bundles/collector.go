@@ -20,9 +20,6 @@ func init() {
 // declaring an explicit scheduler row (whole-row replace).
 func coreRows() []extconfig.ComponentConfig {
 	return []extconfig.ComponentConfig{
-		bundle.Row("scheduler", "scheduler", map[string]any{
-			"cron": "23 3 * * *",
-		}),
 		bundle.Row("console-bridge", "console-bridge", nil),
 		bundle.Row("console-rows", "console-rows", nil),
 		bundle.Row("query-provider", "query-provider", nil),

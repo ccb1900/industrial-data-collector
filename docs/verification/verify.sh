@@ -68,7 +68,6 @@ echo "== source-unit 配置键 =="
 for k in source_id path pattern detect_content encoding header delimiter skip_lines date_policy specific_date catchup_days batch_size collection_mode file_stable_window_seconds dedupe_content_hash state_type state_dir storage sink driver dsn table file_table expose_console lazy_connect metadata_source layout; do
   check "配置键 $k" grep_q "\"$k\"" components/sourceunit/component.go
 done
-check "配置键 no_data_grace_hours 弃用告警" grep_q "is superseded by inspection" components/sourceunit/component.go
   check "配置键 date_dir_layout" grep_q '"date_dir_layout"' components/sourceunit/component.go
   check "配置键 filename_date_layout" grep_q '"filename_date_layout"' components/sourceunit/component.go
 check "四层展开函数" grep_q 'func expandFleet' app/sourcecomp/fleet.go

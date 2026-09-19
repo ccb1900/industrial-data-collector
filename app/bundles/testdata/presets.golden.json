@@ -362,14 +362,6 @@
   ],
   "collector-core": [
     {
-      "ID": "scheduler",
-      "Type": "scheduler",
-      "Config": {
-        "cron": "23 3 * * *"
-      },
-      "Enabled": null
-    },
-    {
       "ID": "console-bridge",
       "Type": "console-bridge",
       "Config": null,

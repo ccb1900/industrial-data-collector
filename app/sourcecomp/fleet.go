@@ -2,6 +2,8 @@ package sourcecomp
 
 import (
 	"fmt"
+
+	extconfig "dynamic-runtime/extensions/config"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -23,8 +25,6 @@ type FleetDefaults struct {
 	CatchupDays         int
 	BatchSize           int
 	StableWindowSeconds int
-	Expect              string
-	InspectLookbackDays int
 }
 
 // SinkDef is one database connection in the sink inventory. Connection
@@ -48,9 +48,6 @@ type FormatDef struct {
 	Match       string // 文件名签名（可含日期词表 YYYY/YY/MM/DD）
 	Table       string
 	Sink        string
-	Expect      string
-	ExpectSet   bool // TOML 里显式写 expect = ""（关闭巡检）与未写的区分哨兵
-	Lookback    int
 	Parser      map[string]any
 	Columns     []any
 	MetadataRls []any          // path-metadata 规则（from=filename/path）
@@ -157,16 +154,24 @@ func nativeSep(p string) string {
 	return strings.ReplaceAll(p, "\\", "/")
 }
 
+// ScheduleDef 是一条调度声明：cron 或每日 time 二选一，group 引用
+// 格式清单组（该组机台按此节奏采集）。空 group = 全局广播。
+type ScheduleDef struct {
+	Cron  string
+	Time  string
+	Group string
+}
+
 // expandFleet 展开：机台 × 其组的格式 → 源定义。引用完整性在此强校验
 // （缺格式/缺组/缺 sink/坏 since 任一 → 响亮失败，绝不静默丢采集）。
-func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups []FormatGroupDef, machines []MachineDef) ([]*ResolvedSource, error) {
+func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups []FormatGroupDef, machines []MachineDef, schedules []ScheduleDef) ([]*ResolvedSource, []extconfig.ComponentConfig, error) {
 	sinkByName := map[string]SinkDef{}
 	for _, sk := range sinks {
 		if sk.Name == "" {
-			return nil, fmt.Errorf("sinks: name is required")
+			return nil, nil, fmt.Errorf("sinks: name is required")
 		}
 		if _, dup := sinkByName[sk.Name]; dup {
-			return nil, fmt.Errorf("sinks: duplicate sink name %q", sk.Name)
+			return nil, nil, fmt.Errorf("sinks: duplicate sink name %q", sk.Name)
 		}
 		sinkByName[sk.Name] = sk
 	}
@@ -174,19 +179,19 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	for i := range formats {
 		f := &formats[i]
 		if f.Name == "" {
-			return nil, fmt.Errorf("formats #%d: name is required", i)
+			return nil, nil, fmt.Errorf("formats #%d: name is required", i)
 		}
 		if _, dup := formatByName[f.Name]; dup {
-			return nil, fmt.Errorf("formats: duplicate format name %q", f.Name)
+			return nil, nil, fmt.Errorf("formats: duplicate format name %q", f.Name)
 		}
 		if f.Match == "" {
-			return nil, fmt.Errorf("format %q: match is required", f.Name)
+			return nil, nil, fmt.Errorf("format %q: match is required", f.Name)
 		}
 		if f.Sink == "" {
-			return nil, fmt.Errorf("format %q: sink reference is required", f.Name)
+			return nil, nil, fmt.Errorf("format %q: sink reference is required", f.Name)
 		}
 		if _, ok := sinkByName[f.Sink]; !ok {
-			return nil, fmt.Errorf("format %q references unknown sink %q", f.Name, f.Sink)
+			return nil, nil, fmt.Errorf("format %q references unknown sink %q", f.Name, f.Sink)
 		}
 		f.hasDateToken = hasDateToken(f.Match)
 		f.pattern = patternFromMatch(f.Match)
@@ -196,17 +201,17 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	groupByName := map[string]FormatGroupDef{}
 	for _, g := range groups {
 		if g.Name == "" {
-			return nil, fmt.Errorf("format_groups: name is required")
+			return nil, nil, fmt.Errorf("format_groups: name is required")
 		}
 		if _, dup := groupByName[g.Name]; dup {
-			return nil, fmt.Errorf("format_groups: duplicate group name %q", g.Name)
+			return nil, nil, fmt.Errorf("format_groups: duplicate group name %q", g.Name)
 		}
 		if len(g.Formats) == 0 {
-			return nil, fmt.Errorf("format group %q: formats is required", g.Name)
+			return nil, nil, fmt.Errorf("format group %q: formats is required", g.Name)
 		}
 		for _, fname := range g.Formats {
 			if _, ok := formatByName[fname]; !ok {
-				return nil, fmt.Errorf("format group %q references unknown format %q", g.Name, fname)
+				return nil, nil, fmt.Errorf("format group %q references unknown format %q", g.Name, fname)
 			}
 		}
 		groupByName[g.Name] = g
@@ -214,17 +219,17 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	machineSeen := map[string]bool{}
 	for _, m := range machines {
 		if m.No == "" {
-			return nil, fmt.Errorf("machines: no is required")
+			return nil, nil, fmt.Errorf("machines: no is required")
 		}
 		if machineSeen[m.No] {
-			return nil, fmt.Errorf("machines: duplicate machine no %q", m.No)
+			return nil, nil, fmt.Errorf("machines: duplicate machine no %q", m.No)
 		}
 		machineSeen[m.No] = true
 		if m.Path == "" {
-			return nil, fmt.Errorf("machine %q: path is required", m.No)
+			return nil, nil, fmt.Errorf("machine %q: path is required", m.No)
 		}
 		if _, ok := groupByName[m.Group]; !ok {
-			return nil, fmt.Errorf("machine %q references unknown format group %q", m.No, m.Group)
+			return nil, nil, fmt.Errorf("machine %q references unknown format group %q", m.No, m.Group)
 		}
 	}
 
@@ -239,7 +244,7 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if !pathHasTokens && !f.hasDateToken && !flatOK && d.DatePolicy != "specific" {
 				// 滚动策略（yesterday/daily）需要日期记号归因业务日；
 				// specific 策略的日期归属来自策略本身，无需记号。
-				return nil, fmt.Errorf("machine %q + format %q: neither the machine path nor the match carries a date token — the business date cannot be attributed", m.No, fname)
+				return nil, nil, fmt.Errorf("machine %q + format %q: neither the machine path nor the match carries a date token — the business date cannot be attributed", m.No, fname)
 			}
 			cfg := map[string]any{
 				"source_id":                  m.No + "-" + f.Name,
@@ -277,19 +282,6 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			}
 			if ov := sinkByName[f.Sink].DriverOverride; ov != "" {
 				cfg["driver"] = ov
-			}
-			// 巡检：defaults 给默认，格式可覆盖。
-			expect := d.Expect
-			lookback := d.InspectLookbackDays
-			if f.ExpectSet {
-				expect = f.Expect
-			}
-			if f.Lookback > 0 {
-				lookback = f.Lookback
-			}
-			if expect != "" {
-				cfg["expect"] = expect
-				cfg["inspection_lookback_days"] = lookback
 			}
 			// 解析器设置透传（encoding/header/allow_ragged/delimiter/skip_lines）。
 			for k, v := range f.Parser {
@@ -333,7 +325,51 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+
+	// 调度声明 → 单个 scheduler 组件行（exclusive provider 只允许一个
+	// scheduler；多条目由 [[schedules]] 数组承载，每条 group 定向）。
+	var schedEntries []any
+	seen := map[string]bool{}
+	for i, sc := range schedules {
+		if sc.Cron == "" && sc.Time == "" {
+			return nil, nil, fmt.Errorf("schedules #%d: cron or time is required", i)
+		}
+		if sc.Group != "" {
+			if _, ok := groupByName[sc.Group]; !ok {
+				return nil, nil, fmt.Errorf("schedules #%d references unknown format group %q", i, sc.Group)
+			}
+		}
+		id := sc.Group
+		if id == "" {
+			id = fmt.Sprintf("sched-%d", i)
+		}
+		if seen[id] {
+			return nil, nil, fmt.Errorf("schedules: duplicate group %q", sc.Group)
+		}
+		seen[id] = true
+		e := map[string]any{}
+		if sc.Cron != "" {
+			e["cron"] = sc.Cron
+		} else {
+			e["time"] = sc.Time
+		}
+		if sc.Group != "" {
+			e["group"] = sc.Group
+		}
+		schedEntries = append(schedEntries, e)
+	}
+	var rows []extconfig.ComponentConfig
+	if len(schedEntries) > 0 {
+		rows = append(rows, extconfig.ComponentConfig{
+			ID:   "scheduler",
+			Type: "scheduler",
+			Config: map[string]any{
+				"schedules": schedEntries,
+			},
+		})
+	}
+
+	return out, rows, nil
 }
 
 // ResolvedSource is the runtime-visible form of one expanded (machine,
@@ -392,12 +428,6 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 	if v, ok := m["file_stable_window_seconds"].(int64); ok {
 		d.StableWindowSeconds = int(v)
 	}
-	if v, ok := m["expect"].(string); ok {
-		d.Expect = v
-	}
-	if v, ok := m["inspection_lookback_days"].(int64); ok {
-		d.InspectLookbackDays = int(v)
-	}
 	return d, nil
 }
 
@@ -451,13 +481,6 @@ func parseFormats(raw any) ([]FormatDef, error) {
 		f.Match, _ = m["match"].(string)
 		f.Table, _ = m["table"].(string)
 		f.Sink, _ = m["sink"].(string)
-		if v, ok := m["expect"]; ok {
-			f.ExpectSet = true
-			f.Expect, _ = v.(string)
-		}
-		if v, ok := m["inspection_lookback_days"].(int64); ok {
-			f.Lookback = int(v)
-		}
 		if pm, ok := m["parser"].(map[string]any); ok {
 			f.Parser = pm
 		}
@@ -545,6 +568,29 @@ func parseMachines(raw any) ([]MachineDef, error) {
 			}
 		}
 		out = append(out, md)
+	}
+	return out, nil
+}
+
+func parseSchedules(raw any) ([]ScheduleDef, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	rows, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("schedules must be an array of tables ([[schedules]])")
+	}
+	out := make([]ScheduleDef, 0, len(rows))
+	for i, r := range rows {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("schedules #%d must be a table", i)
+		}
+		sd := ScheduleDef{}
+		sd.Cron, _ = m["cron"].(string)
+		sd.Time, _ = m["time"].(string)
+		sd.Group, _ = m["group"].(string)
+		out = append(out, sd)
 	}
 	return out, nil
 }

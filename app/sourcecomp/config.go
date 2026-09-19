@@ -81,7 +81,8 @@ func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
 
 // SourcesLayer is the file-collection domain layer.
 type SourcesLayer struct {
-	resolved []*ResolvedSource
+	resolved     []*ResolvedSource
+	scheduleRows []extconfig.ComponentConfig
 }
 
 // NewSourcesLayer creates the layer; after a successful compose, the
@@ -91,7 +92,7 @@ func NewSourcesLayer() *SourcesLayer { return &SourcesLayer{} }
 func (l *SourcesLayer) Layer() configwatch.Layer {
 	return configwatch.Layer{
 		Name:         "sources",
-		ConsumedKeys: []string{"defaults", "sinks", "formats", "format_groups", "machines"},
+		ConsumedKeys: []string{"defaults", "sinks", "formats", "format_groups", "machines", "schedules"},
 		Expand:       l.expand,
 		PostMerge:    l.postMerge,
 	}
@@ -118,11 +119,16 @@ func (l *SourcesLayer) expand(_ context.Context, doc map[string]any) ([]extconfi
 	if err != nil {
 		return nil, err
 	}
-	resolved, err := expandFleet(defaults, sinks, formats, groups, machines)
+	schedules, err := parseSchedules(doc["schedules"])
+	if err != nil {
+		return nil, err
+	}
+	resolved, schedRows, err := expandFleet(defaults, sinks, formats, groups, machines, schedules)
 	if err != nil {
 		return nil, err
 	}
 	l.resolved = resolved
+	l.scheduleRows = schedRows
 	return nil, nil
 }
 
@@ -131,6 +137,8 @@ func (l *SourcesLayer) expand(_ context.Context, doc map[string]any) ([]extconfi
 // after the full merge, so it enriches whichever row (preset, discovered or
 // explicit) actually won.
 func (l *SourcesLayer) postMerge(cfg *extconfig.Config) error {
+	// 调度行先追加：显式声明取代 bundle 预设的同 id 行。
+	cfg.Components = append(cfg.Components, l.scheduleRows...)
 	if len(l.resolved) == 0 {
 		return nil
 	}

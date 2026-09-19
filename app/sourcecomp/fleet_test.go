@@ -8,7 +8,7 @@ import (
 
 // 四层展开：机台 × 其组的格式 → 源定义；defaults 下沉；机台元数据并表。
 func TestExpandFleetBasic(t *testing.T) {
-	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", CatchupDays: 31, BatchSize: 1000, Expect: "daily", InspectLookbackDays: 2}
+	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", CatchupDays: 31, BatchSize: 1000}
 	sinks := []SinkDef{{Name: "db", Driver: "oracle", DSN: "oracle://x", FileTable: "files"}}
 	formats := []FormatDef{
 		{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "plant_aaa", Sink: "db"},
@@ -20,7 +20,7 @@ func TestExpandFleetBasic(t *testing.T) {
 			Metadata: map[string]string{"line": "1"}},
 		{No: "A-02", IP: "10.0.0.2", Path: `\\{ip}\logs\YYYYMM`, Group: "typeA-set"},
 	}
-	out, err := expandFleet(d, sinks, formats, groups, machines)
+	out, _, err := expandFleet(d, sinks, formats, groups, machines, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,9 +46,6 @@ func TestExpandFleetBasic(t *testing.T) {
 	}
 	if first.Config["pattern"] != "aaa_*.log" {
 		t.Fatalf("pattern = %#v", first.Config["pattern"])
-	}
-	if first.Config["expect"] != "daily" || first.Config["inspection_lookback_days"] != 2 {
-		t.Fatalf("巡检默认未下沉: %#v", first.Config)
 	}
 	if first.Metadata["machine_no"] != "A-01" || first.Metadata["line"] != "1" {
 		t.Fatalf("metadata = %#v", first.Metadata)
@@ -77,24 +74,24 @@ func TestExpandFleetReferenceIntegrity(t *testing.T) {
 	}
 	sinks, formats, groups, machines := base()
 	formats[0].Sink = "nope"
-	if _, err := expandFleet(d, sinks, formats, groups, machines); err == nil || !strings.Contains(err.Error(), "unknown sink") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown sink") {
 		t.Fatalf("missing sink: %v", err)
 	}
 	sinks, formats, groups, machines = base()
 	groups[0].Formats = []string{"ghost"}
-	if _, err := expandFleet(d, sinks, formats, groups, machines); err == nil || !strings.Contains(err.Error(), "unknown format") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown format") {
 		t.Fatalf("missing format: %v", err)
 	}
 	sinks, formats, groups, machines = base()
 	machines[0].Group = "ghost"
-	if _, err := expandFleet(d, sinks, formats, groups, machines); err == nil || !strings.Contains(err.Error(), "unknown format group") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown format group") {
 		t.Fatalf("missing group: %v", err)
 	}
 	// 日期归因：机台 path 与 match 都没有日期记号 → 拒绝。
 	sinks, formats, groups, machines = base()
 	formats[0].Match = "x.csv"
 	machines[0].Path = `\\h\data`
-	if _, err := expandFleet(d, sinks, formats, groups, machines); err == nil || !strings.Contains(err.Error(), "date token") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "date token") {
 		t.Fatalf("no date attribution: %v", err)
 	}
 }
@@ -163,9 +160,6 @@ type = "query-provider"
 	}
 	if aaa == nil || mainte == nil {
 		t.Fatalf("expanded ids missing: %+v", res.Sources)
-	}
-	if aaa.Config["expect"] != "daily" || aaa.Config["inspection_lookback_days"] != 2 {
-		t.Fatalf("aaa inspection = %#v", aaa.Config)
 	}
 	// 低频格式：expect 置空覆盖默认，不巡检（键缺席或空串皆可）。
 	if v, ok := mainte.Config["expect"]; ok && v != "" {
