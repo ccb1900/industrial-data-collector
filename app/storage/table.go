@@ -334,6 +334,7 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		if have[strings.ToLower(c.Column)] {
 			continue
 		}
+		fmt.Printf("[DBG] ensureSchema ALTER add %q table=%q\n", c.Column, t.cfg.Table)
 		ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
 		if oracle {
 			ddl = fmt.Sprintf("ALTER TABLE %s ADD (%s %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])

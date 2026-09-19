@@ -43,29 +43,32 @@ func sourceUnitRows(u *sourceunitplugin.SourceUnitComponent) int64 {
 func sourceCompDocument(stateDir string, sources []compTestSource, includeUI bool) string {
 	var b strings.Builder
 	b.WriteString(`
-[profiles.csv_machine]
-parser = "csv"
+defaults = { state_dir = ` + fmt.Sprintf("%q", stateDir) + `, date_policy = "specific", specific_date = "2026-09-06", batch_size = 1000, file_stable_window_seconds = 0 }
+
+[[sinks]]
+name = "mem"
+driver = "memory"
+
+[[formats]]
+name = "exports"
+match = "*.csv"
+table = "records"
+sink = "mem"
+[formats.parser]
 header = true
-pattern = "*.csv"
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = "2026-09-06"
 
-[profiles.memory_sink]
-sink = "memory-storage"
-
-[profiles.file_state]
-state_type = "file-state"
-state_dir = ` + fmt.Sprintf("%q", stateDir) + `
+[[format_groups]]
+name = "g"
+formats = ["exports"]
 `)
 	for _, s := range sources {
 		fmt.Fprintf(&b, `
-[[sources]]
-id = %q
+[[machines]]
+no = %q
 path = %q
-profiles = ["csv_machine", "memory_sink", "file_state"]
+group = "g"
 
-[sources.metadata]
+[machines.metadata]
 machine = %q
 `, s.id, s.path, s.machine)
 	}
@@ -124,33 +127,33 @@ func TestSourceCompositionIndependentUnitsAndState(t *testing.T) {
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
 
-	u1 := sourceUnit(h, "machine001")
-	u2 := sourceUnit(h, "machine002")
+	u1 := sourceUnit(h, "machine001-exports")
+	u2 := sourceUnit(h, "machine002-exports")
 	if u1 == nil || u2 == nil {
 		t.Fatalf("source units active: machine001=%v machine002=%v", u1 != nil, u2 != nil)
 	}
 
 	date := ptrD(cfgDate(t, "2026-09-06"))
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001", Date: date}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u1) != 1 || sourceUnitRows(u2) != 0 {
 		t.Fatalf("after machine001 trigger rows = %d/%d, want 1/0", sourceUnitRows(u1), sourceUnitRows(u2))
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "machine001", "collection-state.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(stateDir, "machine001-exports", "collection-state.json")); err != nil {
 		t.Fatalf("machine001 state namespace: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "machine002", "collection-state.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(stateDir, "machine002-exports", "collection-state.json")); !os.IsNotExist(err) {
 		t.Fatalf("machine002 state created early: %v", err)
 	}
 
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002", Date: date}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u1) != 1 || sourceUnitRows(u2) != 1 {
 		t.Fatalf("after machine002 trigger rows = %d/%d, want 1/1", sourceUnitRows(u1), sourceUnitRows(u2))
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "machine002", "collection-state.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(stateDir, "machine002-exports", "collection-state.json")); err != nil {
 		t.Fatalf("machine002 state namespace: %v", err)
 	}
 	batches := u2.MemoryStore().Batches()
@@ -201,19 +204,19 @@ func TestSourceCompositionUISourcesAndSingleTrigger(t *testing.T) {
 	for i, want := range []struct {
 		id     string
 		status string
-	}{{id: "machine001", status: "Active"}, {id: "machine002", status: "Active"}} {
+	}{{id: "machine001-exports", status: "Active"}, {id: "machine002-exports", status: "Active"}} {
 		if views[i].ID != want.id || views[i].Status != want.status || views[i].Path == "" {
 			t.Fatalf("UI source[%d] = %#v", i, views[i])
 		}
 	}
 
-	u1 := sourceUnit(h, "machine001")
-	u2 := sourceUnit(h, "machine002")
+	u1 := sourceUnit(h, "machine001-exports")
+	u2 := sourceUnit(h, "machine002-exports")
 	if u1 == nil || u2 == nil {
 		t.Fatal("source units not active")
 	}
 	hubCommand(t, ui.HostAdapter(), "trigger", map[string]string{
-		"sourceId": "machine001",
+		"sourceId": "machine001-exports",
 		"date":     "2026-09-06",
 		"reason":   "ui-source",
 	})
@@ -221,7 +224,7 @@ func TestSourceCompositionUISourcesAndSingleTrigger(t *testing.T) {
 		return sourceUnitRows(u1) == 1 && sourceUnitRows(u2) == 0 &&
 			len(queryCollections(t, ui.HostAdapter())) == 1
 	})
-	if cols := queryCollections(t, ui.HostAdapter()); len(cols) != 1 || cols[0].SourceID != "machine001" {
+	if cols := queryCollections(t, ui.HostAdapter()); len(cols) != 1 || cols[0].SourceID != "machine001-exports" {
 		t.Fatalf("UI collections = %#v", cols)
 	}
 }
@@ -259,13 +262,13 @@ func TestSourceCompositionRemoveOneKeepsOtherRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	active(ctx, t, h, parsed.Config)
-	u1 := sourceUnit(h, "machine001")
-	u2 := sourceUnit(h, "machine002")
+	u1 := sourceUnit(h, "machine001-exports")
+	u2 := sourceUnit(h, "machine002-exports")
 	date1 := ptrD(cfgDate(t, "2026-09-06"))
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001", Date: date1}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002", Date: date1}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -274,16 +277,16 @@ func TestSourceCompositionRemoveOneKeepsOtherRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	active(ctx, t, h, parsed2.Config)
-	if sourceUnit(h, "machine001") != nil {
+	if sourceUnit(h, "machine001-exports") != nil {
 		t.Fatal("deleted machine001 source unit still owned")
 	}
 	if sourceUnitRows(u1) != 1 {
 		t.Fatalf("deleted machine001 store changed: %d", sourceUnitRows(u1))
 	}
-	if sourceUnit(h, "machine002") == nil {
+	if sourceUnit(h, "machine002-exports") == nil {
 		t.Fatal("machine002 source unit lost after deletion")
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002", Date: ptrD(cfgDate(t, "2026-09-07"))}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: ptrD(cfgDate(t, "2026-09-07"))}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u2) != 2 {

@@ -5,7 +5,6 @@ package tests
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,7 +17,7 @@ import (
 )
 
 func discardLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
 func cfgDate(t *testing.T, s string) model.CollectionDate {

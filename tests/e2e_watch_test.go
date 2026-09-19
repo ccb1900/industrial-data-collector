@@ -21,28 +21,32 @@ import (
 
 func watchDocument(file string, stateDir string) string {
 	return fmt.Sprintf(`
-[profiles.gauge_csv]
+defaults = { state_dir = %q, date_policy = "today", batch_size = 1000, file_stable_window_seconds = 0 }
+
+[[sinks]]
+name = "mem"
+driver = "memory"
+
+[[formats]]
+name = "gauge"
+match = %q
+sink = "mem"
+layout = "flat"
+dedupe_content_hash = true
+collection_mode = "append"
+[formats.parser]
 parser = "text"
 text_format = "key-value"
 separator = "="
-layout = "flat"
-dedupe_content_hash = true
-file_stable_window_seconds = 0
-date_policy = "today"
-collection_mode = "append"
-batch_size = 1000
 
-[profiles.memory_sink]
-sink = "memory-storage"
+[[format_groups]]
+name = "g"
+formats = ["gauge"]
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = %q
-
-[[sources]]
-id = "gauge"
+[[machines]]
+no = "gauge-host"
 path = %q
-profiles = ["gauge_csv", "memory_sink", "file_state"]
+group = "g"
 
 [[components]]
 id = "watch"
@@ -50,7 +54,7 @@ type = "watch-file-trigger"
 
 [components.config]
 path = %q
-source = "gauge"
+source = "gauge-host-gauge"
 debounce = "200ms"
 
 [[components]]
@@ -60,7 +64,7 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
-`, stateDir, file, file)
+`, stateDir, file, file, file)
 }
 
 func watchUnit(h *host.Host, id string) *sourceunitplugin.SourceUnitComponent {
@@ -82,7 +86,9 @@ func TestWatchTriggeredCollection(t *testing.T) {
 
 	v1 := "product=widget\nreading=42.5\n"
 
-	parsed, err := sourcecomp.Parse([]byte(watchDocument(file, stateDir)))
+	docText := watchDocument(file, stateDir)
+	_ = os.WriteFile("/tmp/watch-doc.toml", []byte(docText), 0o644)
+	parsed, err := sourcecomp.Parse([]byte(docText))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +98,7 @@ func TestWatchTriggeredCollection(t *testing.T) {
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
 
-	u := watchUnit(h, "gauge")
+	u := watchUnit(h, "gauge-host-gauge")
 	if u == nil || u.MemoryStore() == nil {
 		t.Fatal("gauge source unit not active")
 	}

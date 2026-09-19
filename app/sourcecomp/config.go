@@ -2,8 +2,6 @@ package sourcecomp
 
 import (
 	"context"
-	"fmt"
-	"sort"
 	"strings"
 
 	extconfig "dynamic-runtime/extensions/config"
@@ -93,59 +91,37 @@ func NewSourcesLayer() *SourcesLayer { return &SourcesLayer{} }
 func (l *SourcesLayer) Layer() configwatch.Layer {
 	return configwatch.Layer{
 		Name:         "sources",
-		ConsumedKeys: []string{"profiles", "sources", "source", "machines", "machine_formats"},
+		ConsumedKeys: []string{"defaults", "sinks", "formats", "format_groups", "machines"},
 		Expand:       l.expand,
 		PostMerge:    l.postMerge,
 	}
 }
 
 func (l *SourcesLayer) expand(_ context.Context, doc map[string]any) ([]extconfig.ComponentConfig, error) {
-	profiles, err := parseProfiles(doc["profiles"])
+	defaults, err := parseFleetDefaults(doc["defaults"])
 	if err != nil {
 		return nil, err
 	}
-	compDefs, err := parseSources(doc["sources"])
+	sinks, err := parseSinks(doc["sinks"])
 	if err != nil {
 		return nil, err
 	}
-	legacy, err := parseLegacySources(doc["source"])
+	formats, err := parseFormats(doc["formats"])
 	if err != nil {
 		return nil, err
 	}
-	compDefs = append(compDefs, legacy...)
-	// 机台清单展开：每机台 × 每格式一个源，机台号注入静态元数据。
-	machines, err := parseMachineEntries(doc["machines"])
+	groups, err := parseFormatGroups(doc["format_groups"])
 	if err != nil {
 		return nil, err
 	}
-	groups, err := parseMachineFormats(doc["machine_formats"])
+	machines, err := parseMachines(doc["machines"])
 	if err != nil {
 		return nil, err
 	}
-	machineDefs, err := expandMachineList(groups, machines)
+	resolved, err := expandFleet(defaults, sinks, formats, groups, machines)
 	if err != nil {
 		return nil, err
 	}
-	compDefs = append(compDefs, machineDefs...)
-
-	resolver, err := NewResolver(profiles)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	resolved := make([]*ResolvedSource, 0, len(compDefs))
-	for _, def := range compDefs {
-		if seen[def.ID] {
-			return nil, fmt.Errorf("duplicate source id %q", def.ID)
-		}
-		seen[def.ID] = true
-		rs, err := resolver.Resolve(def)
-		if err != nil {
-			return nil, err
-		}
-		resolved = append(resolved, rs)
-	}
-	sort.Slice(resolved, func(i, j int) bool { return resolved[i].ID < resolved[j].ID })
 	l.resolved = resolved
 	return nil, nil
 }
@@ -183,123 +159,6 @@ func (l *SourcesLayer) postMerge(cfg *extconfig.Config) error {
 		})
 	}
 	return nil
-}
-
-func parseProfiles(raw any) (map[string]Profile, error) {
-	out := map[string]Profile{}
-	if raw == nil {
-		return out, nil
-	}
-	table, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("profiles must be a table of profile tables")
-	}
-	for name, value := range table {
-		m, ok := value.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("profile %q must be a table", name)
-		}
-		out[name] = Profile(m)
-	}
-	return out, nil
-}
-func parseSources(raw any) ([]SourceConfig, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("sources must be an array of tables ([[sources]])")
-	}
-	out := make([]SourceConfig, 0, len(list))
-	for i, item := range list {
-		m, ok := item.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("sources #%d must be a table", i)
-		}
-		def, err := sourceFromMap(m, i)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, def)
-	}
-	return out, nil
-}
-func parseLegacySources(raw any) ([]SourceConfig, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	table, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("legacy source table must map source ids to tables")
-	}
-	out := make([]SourceConfig, 0, len(table))
-	for id, value := range table {
-		m, ok := value.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("legacy source %q must be a table", id)
-		}
-		if _, present := m["id"]; !present {
-			m["id"] = id
-		}
-		def, err := sourceFromMap(m, 0)
-		if err != nil {
-			return nil, fmt.Errorf("legacy source %q: %w", id, err)
-		}
-		out = append(out, def)
-	}
-	return out, nil
-}
-
-func sourceFromMap(m map[string]any, index int) (SourceConfig, error) {
-	def := SourceConfig{
-		Metadata:  map[string]string{},
-		Overrides: map[string]any{},
-	}
-	for key, value := range m {
-		switch key {
-		case "id":
-			var ok bool
-			if def.ID, ok = value.(string); !ok {
-				return def, fmt.Errorf("sources #%d id must be a string", index)
-			}
-		case "path":
-			var ok bool
-			if def.Path, ok = value.(string); !ok {
-				return def, fmt.Errorf("source %q path must be a string", def.ID)
-			}
-		case "root":
-			root, ok := value.(string)
-			if !ok {
-				return def, fmt.Errorf("source %q root must be a string", def.ID)
-			}
-			if def.Path != "" && def.Path != root {
-				return def, fmt.Errorf("source %q declares both path and a different root", def.ID)
-			}
-			def.Path = root
-		case "profiles":
-			names, ok := stringSlice(value)
-			if !ok {
-				return def, fmt.Errorf("source %q profiles must be an array of strings", def.ID)
-			}
-			def.Profiles = names
-		case "metadata":
-			md, err := stringMap(value)
-			if err != nil {
-				return def, fmt.Errorf("source %q metadata: %w", def.ID, err)
-			}
-			def.Metadata = md
-		default:
-			def.Overrides[key] = value
-		}
-	}
-	if def.ID == "" {
-		return def, fmt.Errorf("sources #%d missing id", index)
-	}
-	if def.Path == "" {
-		return def, fmt.Errorf("source %q missing path", def.ID)
-	}
-	return def, nil
 }
 
 func sourceDefinitions(sources []*ResolvedSource) []any {

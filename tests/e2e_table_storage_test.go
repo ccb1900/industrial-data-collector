@@ -21,63 +21,48 @@ import (
 func tableDocument(root, dbPath string, extraColumn bool) string {
 	extra := ""
 	if extraColumn {
-		extra = `
-[[profiles.sql_typed.columns]]
-from = "csv"
-name = "humidity"
-column = "humidity"
-type = "float"`
+		extra = `,
+  { from = "csv", name = "humidity", column = "humidity", type = "float" }`
 	}
 	return `
-[profiles.csv_machine]
-parser = "csv"
-header = true
-pattern = "*.csv"
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = "2026-09-07"
-batch_size = 1000
+defaults = { state_dir = ` + quoteGo(filepath.Join(filepath.Dir(root), "state")) + `, date_policy = "specific", specific_date = "2026-09-07", batch_size = 1000 }
 
-[profiles.sql_typed]
-storage = "sqlite-storage"
+[[sinks]]
+name = "sql-typed"
 driver = "sqlite"
 dsn = ` + quoteGo(dbPath) + `
-table = "readings"
 file_table = "source_files"
 expose_console = true
-extra_rows = true
+lazy_connect = true
 
-[[profiles.sql_typed.columns]]
-from = "csv"
-name = "ts"
-column = "ts"
-type = "timestamp"
-required = true
+[[formats]]
+name = "readings"
+match = "*.csv"
+table = "readings"
+sink = "sql-typed"
+columns = [
+  { from = "csv", name = "ts", column = "ts", type = "timestamp", required = true },
+  { from = "csv", name = "temperature", column = "temp_c", type = "float" },
+  { from = "metadata", name = "machine", column = "machine", type = "text" }` + extra + `]
+[formats.parser]
+header = true
 
-[[profiles.sql_typed.columns]]
-from = "csv"
-name = "temperature"
-column = "temp_c"
-type = "float"
+[[format_groups]]
+name = "g"
+formats = ["readings"]
 
-[[profiles.sql_typed.columns]]
-from = "metadata"
-name = "machine"
-column = "machine"
-type = "text"` + extra + `
+[[components]]
+id = "scheduler"
+type = "scheduler"
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = ` + quoteGo(filepath.Join(filepath.Dir(root), "state")) + `
+[components.config]
+schedule = "daily"
+time = "02:00"
 
-[[sources]]
-id = "machine001"
+[[machines]]
+no = "machine001"
 path = ` + quoteGo(root) + `
-profiles = ["csv_machine", "sql_typed", "file_state"]
-
-[sources.metadata]
-machine = "001"
-
+group = "g"
 
 [[components]]
 id = "scheduler"
@@ -102,7 +87,9 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
-`
+
+[machines.metadata]
+machine = "001"`
 }
 
 func quoteGo(s string) string { return "\"" + s + "\"" }
@@ -174,7 +161,7 @@ func TestTableStorageTypedRowsAndReplay(t *testing.T) {
 	// The rows console query pages through the table.
 	adapter := uiAdapter(h)
 	page := hubQuery[map[string]any](t, adapter, "rows", mapToValues(map[string]string{
-		"sourceId": "machine001", "date": "2026-09-07", "limit": "1",
+		"sourceId": "machine001-readings", "date": "2026-09-07", "limit": "1",
 	}))
 	cols, _ := page["columns"].([]any)
 	rows, _ := page["rows"].([]any)
@@ -201,13 +188,13 @@ func TestTableStorageTypeFailureEntersLedger(t *testing.T) {
 	h := newApp(t)
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass1", SourceID: "machine001"}); err == nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass1", SourceID: "machine001-readings"}); err == nil {
 		t.Fatal("bad typed value must fail the pass")
 	}
 	if err := os.WriteFile(filepath.Join(root, "2026-09-07", "bad.csv"), []byte("ts,temperature\n2026-09-07T01:00:00Z,42.5\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass2", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass2", SourceID: "machine001-readings"}); err != nil {
 		t.Fatal(err)
 	}
 	db, err := sql.Open("sqlite", dbPath)
@@ -243,8 +230,11 @@ func TestTableStorageAddColumnEvolution(t *testing.T) {
 
 	// Extend the config with the humidity column and re-reconcile.
 	active(ctx, t, h, mustParse(t, tableDocument(root, dbPath, true)))
-	h2 := h
-	_ = h2
+	// 惰性连接下 schema 在首个批次落库时演进：次日新文件触发写入与演进。
+	if err := writeDay(root, "2026-09-08", "h.csv", "ts,temperature,humidity\n2026-09-08T01:00:00Z,42.5,55\n"); err != nil {
+		t.Fatal(err)
+	}
+	trigger(ctx, t, h, "2026-09-08")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +259,18 @@ func TestTableStorageAddColumnEvolution(t *testing.T) {
 	}
 	rows.Close()
 	if !has {
-		t.Fatal("humidity column was not added by evolution")
+		var dbg []string
+		r2, _ := db.Query(`PRAGMA table_info(readings)`)
+		for r2.Next() {
+			var cid int
+			var name, ctype string
+			var notNull, pk int
+			var dflt any
+			r2.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk)
+			dbg = append(dbg, name)
+		}
+		r2.Close()
+		t.Fatalf("humidity column missing; table columns = %v", dbg)
 	}
 }
 

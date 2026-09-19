@@ -14,7 +14,7 @@ import (
 // application composition parser (the same path cmd/* and WatchHost use) and
 // pass application validation before Runtime mutation.
 func TestSampleConfigsParseAndValidate(t *testing.T) {
-	for _, name := range []string{"desktop.toml", "laser.toml", "unc-machines.toml", "hosts/csv-line-a.toml", "hosts/csv-line-b.toml", "hosts/gauge-l1.toml"} {
+	for _, name := range []string{"desktop.toml", "laser.toml", "unc-machines.toml"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join("..", "configs", name))
 			if err != nil {

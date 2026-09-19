@@ -30,10 +30,25 @@ type = "scheduler"
 [components.config]
 cron = "30 4 * * *"
 
-[[sources]]
-id = "m1"
-path = "./data"
-profiles = []
+[[sinks]]
+name = "s"
+driver = "sqlite"
+dsn = ":memory:"
+
+[[formats]]
+name = "f"
+match = "x_YYMMDD.csv"
+table = "t"
+sink = "s"
+
+[[format_groups]]
+name = "g"
+formats = ["f"]
+
+[[machines]]
+no = "m1"
+path = './data/YYYYMM'
+group = "g"
 `
 	res, err := Parse([]byte(doc))
 	if err != nil {
@@ -44,7 +59,7 @@ profiles = []
 	for _, c := range comps {
 		ids = append(ids, c.ID)
 	}
-	want := "preset-scheduler,preset-extra,source-unit:m1"
+	want := "preset-scheduler,preset-extra,source-unit:m1-f"
 	if got := strings.Join(ids, ","); got != want {
 		t.Fatalf("composition: got %s want %s", got, want)
 	}

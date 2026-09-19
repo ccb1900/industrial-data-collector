@@ -20,26 +20,28 @@ import (
 
 func projectionDocument(root, stateDir, specificDate string) string {
 	return fmt.Sprintf(`
-[profiles.csv_machine]
-parser = "csv"
+defaults = { state_dir = %q, date_policy = "specific", specific_date = %q, batch_size = 1000, file_stable_window_seconds = 0 }
+
+[[sinks]]
+name = "mem"
+driver = "memory"
+
+[[formats]]
+name = "exports"
+match = "*.csv"
+table = "records"
+sink = "mem"
+[formats.parser]
 header = true
-pattern = "*.csv"
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = %q
-batch_size = 1000
 
-[profiles.memory_sink]
-sink = "memory-storage"
+[[format_groups]]
+name = "g"
+formats = ["exports"]
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = %q
-
-[[sources]]
-id = "machine001"
+[[machines]]
+no = "machine001"
 path = %q
-profiles = ["csv_machine", "memory_sink", "file_state"]
+group = "g"
 
 [[components]]
 id = "console-bridge"
@@ -60,7 +62,7 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
-`, specificDate, stateDir, root)
+`, stateDir, specificDate, root)
 }
 
 func uiAdapter(h *host.Host) *uiplugin.Host {
@@ -96,7 +98,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	defer cancel()
 	h1 := newApp(t)
 	active(ctx, t, h1, parsed.Config)
-	if err := h1.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001"}); err == nil {
+	if err := h1.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
 		t.Fatal("pass with a malformed file must fail")
 	}
 	adapter := uiAdapter(h1)
@@ -128,7 +130,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	cols := queryCollections(t, adapter2)
 	found := false
 	for _, c := range cols {
-		if c.SourceID == "machine001" && c.Date == "2026-09-07" {
+		if c.SourceID == "machine001-exports" && c.Date == "2026-09-07" {
 			found = true
 			if c.Status != "Failed" {
 				t.Fatalf("projected collection = %#v, want Failed", c)
@@ -141,7 +143,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	if !found {
 		t.Fatalf("collection history missing after restart: %#v", cols)
 	}
-	files := queryFiles(t, adapter2, "machine001", "2026-09-07")
+	files := queryFiles(t, adapter2, "machine001-exports", "2026-09-07")
 	if len(files) != 2 {
 		t.Fatalf("projected files = %#v, want 2", files)
 	}
@@ -168,7 +170,7 @@ func TestProjectionSkippedDateNotMaterialized(t *testing.T) {
 	h := newApp(t)
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	adapter := uiAdapter(h)
@@ -177,7 +179,7 @@ func TestProjectionSkippedDateNotMaterialized(t *testing.T) {
 	}
 	cols := queryCollections(t, adapter)
 	for _, c := range cols {
-		if c.SourceID == "machine001" && c.Date == twoDaysAgo {
+		if c.SourceID == "machine001-exports" && c.Date == twoDaysAgo {
 			t.Fatalf("missing date must not be materialized, got %#v", c)
 		}
 	}

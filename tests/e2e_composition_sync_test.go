@@ -71,7 +71,7 @@ func TestDesktopCompositionSync(t *testing.T) {
 	// source row id carries the source-unit: prefix): the remove patch
 	// persists, the runtime converges without it, and install restores the
 	// base row.
-	const legacyID = "source-unit:legacy-source"
+	const legacyID = "source-unit:legacy-legacy-dat"
 	if err := h.UninstallComponent(ctx, legacyID); err != nil {
 		t.Fatalf("UninstallComponent: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestDesktopPatchRestoreAfterRestart(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	const legacyID = "source-unit:legacy-source"
+	const legacyID = "source-unit:legacy-legacy-dat"
 
 	// First boot: uninstall persists the remove patch.
 	h, err := apphost.NewWatchHost("configs/desktop.toml", logger)

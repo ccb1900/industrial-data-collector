@@ -59,29 +59,30 @@ func TestOperationsCatchupMissedDaysAndContentDetect(t *testing.T) {
 	writeDay(root, "2026-09-08", "blob.dat", "\x00\x01\x02binary\x00")
 
 	doc := fmt.Sprintf(`
-[profiles.csv_machine]
-parser = "csv"
-header = true
+defaults = { state_dir = %q, date_policy = "specific", specific_date = "2026-09-08", catchup_days = 3, batch_size = 1000, file_stable_window_seconds = 0 }
+
+[[sinks]]
+name = "mem"
+driver = "memory"
+
+[[formats]]
+name = "exports"
+match = "*.dat"
+table = "records"
+sink = "mem"
+[formats.parser]
 detect_content = true
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = "2026-09-08"
-catchup_days = 3
-batch_size = 1000
+header = true
 
-[profiles.memory_sink]
-sink = "memory-storage"
+[[format_groups]]
+name = "g"
+formats = ["exports"]
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = %q
-
-[[sources]]
-id = "machine001"
+[[machines]]
+no = "machine001"
 path = %q
-profiles = ["csv_machine", "memory_sink", "file_state"]
-
-[sources.metadata]
+group = "g"
+[machines.metadata]
 machine = "001"
 
 [[components]]
@@ -106,24 +107,24 @@ time = "02:00"
 	// The machine was off for two days: one trigger (as the Windows
 	// scheduler or the daily tick would issue) must reach back through the
 	// catch-up window and collect every missing day in date order.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
-	u := opsUnit(h, "machine001")
+	u := opsUnit(h, "machine001-exports")
 	if u == nil || u.MemoryStore() == nil {
 		t.Fatal("source unit with memory sink not active")
 	}
 	if got := u.MemoryStore().Total(); got != 3 {
 		t.Fatalf("rows after catch-up = %d, want 3 (one per missed day)", got)
 	}
-	st := opsState(t, stateDir, "machine001")
-	last, ok, err := st.LastCompleted(context.Background(), "machine001", cfgDate(t, "2026-09-08"))
+	st := opsState(t, stateDir, "machine001-exports")
+	last, ok, err := st.LastCompleted(context.Background(), "machine001-exports", cfgDate(t, "2026-09-08"))
 	if err != nil || !ok || last.String() != "2026-09-08" {
 		t.Fatalf("last completed = %s (found=%v, err=%v), want 2026-09-08", last, ok, err)
 	}
 
 	// A repeat trigger is a no-op: succeeded dates are never re-entered.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := u.MemoryStore().Total(); got != 3 {
@@ -195,30 +196,32 @@ func TestOperationsDatabaseOutageRetriesIdempotently(t *testing.T) {
 	writeDay(root, "2026-09-07", "a.csv", "id,name\n1,a\n2,b\n")
 
 	doc := fmt.Sprintf(`
-[profiles.csv_machine]
-parser = "csv"
-header = true
-pattern = "*.csv"
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = "2026-09-07"
-batch_size = 1000
+defaults = { state_dir = %q, date_policy = "specific", specific_date = "2026-09-07", catchup_days = 3, batch_size = 1000, file_stable_window_seconds = 0 }
 
-[profiles.sql_sink]
-storage = "postgresql-storage"
-driver = "csv-ops-fake"
+[[sinks]]
+name = "stub-sql"
+driver = "postgresql"
+driver_override = "csv-ops-fake"
 dsn = "stub://remote/db"
 table = "gocordis_records"
 lazy_connect = true
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = %q
+[[formats]]
+name = "exports"
+match = "*.csv"
+table = "gocordis_records"
+sink = "stub-sql"
+[formats.parser]
+header = true
 
-[[sources]]
-id = "machine001"
+[[format_groups]]
+name = "g"
+formats = ["exports"]
+
+[[machines]]
+no = "machine001"
 path = %q
-profiles = ["csv_machine", "sql_sink", "file_state"]
+group = "g"
 
 [[components]]
 id = "scheduler"
@@ -246,10 +249,10 @@ time = "02:00"
 	// Every observation below re-opens the state file: the collector's own
 	// component instance owns the live state, and a FileState reader only
 	// sees the snapshot persisted at its construction.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001"}); err == nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
 		t.Fatal("pass against a down database must fail")
 	}
-	failures, err := opsState(t, stateDir, "machine001").ListFileFailures(context.Background(), "machine001")
+	failures, err := opsState(t, stateDir, "machine001-exports").ListFileFailures(context.Background(), "machine001-exports")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,10 +265,10 @@ time = "02:00"
 
 	// The database recovers: the next trigger replays the failed file.
 	opsSQLDriver.up.Store(true)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
-	gone, err := opsState(t, stateDir, "machine001").ListFileFailures(context.Background(), "machine001")
+	gone, err := opsState(t, stateDir, "machine001-exports").ListFileFailures(context.Background(), "machine001-exports")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,10 +278,10 @@ time = "02:00"
 
 	// The replay is idempotent row-wise: another trigger (recovered chain
 	// complete) re-runs nothing and the state marks the date succeeded.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
-	incomplete, err := opsState(t, stateDir, "machine001").ListIncomplete(context.Background(), "machine001", cfgDate(t, "2026-09-07"), 0)
+	incomplete, err := opsState(t, stateDir, "machine001-exports").ListIncomplete(context.Background(), "machine001-exports", cfgDate(t, "2026-09-07"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,27 +307,30 @@ func TestOperationsGBKSourceEndToEnd(t *testing.T) {
 	}
 
 	doc := `
-[profiles.csv_machine]
-parser = "csv"
-header = true
+defaults = { state_dir = ` + fmt.Sprintf("%q", stateDir) + `, date_policy = "specific", specific_date = "2026-09-08", batch_size = 1000, file_stable_window_seconds = 0 }
+
+[[sinks]]
+name = "mem"
+driver = "memory"
+
+[[formats]]
+name = "exports"
+match = "*.dat"
+table = "records"
+sink = "mem"
+[formats.parser]
 encoding = "gbk"
 detect_content = true
-file_stable_window_seconds = 0
-date_policy = "specific"
-specific_date = "2026-09-08"
-batch_size = 1000
+header = true
 
-[profiles.memory_sink]
-sink = "memory-storage"
+[[format_groups]]
+name = "g"
+formats = ["exports"]
 
-[profiles.file_state]
-state_type = "file-state"
-state_dir = ` + fmt.Sprintf("%q", stateDir) + `
-
-[[sources]]
-id = "machine001"
+[[machines]]
+no = "machine001"
 path = ` + fmt.Sprintf("%q", root) + `
-profiles = ["csv_machine", "memory_sink", "file_state"]
+group = "g"
 
 [[components]]
 id = "scheduler"
@@ -344,10 +350,10 @@ time = "02:00"
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
 
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001"}); err != nil {
+	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
-	u := opsUnit(h, "machine001")
+	u := opsUnit(h, "machine001-exports")
 	if u == nil || u.MemoryStore() == nil {
 		t.Fatal("source unit not active")
 	}
