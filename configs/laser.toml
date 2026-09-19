@@ -32,6 +32,7 @@ lazy_connect = true
 name = "plant-oracle"
 driver = "oracle"
 dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+file_table = "laser_files"
 lazy_connect = true
 
 # SQL Server（可选）：go-mssqldb 驱动。URL 格式

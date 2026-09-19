@@ -355,7 +355,7 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		if oracle {
 			// 键列换 Oracle 安全类型；无 IF NOT EXISTS，查 user_tables。
 			if !t.tableExists(ctx, t.cfg.FileTable) {
-				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id VARCHAR2(255) NOT NULL, collection_date DATE NOT NULL, file_id VARCHAR2(255) NOT NULL, path VARCHAR2(1000), name VARCHAR2(255), records NUMBER(19), header VARCHAR2(1), collected_at TIMESTAMP, PRIMARY KEY (source_id, collection_date, file_id))", ft)
+				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id VARCHAR2(255) NOT NULL, collection_date DATE NOT NULL, file_id VARCHAR2(255) NOT NULL, path VARCHAR2(1000), name VARCHAR2(255), records NUMBER(19), header VARCHAR2(4000), collected_at TIMESTAMP, PRIMARY KEY (source_id, collection_date, file_id))", ft)
 			} else {
 				fileDDL = ""
 			}

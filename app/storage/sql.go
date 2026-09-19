@@ -299,6 +299,8 @@ func placeholders(dialect string, start, n int) string {
 			out = append(out, fmt.Sprintf("$%d", start+i))
 		case "oracle":
 			out = append(out, fmt.Sprintf(":%d", start+i))
+		case "sqlserver":
+			out = append(out, fmt.Sprintf("@p%d", start+i))
 		default:
 			out = append(out, "?")
 		}

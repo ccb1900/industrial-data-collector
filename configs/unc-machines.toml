@@ -23,6 +23,7 @@ batch_size = 1000
 name = "plant-oracle"
 driver = "oracle"
 dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
+file_table = "plant_files"
 lazy_connect = true
 
 [[formats]]
