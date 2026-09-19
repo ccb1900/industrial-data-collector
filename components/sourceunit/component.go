@@ -573,7 +573,7 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 	switch typ {
 	case "memory-storage":
 		return storage.NewMemory(storage.MemoryOptions{}), nil, nil, nil
-	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage":
+	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage", "sqlserver-storage":
 		driver := configutil.OptionalString(cc, "driver", "")
 		dialect := "mysql"
 		switch typ {
@@ -592,6 +592,11 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 			if driver == "" {
 				// go-ora 注册的驱动名（纯 Go，无 CGO）；godror 未引入。
 				driver = "oracle"
+			}
+		case "sqlserver-storage":
+			dialect = "sqlserver"
+			if driver == "" {
+				driver = "sqlserver"
 			}
 		}
 		// columns 未声明 + header=true：自动字段映射（默认）。首个批次用
@@ -686,6 +691,8 @@ func normalizeStorageType(typ string) string {
 		return "sqlite-storage"
 	case "oracle", "oracle-storage":
 		return "oracle-storage"
+	case "sqlserver", "mssql", "sqlserver-storage":
+		return "sqlserver-storage"
 	default:
 		return typ
 	}

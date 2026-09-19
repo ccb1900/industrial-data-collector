@@ -34,6 +34,14 @@ driver = "oracle"
 dsn = "oracle://system:oracle@127.0.0.1:49161/XE"
 lazy_connect = true
 
+# SQL Server（可选）：go-mssqldb 驱动。URL 格式
+# sqlserver://user:pass@host:port?database=name
+# [[sinks]]
+# name = "plant-mssql"
+# driver = "sqlserver"
+# dsn = "sqlserver://sa:YourPass@127.0.0.1:1433?database=laser"
+# lazy_connect = true
+
 [[machines]]
 no = "laser"
 path = "../res/laser/YYYYMM"

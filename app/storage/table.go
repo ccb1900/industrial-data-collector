@@ -67,9 +67,9 @@ func (c *TableConfig) Validate() error {
 	}
 	c.Dialect = strings.ToLower(c.Dialect)
 	switch c.Dialect {
-	case "postgres", "mysql", "sqlite", "oracle":
+	case "postgres", "mysql", "sqlite", "oracle", "sqlserver":
 	default:
-		return errs.Sourcef(errs.ErrInvalidConfig, "table storage dialect %q not supported (postgres/mysql/sqlite/oracle)", c.Dialect)
+		return errs.Sourcef(errs.ErrInvalidConfig, "table storage dialect %q not supported (postgres/mysql/sqlite/oracle/sqlserver)", c.Dialect)
 	}
 	if c.Table == "" {
 		c.Table = "records"
@@ -279,6 +279,10 @@ func dialectTypes(dialect string) map[string]string {
 		return map[string]string{"text": "TEXT", "int": "INT", "bigint": "BIGINT", "float": "DOUBLE", "bool": "TINYINT(1)", "timestamp": "DATETIME", "date": "DATE"}
 	case "oracle":
 		return map[string]string{"text": "VARCHAR2(4000)", "int": "NUMBER(10)", "bigint": "NUMBER(19)", "float": "BINARY_DOUBLE", "bool": "NUMBER(1)", "timestamp": "TIMESTAMP", "date": "DATE"}
+	case "sqlserver":
+		// NVARCHAR(4000) 承载中文表头列名对应的数据；IDENTITY 不用，
+		// 主键是业务四元组。
+		return map[string]string{"text": "NVARCHAR(4000)", "int": "INT", "bigint": "BIGINT", "float": "FLOAT", "bool": "BIT", "timestamp": "DATETIME2", "date": "DATE"}
 	default: // sqlite
 		return map[string]string{"text": "TEXT", "int": "INTEGER", "bigint": "INTEGER", "float": "REAL", "bool": "INTEGER", "timestamp": "TEXT", "date": "TEXT"}
 	}
@@ -287,6 +291,7 @@ func dialectTypes(dialect string) map[string]string {
 func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	dt := dialectTypes(t.cfg.Dialect)
 	oracle := t.cfg.Dialect == "oracle"
+	mssql := t.cfg.Dialect == "sqlserver"
 	// Data table: idempotency backbone + declared columns. Oracle 的键列
 	// 用定长类型：PK 索引键超长会 ORA-01450，不能用 VARCHAR2(4000)。
 	cols := []string{
@@ -310,8 +315,8 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		cols = append(cols, "row_values "+dt["text"])
 	}
 	pk := "PRIMARY KEY (source_id, collection_date, file_id, row_number)"
-	if oracle {
-		// Oracle 无 IF NOT EXISTS：查 user_tables 后按需建表。
+	if oracle || mssql {
+		// Oracle / SQL Server 无 IF NOT EXISTS：查系统目录后按需建表。
 		if !t.tableExists(ctx, t.cfg.Table) {
 			if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
 				return err
@@ -334,7 +339,7 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		if have[strings.ToLower(c.Column)] {
 			continue
 		}
-		ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
+		ddl := fmt.Sprintf("ALTER TABLE %s ADD %s %s", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
 		if oracle {
 			ddl = fmt.Sprintf("ALTER TABLE %s ADD (%s %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
 		}
@@ -354,6 +359,13 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			} else {
 				fileDDL = ""
 			}
+		} else if mssql {
+			// 同 oracle：无 IF NOT EXISTS，查 sys.objects。
+			if !t.tableExists(ctx, t.cfg.FileTable) {
+				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id NVARCHAR(255) NOT NULL, collection_date DATE NOT NULL, file_id NVARCHAR(255) NOT NULL, path NVARCHAR(1000), name NVARCHAR(255), records BIGINT, header NVARCHAR(4000), collected_at DATETIME2, PRIMARY KEY (source_id, collection_date, file_id))", ft)
+			} else {
+				fileDDL = ""
+			}
 		}
 		if fileDDL != "" {
 			if err := t.execDDL(ctx, fileDDL); err != nil {
@@ -367,8 +379,17 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 // tableExists reports whether the table already exists (Oracle dialect).
 func (t *TableStorage) tableExists(ctx context.Context, table string) bool {
 	var cnt int
-	if err := t.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER(:1)", table).Scan(&cnt); err != nil {
+	var q string
+	switch t.cfg.Dialect {
+	case "oracle":
+		q = "SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER(:1)"
+	case "sqlserver":
+		q = "SELECT COUNT(*) FROM sys.objects WHERE object_id = OBJECT_ID(@p1)"
+	default:
+		// sqlite/mysql/postgres 走 CREATE IF NOT EXISTS 路径，不查目录。
+		return false
+	}
+	if err := t.db.QueryRowContext(ctx, q, table).Scan(&cnt); err != nil {
 		return false
 	}
 	return cnt > 0
@@ -390,6 +411,21 @@ func (t *TableStorage) existingColumns(ctx context.Context, table string) ([]str
 			var notNull, pk int
 			var dflt any
 			if e := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); e != nil {
+				return nil, e
+			}
+			out = append(out, name)
+		}
+		err = rows.Err()
+	case "sqlserver":
+		rows, e := t.db.QueryContext(ctx,
+			"SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(@p1) ORDER BY column_id", table)
+		if e != nil {
+			return nil, e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if e := rows.Scan(&name); e != nil {
 				return nil, e
 			}
 			out = append(out, name)
@@ -570,19 +606,8 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 		fCols := []string{"source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
 		var fStmt string
-		if t.cfg.Dialect == "oracle" {
-			var selected, icols, ivals, fOn []string
-			for i, c := range fCols {
-				alias := fmt.Sprintf("c%d", i)
-				selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
-				icols = append(icols, c)
-				ivals = append(ivals, "src."+alias)
-				if i < 3 { // 前三列 = 主键 (source_id, collection_date, file_id)
-					fOn = append(fOn, fmt.Sprintf("dst.%s = src.%s", c, alias))
-				}
-			}
-			fStmt = fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s FROM DUAL) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
-				ft, strings.Join(selected, ", "), strings.Join(fOn, " AND "), strings.Join(icols, ", "), strings.Join(ivals, ", "))
+		if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
+			fStmt = mergeUpsert(t.cfg.Dialect, t.cfg.FileTable, fCols, "source_id, collection_date, file_id")
 		} else {
 			fStmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id) DO NOTHING",
 				ft, strings.Join(fCols, ", "), placeholders(t.cfg.Dialect, 1, len(fCols)))
@@ -628,28 +653,12 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	switch t.cfg.Dialect {
 	case "mysql":
 		stmt = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList)
-	case "oracle":
-		// Oracle 无 ON CONFLICT：MERGE 幂等写入（与 generic 路径同语义）。
-		// src 子查询的每个绑定参数都以目标列的引用名作为输出别名，
-		// ON/INSERT 两处引用该别名——全部经 quoteIdent 保证一致。
-		var selected, insertCols, insertVals, on []string
-		keySet := map[string]bool{}
-		for _, k := range strings.Split(conflict, ", ") {
-			keySet[strings.ToLower(k)] = true
-		}
-		for i, c := range cols {
-			alias := fmt.Sprintf("c%d", i)
-			selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
-			insertCols = append(insertCols, c)
-			insertVals = append(insertVals, "src."+alias)
-			lower := strings.ToLower(strings.Trim(c, `"`))
-			if keySet[lower] {
-				on = append(on, fmt.Sprintf("dst.%s = src.%s", c, alias))
-			}
-		}
-		stmt = fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s FROM DUAL) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
-			quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(selected, ", "),
-			strings.Join(on, " AND "), strings.Join(insertCols, ", "), strings.Join(insertVals, ", "))
+	case "oracle", "sqlserver":
+		// Oracle / SQL Server 无 ON CONFLICT：MERGE 幂等写入（与 generic
+		// 路径同语义）。src 子查询的每个绑定参数以目标列引用名为输出
+		// 别名，ON/INSERT 两处引用该别名——全部经 quoteIdent 保证一致。
+		// 差异只在 FROM DUAL（oracle）与无 FROM（sqlserver）。
+		stmt = mergeUpsert(t.cfg.Dialect, t.cfg.Table, cols, conflict)
 	default:
 		stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList, conflict)
 	}
@@ -745,12 +754,18 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	query := fmt.Sprintf(
 		"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number LIMIT %d OFFSET %d",
 		strings.Join(quoted, ", "), tbl, w, limit, offset)
-	if t.cfg.Dialect == "oracle" {
+	switch t.cfg.Dialect {
+	case "oracle":
 		// Oracle 11g 兼容分页（ROWNUM 包装；绑定参数都在内层，边界用
 		// 已校验的整数字面量，无注入面）。11g 无 OFFSET/FETCH 语法。
 		query = fmt.Sprintf(
 			"SELECT * FROM (SELECT q.*, ROWNUM rn FROM (SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number) q WHERE ROWNUM <= %d) WHERE rn > %d",
 			strings.Join(quoted, ", "), tbl, w, offset+limit, offset)
+	case "sqlserver":
+		// SQL Server 2012+ OFFSET/FETCH。
+		query = fmt.Sprintf(
+			"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number OFFSET %d ROWS FETCH NEXT %d ROWS ONLY",
+			strings.Join(quoted, ", "), tbl, w, offset, limit)
 	}
 	// Total 先算：页面 SELECT 会在单连接池（SQLite）里占用唯一连接，
 	// 结果集未关就发 COUNT 会同池自锁（无限连接池掩盖了这一顺序缺陷）。
@@ -859,4 +874,30 @@ func (t *TableStorage) dateBind(d model.CollectionDate) any {
 		return d.Time()
 	}
 	return d.String()
+}
+
+// mergeUpsert 生成 Oracle / SQL Server 的 MERGE 幂等写入。两家的差异
+// 只在 FROM DUAL（oracle 必需）与无 FROM（sqlserver 禁止）。
+func mergeUpsert(dialect, table string, cols []string, conflict string) string {
+	dual := ""
+	if dialect == "oracle" {
+		dual = " FROM DUAL"
+	}
+	var selected, insertCols, insertVals, on []string
+	keySet := map[string]bool{}
+	for _, k := range strings.Split(conflict, ", ") {
+		keySet[strings.ToLower(k)] = true
+	}
+	for i, c := range cols {
+		alias := fmt.Sprintf("c%d", i)
+		selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
+		insertCols = append(insertCols, c)
+		insertVals = append(insertVals, "src."+alias)
+		if keySet[strings.ToLower(strings.Trim(c, `"`))] {
+			on = append(on, fmt.Sprintf("dst.%s = src.%s", c, alias))
+		}
+	}
+	return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s%s) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+		quoteIdent(dialect, table), strings.Join(selected, ", "), dual,
+		strings.Join(on, " AND "), strings.Join(insertCols, ", "), strings.Join(insertVals, ", "))
 }

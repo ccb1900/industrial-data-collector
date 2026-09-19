@@ -5,8 +5,9 @@
 package storageplugin
 
 import (
-	_ "github.com/go-sql-driver/mysql" // mysql-storage, registers "mysql"
-	_ "github.com/jackc/pgx/v5/stdlib" // postgresql-storage, registers "pgx"
-	_ "github.com/sijms/go-ora"        // oracle-storage, registers "oracle"
-	_ "modernc.org/sqlite"             // sqlite-storage, registers "sqlite"
+	_ "github.com/go-sql-driver/mysql"  // mysql-storage, registers "mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"  // postgresql-storage, registers "pgx"
+	_ "github.com/microsoft/go-mssqldb" // sqlserver-storage, registers "sqlserver"
+	_ "github.com/sijms/go-ora"         // oracle-storage, registers "oracle"
+	_ "modernc.org/sqlite"              // sqlite-storage, registers "sqlite"
 )

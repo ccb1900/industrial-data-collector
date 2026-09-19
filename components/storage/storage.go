@@ -93,7 +93,7 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 	switch typ {
 	case "memory-storage":
 		return &StorageComponent{typ: typ, mem: storage.NewMemory(storage.MemoryOptions{})}, nil
-	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage":
+	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage", "sqlserver-storage":
 		dialect := "mysql"
 		driver := configutil.OptionalString(cc, "driver", "")
 		switch typ {
@@ -111,6 +111,11 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 			dialect = "oracle"
 			if driver == "" {
 				driver = "oracle"
+			}
+		case "sqlserver-storage":
+			dialect = "sqlserver"
+			if driver == "" {
+				driver = "sqlserver"
 			}
 		default:
 			if driver == "" {

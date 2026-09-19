@@ -198,6 +198,8 @@ func (s *SQLStore) ensureSchema(ctx context.Context) error {
 		stmt = fmt.Sprintf("BEGIN EXECUTE IMMEDIATE 'CREATE TABLE %s (source_id VARCHAR2(255) NOT NULL, collection_date VARCHAR2(32) NOT NULL, file_id VARCHAR2(1024) NOT NULL, row_number NUMBER(38) NOT NULL, row_values CLOB NOT NULL, payload CLOB NOT NULL, created_at TIMESTAMP, CONSTRAINT pk_%s PRIMARY KEY (source_id, collection_date, file_id, row_number))'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END", t, safeConstraintName(s.table))
 	case "sqlite":
 		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id TEXT NOT NULL, collection_date TEXT NOT NULL, file_id TEXT NOT NULL, row_number INTEGER NOT NULL, row_values TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT, PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
+	case "sqlserver":
+		stmt = fmt.Sprintf("IF OBJECT_ID(N'%s', N'U') IS NULL CREATE TABLE %s (source_id NVARCHAR(255) NOT NULL, collection_date NVARCHAR(32) NOT NULL, file_id NVARCHAR(1024) NOT NULL, row_number BIGINT NOT NULL, row_values NVARCHAR(MAX) NOT NULL, payload NVARCHAR(MAX) NOT NULL, created_at DATETIME2, PRIMARY KEY (source_id, collection_date, file_id, row_number))", s.table, t)
 	default:
 		return fmt.Errorf("%w: unsupported sql dialect %q", errs.ErrInvalidConfig, s.dialect)
 	}
@@ -217,13 +219,24 @@ func (s *SQLStore) upsertSQL(argCount int) (string, error) {
 		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", t, joined, placeholders), nil
 	case "postgres", "sqlite":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
-	case "oracle":
+	case "oracle", "sqlserver":
+		dual := ""
+		if s.dialect == "oracle" {
+			dual = " FROM DUAL"
+		}
 		columns := []string{"source_id", "collection_date", "file_id", "row_number", "row_values", "payload", "created_at"}
-		var selected []string
+		var selected, icols, ivals, on []string
 		for i, col := range columns {
 			selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, col))
+			icols = append(icols, col)
+			ivals = append(ivals, "src."+col)
+			if i < 4 { // 前四列 = 主键
+				on = append(on, fmt.Sprintf("dst.%s = src.%s", col, col))
+			}
 		}
-		return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s FROM DUAL) src ON (dst.source_id = src.source_id AND dst.collection_date = src.collection_date AND dst.file_id = src.file_id AND dst.row_number = src.row_number) WHEN NOT MATCHED THEN INSERT (source_id, collection_date, file_id, row_number, row_values, payload, created_at) VALUES (src.source_id, src.collection_date, src.file_id, src.row_number, src.row_values, src.payload, src.created_at)", t, strings.Join(selected, ", ")), nil
+		return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s%s) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+			t, strings.Join(selected, ", "), dual, strings.Join(on, " AND "),
+			strings.Join(icols, ", "), strings.Join(ivals, ", ")), nil
 	default:
 		return "", fmt.Errorf("%w: unsupported sql dialect %q", errs.ErrInvalidConfig, s.dialect)
 	}
@@ -249,6 +262,9 @@ func quoteIdent(dialect, name string) string {
 			// COMMENT...，ORA-00904），且引号内大写与服务器折叠行为一致
 			//（生成侧统一 ToUpper，两侧大小写匹配）。
 			return `"` + strings.ToUpper(name) + `"`
+		case "sqlserver":
+			// SQL Server：[] 引用，保留字安全且与 sys.columns 输出匹配。
+			return "[" + name + "]"
 		}
 		return `"` + name + `"`
 	}
@@ -257,6 +273,9 @@ func quoteIdent(dialect, name string) string {
 	// 引号内内容永不参与 SQL 解析。
 	if dialect == "mysql" {
 		return "`" + strings.ReplaceAll(strings.ReplaceAll(name, "`", "``"), "\x00", "") + "`"
+	}
+	if dialect == "sqlserver" {
+		return "[" + strings.ReplaceAll(strings.ReplaceAll(name, "]", "]]"), "\x00", "") + "]"
 	}
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(name, `"`, `""`), "\x00", "") + `"`
 }
