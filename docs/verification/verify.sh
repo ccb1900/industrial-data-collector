@@ -99,7 +99,7 @@ check "详情右面板已并入采集页" test -z "$(grep -h 'ui-panel-collectio
 check "页面图标声明" grep_q '"icon":        "dashboard"' app/bundles/collector.go
 
 echo "== 目录与脚本 =="
-for p in configs/desktop.toml configs/laser.toml configs/unc-machines.toml data/production data/quality plugins/alarm-demo/manifest.toml plugins/alarm-demo/main.go plugins/alarm-demo/src/ui.tsx scripts/build-console.sh scripts/install-plugin.sh docs/用户指南.md docs/开发者指南.md; do
+for p in configs/desktop.toml configs/laser.toml configs/unc-machines.toml configs/data/production configs/data/quality plugins/alarm-demo/manifest.toml plugins/alarm-demo/main.go plugins/alarm-demo/src/ui.tsx scripts/build-console.sh scripts/install-plugin.sh docs/用户指南.md docs/开发者指南.md; do
   check "路径 $p" test -e "$p"
 done
 check "补丁文件格式 version" grep_q '"version":1' docs/用户指南.md || true

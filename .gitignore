@@ -1,5 +1,5 @@
 node_modules/
-/data/
+/configs/data/
 /state/
 *.removed.json
 plugins/alarm-demo/alarm-demo
