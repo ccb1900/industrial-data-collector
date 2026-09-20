@@ -214,25 +214,19 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 		return nil, err
 	}
 	ensureSQLiteDir(cfg)
-	db, err := sql.Open(cfg.Driver, sqliteDSN(cfg))
+	// 连接池按 driver+dsn 进程级共享（引用计数）：机台群展开后源单元
+	// 数量远大于物理库数量，每源独享池会把空闲会话堆到数据库上限。
+	db, release, err := acquireDB(cfg.Dialect, cfg.Driver, cfg.DSN)
 	if err != nil {
-		return nil, errs.ClassifyStorageError("open", err)
-	}
-	if cfg.Dialect == "sqlite" {
-		// SQLite 单写者：进程内串行化避免 "database is locked"，跨进程由
-		// busy_timeout 兜底；:memory: 的池化多连接各自独立库，也由此根治。
-		db.SetMaxOpenConns(1)
-	}
-	if err != nil {
-		return nil, errs.ClassifyStorageError("open", err)
+		return nil, err
 	}
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
+		release()
 		return nil, errs.ClassifyStorageError("ping", err)
 	}
-	t := &TableStorage{db: db, cfg: cfg, closeMe: db.Close}
+	t := &TableStorage{db: db, cfg: cfg, closeMe: releaseClose(release)}
 	if err := t.ensureSchema(ctx); err != nil {
-		_ = db.Close()
+		_ = t.Close()
 		return nil, err
 	}
 	return t, nil
@@ -244,20 +238,16 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 		return nil
 	}
 	ensureSQLiteDir(t.cfg)
-	db, err := sql.Open(t.cfg.Driver, sqliteDSN(t.cfg))
+	db, release, err := acquireDB(t.cfg.Dialect, t.cfg.Driver, t.cfg.DSN)
 	if err != nil {
-		return errs.ClassifyStorageError("open", err)
-	}
-	if t.cfg.Dialect == "sqlite" {
-		// 惰性路径与 OpenTable 同约定：进程内单连接，跨进程 busy_timeout。
-		db.SetMaxOpenConns(1)
+		return err
 	}
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
+		release()
 		return errs.ClassifyStorageError("ping", err)
 	}
 	t.db = db
-	t.closeMe = db.Close
+	t.closeMe = releaseClose(release)
 	return t.ensureSchema(ctx)
 }
 

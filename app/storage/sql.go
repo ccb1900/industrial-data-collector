@@ -63,21 +63,17 @@ func OpenSQL(ctx context.Context, cfg SQLConfig) (*SQLStore, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open(cfg.Driver, cfg.DSN)
+	db, release, err := acquireDB(cfg.Dialect, cfg.Driver, cfg.DSN)
 	if err != nil {
-		return nil, errs.ClassifyStorageError("open", err)
-	}
-	if cfg.Dialect == "sqlite" {
-		// 同 OpenTable：进程内单连接，跨进程 busy_timeout。
-		db.SetMaxOpenConns(1)
+		return nil, err
 	}
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
+		release()
 		return nil, errs.ClassifyStorageError("ping", err)
 	}
-	s := &SQLStore{db: db, cfg: cfg, dialect: strings.ToLower(cfg.Dialect), table: cfg.Table, closeMe: db.Close}
+	s := &SQLStore{db: db, cfg: cfg, dialect: strings.ToLower(cfg.Dialect), table: cfg.Table, closeMe: releaseClose(release)}
 	if err := s.ensureSchema(ctx); err != nil {
-		_ = db.Close()
+		_ = s.Close()
 		return nil, err
 	}
 	return s, nil
@@ -96,18 +92,18 @@ func OpenLazySQL(cfg SQLConfig) (*SQLStore, error) {
 // and schema ensure. The schema statements are idempotent, so reconnecting
 // after an outage re-checks it safely.
 func (s *SQLStore) connect(ctx context.Context) error {
-	db, err := sql.Open(s.cfg.Driver, s.cfg.DSN)
+	db, release, err := acquireDB(s.cfg.Dialect, s.cfg.Driver, s.cfg.DSN)
 	if err != nil {
 		return errs.ClassifyStorageError("open", err)
 	}
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
+		release()
 		return errs.ClassifyStorageError("ping", err)
 	}
 	s.db = db
-	s.closeMe = db.Close
+	s.closeMe = releaseClose(release)
 	if err := s.ensureSchema(ctx); err != nil {
-		_ = db.Close()
+		_ = s.Close()
 		s.db = nil
 		s.closeMe = nil
 		return err
