@@ -135,6 +135,7 @@ func (m *ReadModel) OnCollectionCompleted(key model.CollectionKey, endedAt time.
 	defer m.mu.Unlock()
 	e := m.entry(key)
 	e.status = StatusSucceeded
+	e.note = "" // 成功实例不带旧原因：失败→恢复后原因不能残留
 	e.ended = endedAt
 }
 
@@ -144,6 +145,7 @@ func (m *ReadModel) OnCollectionFailed(key model.CollectionKey, errMsg string) {
 	defer m.mu.Unlock()
 	e := m.entry(key)
 	e.status = StatusFailed
+	e.note = errMsg // 失败必须带原因——"原因"列就是为它准备的
 }
 
 // ListCollections implements CollectionQuery.
@@ -323,19 +325,20 @@ func (m *ReadModel) AttachUnits(units []UnitState) {
 				e.ended = rec.EndedAt
 			}
 		}
-		for _, f := range u.CompletedFiles {
-			e := m.entry(f.Key)
-			if cur, exists := e.files[f.File.Identity()]; !exists || cur.status != StatusFailed {
-				e.files[f.File.Identity()] = &fileEntry{
-					file: f.File, records: f.Records, status: StatusSucceeded,
-				}
-			}
-		}
+		// 失败账先落、完成文件后落：同一文件身份两者都在时（旧版本留下
+		// 的孤儿失败条目 vs 后来真实完成），完成的实事覆盖过期的失败——
+		// 重启投影不得复活已修复的失败。
 		for _, f := range u.Failures {
 			e := m.entry(f.Key)
 			e.files[f.File.Identity()] = &fileEntry{
 				file: f.File, status: StatusFailed, err: f.Error,
 				attempts: f.Attempts, failedAt: f.FailedAt,
+			}
+		}
+		for _, f := range u.CompletedFiles {
+			e := m.entry(f.Key)
+			e.files[f.File.Identity()] = &fileEntry{
+				file: f.File, records: f.Records, status: StatusSucceeded,
 			}
 		}
 	}

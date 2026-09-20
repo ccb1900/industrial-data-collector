@@ -288,3 +288,70 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return data
 }
+
+// 成功清账不变量：失败文件从清单消失（上游删除）后，其余文件完成使
+// 实例转成功——残留的失败条目必须随 End(Succeeded) 清除，否则投影会
+// 在成功实例上永远数出失败文件（成功守卫使其再无重探机会）。
+func TestSuccessEndClearsStaleFailureLedger(t *testing.T) {
+	st := NewMemory()
+	ctx := context.Background()
+	k := model.CollectionKey{SourceID: "prod", Date: key("2026-09-08").Date}
+	if _, err := st.Begin(ctx, k, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	gone := model.FileIdentity{SourceID: "prod", Path: "/b.dat", Name: "b.dat", Size: 2, ModTime: time.Unix(2, 0)}
+	if err := st.MarkFileFailed(ctx, k, gone, "storage unreachable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.End(ctx, k, model.StatusFailed, "b.dat: storage unreachable"); err != nil {
+		t.Fatal(err)
+	}
+	failures, err := st.ListFileFailures(ctx, "prod")
+	if err != nil || len(failures) != 1 {
+		t.Fatalf("failed instance must keep its ledger: %v, err %v", failures, err)
+	}
+
+	// 下一轮：b.dat 已不在清单里，其余文件成功 → 实例成功 → 清账。
+	if _, err := st.Begin(ctx, k, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.End(ctx, k, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := st.ListFileFailures(ctx, "prod")
+	if err != nil || len(cleared) != 0 {
+		t.Fatalf("succeeded instance must carry no failure ledger: %v, err %v", cleared, err)
+	}
+}
+
+// 加载修复：旧版本状态文件里"成功记录 + 失败账"的毒数据在装载时清除。
+func TestNewFileRepairsSucceededRecordWithStaleLedger(t *testing.T) {
+	st := NewMemory()
+	ctx := context.Background()
+	k := model.CollectionKey{SourceID: "prod", Date: key("2026-09-08").Date}
+	if _, err := st.Begin(ctx, k, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	bad := model.FileIdentity{SourceID: "prod", Path: "/b.dat", Name: "b.dat", Size: 2, ModTime: time.Unix(2, 0)}
+	if err := st.MarkFileFailed(ctx, k, bad, "stale failure"); err != nil {
+		t.Fatal(err)
+	}
+	// 直接改写记录状态为 Succeeded，模拟旧版本留下的毒快照。
+	ck := stateKey(k)
+	rec := st.collections[ck]
+	rec.Status = model.StatusSucceeded
+	st.collections[ck] = rec
+
+	path := filepath.Join(t.TempDir(), "collection-state.json")
+	if err := os.WriteFile(path, mustJSON(t, snapshot(st)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures, err := fs.ListFileFailures(ctx, "prod")
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("load must repair succeeded-record-with-ledger: %v, err %v", failures, err)
+	}
+}

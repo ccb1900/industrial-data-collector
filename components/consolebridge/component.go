@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -212,7 +213,42 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}
 	if err := register(func() (func() error, error) {
 		return hubRegistry.RegisterQuery("schedule", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
-			return sched.Info(), nil
+			// 逐条目行，而不是单条摘要：多调度部署（不同机台不同节奏）
+			// 在 UI 上必须一条一行。target 展示采集对象——fleet 合成的
+			// 内部组去掉 __sched_ 前缀即调度名，空组 = 全局（手动/广播）。
+			info := sched.Info()
+			rows := []map[string]any{}
+			entries, _ := info["entries"].([]map[string]any)
+			for _, e := range entries {
+				strategy, expr := "daily", ""
+				if cron, ok := e["cron"].(string); ok && cron != "" {
+					strategy, expr = "cron", cron
+				} else if t, ok := e["time"].(string); ok {
+					expr = t
+				}
+				target := ""
+				if g, ok := e["group"].(string); ok {
+					target = strings.TrimPrefix(g, "__sched_")
+				}
+				rows = append(rows, map[string]any{
+					"strategy": strategy,
+					"expr":     expr,
+					"next":     e["next"],
+					"target":   target,
+				})
+			}
+			if len(rows) == 0 { // 退化：无 entries 时按单条摘要平铺
+				strategy, _ := info["schedule"].(string)
+				expr, _ := info["cron"].(string)
+				if expr == "" {
+					expr, _ = info["time"].(string)
+				}
+				rows = append(rows, map[string]any{
+					"strategy": strategy, "expr": expr,
+					"next": info["next"], "target": "",
+				})
+			}
+			return rows, nil
 		})
 	}); err != nil {
 		return nil, err

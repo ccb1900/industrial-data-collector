@@ -70,16 +70,28 @@
                 "title": "状态"
               },
               {
+                "key": "filesFailed",
+                "title": "失败文件"
+              },
+              {
                 "key": "note",
                 "title": "原因"
               }
             ],
             "filter": {
-              "in": [
-                "Failed",
-                "Pending"
-              ],
-              "key": "status"
+              "anyOf": [
+                {
+                  "in": [
+                    "Failed",
+                    "Pending"
+                  ],
+                  "key": "status"
+                },
+                {
+                  "gt": 0,
+                  "key": "filesFailed"
+                }
+              ]
             },
             "kind": "table",
             "pageSize": 8,
@@ -119,21 +131,26 @@
         "title": "采集",
         "views": [
           {
-            "fields": [
+            "columns": [
               {
-                "key": "schedule",
-                "label": "调度策略"
+                "key": "strategy",
+                "title": "策略"
               },
               {
-                "key": "cron",
-                "label": "Cron 表达式"
+                "key": "expr",
+                "title": "Cron / 时刻"
               },
               {
                 "key": "next",
-                "label": "下次触发"
+                "title": "下次触发"
+              },
+              {
+                "key": "target",
+                "title": "目标组"
               }
             ],
-            "kind": "kv",
+            "kind": "table",
+            "pageSize": 10,
             "query": "schedule",
             "title": "调度"
           },
@@ -197,6 +214,7 @@
                   }
                 ],
                 "expand": "metadata",
+                "hideWhenEmpty": true,
                 "kind": "table",
                 "pageSize": 10,
                 "params": {
@@ -225,6 +243,7 @@
                     "title": "错误"
                   }
                 ],
+                "hideWhenEmpty": true,
                 "kind": "table",
                 "pageSize": 5,
                 "params": {
@@ -234,6 +253,7 @@
                 "title": "该源失败账本"
               },
               {
+                "hideWhenEmpty": true,
                 "kind": "table",
                 "pageSize": 5,
                 "params": {

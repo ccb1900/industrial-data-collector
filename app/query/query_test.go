@@ -94,3 +94,37 @@ func TestObservationSubscribePublishAndFeed(t *testing.T) {
 		t.Fatalf("feed = %#v", feed)
 	}
 }
+
+// 重启投影不得复活已修复的失败：持久层里同一文件身份既有失败账条目、
+// 又有完成记录时（旧版本成功清账不变量缺失留下的孤儿），完成的实事
+// 覆盖过期的失败——成功实例上不允许数出失败文件。
+func TestAttachUnitsCompletedFactOverwritesStaleFailure(t *testing.T) {
+	ctx := context.Background()
+	m := NewReadModel()
+	k := key("src-a", "2026-09-06")
+	f := file("src-a", "//host/share/a.csv", "a.csv")
+	units := []UnitState{{
+		SourceID:    "src-a",
+		Path:        "//host/share",
+		Collections: []model.CollectionRecord{{Key: k, Status: model.StatusSucceeded}},
+		Failures: []model.FileFailure{{
+			Key: k, File: f, Error: "stale: network unreachable", Attempts: 3,
+			FailedAt: time.Now(),
+		}},
+		CompletedFiles: []model.FileRecordView{{
+			Key: k, File: f, Records: 7, CompletedAt: time.Now(),
+		}},
+	}}
+	m.AttachUnits(units)
+	cols, err := m.ListCollections(ctx)
+	if err != nil || len(cols) != 1 {
+		t.Fatalf("collections = %v, err %v", cols, err)
+	}
+	if cols[0].Status != StatusSucceeded || cols[0].FilesFailed != 0 || cols[0].FilesCompleted != 1 {
+		t.Fatalf("collection view = %#v, want Succeeded with no failed files", cols[0])
+	}
+	failures, err := m.ListFailures(ctx, "src-a")
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("failures = %v, err %v, want none after completion", failures, err)
+	}
+}

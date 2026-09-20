@@ -124,13 +124,23 @@ func (s *MemoryState) End(ctx context.Context, key model.CollectionKey, status m
 	rec.Note = note
 	rec.EndedAt = s.nowTime()
 	s.collections[ck] = rec
+	// 成功实例没有失败账：同路径完成已在 MarkFileCompleted 退役对应条目，
+	// 此时仍残留的失败只可能属于本轮清单里已不存在的文件（上游已删除）。
+	// 保留它们会让投影在成功实例上数出失败文件，且成功守卫使其实永无
+	// 清理机会——成功即清账。
+	if status == model.StatusSucceeded {
+		delete(s.failedFiles, ck)
+	}
 	return nil
 }
 
 // migratePreInstance 迁移旧语义记录（仅限构造期调用，实例尚未发布）：
 //   - Skipped（无数据）→ 清除，连同文件/失败副档——"没有"不是实例；
 //   - Pending（等待数据）→ 转 Failed——它是重试证据，转换后仍可被
-//     补采重探（迟到文件由成功覆盖），而不是静默消失。
+//     补采重探（迟到文件由成功覆盖），而不是静默消失；
+//   - Succeeded 记录带失败账 → 清失败账（成功清账不变量的修复：
+//     旧版本在文件从清单消失后留下孤儿失败条目，投影会在成功实例
+//     上数出失败文件）。
 //
 // 返回（清除数, 转换数）。
 func (s *MemoryState) migratePreInstance() (purged, converted int) {
@@ -145,6 +155,11 @@ func (s *MemoryState) migratePreInstance() (purged, converted int) {
 			rec.Status = model.StatusFailed
 			s.collections[k] = rec
 			converted++
+		case model.StatusSucceeded:
+			if len(s.failedFiles[k]) > 0 {
+				delete(s.failedFiles, k)
+				purged++
+			}
 		}
 	}
 	return purged, converted

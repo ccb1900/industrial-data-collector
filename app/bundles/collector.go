@@ -64,11 +64,19 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 				map[string]any{
 					"kind": "table", "title": "需要处理（失败 / 等待数据）", "query": "collections", "pageSize": 8,
-					"filter": map[string]any{"key": "status", "in": []any{"Failed", "Pending"}},
+					// 命中任一即上榜：失败/等待中的采集，或带失败文件但整体
+					// 已成功的采集（部分成功也要能找到是哪些文件失败）。
+					"filter": map[string]any{
+						"anyOf": []any{
+							map[string]any{"key": "status", "in": []any{"Failed", "Pending"}},
+							map[string]any{"key": "filesFailed", "gt": 0},
+						},
+					},
 					"columns": []any{
 						map[string]any{"key": "sourceId", "title": "数据源"},
 						map[string]any{"key": "date", "title": "采集日期"},
 						map[string]any{"key": "status", "title": "状态"},
+						map[string]any{"key": "filesFailed", "title": "失败文件"},
 						map[string]any{"key": "note", "title": "原因"},
 					},
 				},
@@ -91,11 +99,14 @@ func consoleRows() []extconfig.ComponentConfig {
 			"order":       10,
 			"views": []any{
 				map[string]any{
-					"kind": "kv", "title": "调度", "query": "schedule",
-					"fields": []any{
-						map[string]any{"key": "schedule", "label": "调度策略"},
-						map[string]any{"key": "cron", "label": "Cron 表达式"},
-						map[string]any{"key": "next", "label": "下次触发"},
+					// 调度逐条目一行：多调度部署（不同机台不同节奏）不再只
+					// 显示"最近一条"，每条的节奏、下次触发与目标组同屏可见。
+					"kind": "table", "title": "调度", "query": "schedule", "pageSize": 10,
+					"columns": []any{
+						map[string]any{"key": "strategy", "title": "策略"},
+						map[string]any{"key": "expr", "title": "Cron / 时刻"},
+						map[string]any{"key": "next", "title": "下次触发"},
+						map[string]any{"key": "target", "title": "目标组"},
 					},
 				},
 				map[string]any{
@@ -122,7 +133,7 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{
 							"kind": "table", "title": "当日文件明细", "query": "files",
 							"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
-							"expand": "metadata", "pageSize": 10,
+							"expand": "metadata", "pageSize": 10, "hideWhenEmpty": true,
 							"columns": []any{
 								map[string]any{"key": "name", "title": "文件"},
 								map[string]any{"key": "records", "title": "记录数"},
@@ -132,7 +143,7 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{
 							"kind": "table", "title": "该源失败账本", "query": "failures",
 							"params":   map[string]any{"sourceId": "$focus.sourceId"},
-							"pageSize": 5,
+							"pageSize": 5, "hideWhenEmpty": true,
 							"columns": []any{
 								map[string]any{"key": "date", "title": "采集日"},
 								map[string]any{"key": "name", "title": "文件"},
@@ -143,7 +154,7 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{
 							"kind": "table", "title": "数据样本（按采集顺序）", "query": "rows",
 							"params":   map[string]any{"sourceId": "$focus.sourceId", "limit": "5"},
-							"pageSize": 5,
+							"pageSize": 5, "hideWhenEmpty": true,
 						},
 					},
 				},
