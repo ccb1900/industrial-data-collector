@@ -28,7 +28,9 @@ func ClassifyStorageError(op string, err error) error {
 	if containsAny(msg, "duplicate", "constraint", "unique", "primary key") {
 		return Sourcef(ErrStorageConstraint, "%s: %w", op, err)
 	}
-	if containsAny(msg, "deadlock", "connection refused", "broken pipe", "lost connection", "too many connections") {
+	// SQLITE_BUSY/"database is locked" 与 busy timeout 是锁等待超时，
+	// 本质可重试——与 deadlock 同类，不能落兜底 permanent。
+	if containsAny(msg, "deadlock", "database is locked", "sqlite_busy", "busy timeout", "connection refused", "broken pipe", "lost connection", "too many connections") {
 		return Sourcef(ErrStorageTransient, "%s: %w", op, err)
 	}
 	return Sourcef(ErrStoragePermanent, "%s: %w", op, err)

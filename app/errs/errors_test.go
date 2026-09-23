@@ -54,3 +54,19 @@ func TestClassifySourceError(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyStorageErrorBusyIsTransient(t *testing.T) {
+	msgs := []string{
+		"count rows: database is locked (5) (SQLITE_BUSY)",
+		"write batch: [SQLITE_BUSY] database is locked",
+		"busy timeout",
+	}
+	for _, m := range msgs {
+		if got := ClassifyStorageError("count rows", errors.New(m)); !Is(got, ErrStorageTransient) {
+			t.Fatalf("classify(%q) = %v, want Transient", m, got)
+		}
+	}
+	if got := ClassifyStorageError("count rows", errors.New("no such table: foo")); !Is(got, ErrStoragePermanent) {
+		t.Fatalf("unknown vendor error = %v, want Permanent", got)
+	}
+}
