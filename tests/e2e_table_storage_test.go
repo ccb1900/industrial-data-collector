@@ -188,13 +188,13 @@ func TestTableStorageTypeFailureEntersLedger(t *testing.T) {
 	h := newApp(t)
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass1", SourceID: "machine001-readings"}); err == nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "pass1", SourceID: "machine001-readings"}); err == nil {
 		t.Fatal("bad typed value must fail the pass")
 	}
 	if err := os.WriteFile(filepath.Join(root, "2026-09-07", "bad.csv"), []byte("ts,temperature\n2026-09-07T01:00:00Z,42.5\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "pass2", SourceID: "machine001-readings"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "pass2", SourceID: "machine001-readings"}); err != nil {
 		t.Fatal(err)
 	}
 	db, err := sql.Open("sqlite", dbPath)

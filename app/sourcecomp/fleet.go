@@ -26,6 +26,11 @@ type FleetDefaults struct {
 	CatchupDays         int
 	BatchSize           int
 	StableWindowSeconds int
+	// 并发与备份横切默认（0/空 = 不下发，源单元维持自身默认）。
+	FilesPerSource     int
+	MaxParallelSources int
+	BackupDir          string
+	BackupKeepDays     int
 }
 
 // SinkDef is one database connection in the sink inventory. Connection
@@ -267,6 +272,20 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if dirLayout != "" {
 				cfg["date_dir_layout"] = dirLayout
 			}
+			// 并发/备份横切默认：仅在下发非默认值时写入配置，维持既有
+			// 展开结果逐字节不变（golden 测试依赖）。
+			if d.FilesPerSource > 0 {
+				cfg["files_per_source"] = d.FilesPerSource
+			}
+			if d.MaxParallelSources > 0 {
+				cfg["max_parallel_sources"] = d.MaxParallelSources
+			}
+			if d.BackupDir != "" {
+				cfg["backup_dir"] = d.BackupDir
+			}
+			if d.BackupKeepDays > 0 {
+				cfg["backup_keep_days"] = d.BackupKeepDays
+			}
 			if f.hasDateToken {
 				cfg["filename_date_layout"] = f.Match
 			}
@@ -437,6 +456,16 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 	}
 	if v, ok := m["file_stable_window_seconds"].(int64); ok {
 		d.StableWindowSeconds = int(v)
+	}
+	if v, ok := m["files_per_source"].(int64); ok {
+		d.FilesPerSource = int(v)
+	}
+	if v, ok := m["max_parallel_sources"].(int64); ok {
+		d.MaxParallelSources = int(v)
+	}
+	d.BackupDir, _ = m["backup_dir"].(string)
+	if v, ok := m["backup_keep_days"].(int64); ok {
+		d.BackupKeepDays = int(v)
 	}
 	return d, nil
 }

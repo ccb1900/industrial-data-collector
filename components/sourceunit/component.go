@@ -33,6 +33,7 @@ import (
 	"gocordis-csv-collector/components/internal/outcome"
 	metadataplugin "gocordis-csv-collector/components/metadata"
 	storageplugin "gocordis-csv-collector/components/storage"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 // Type is the Config Component type registered for one Source unit.
@@ -62,15 +63,16 @@ type SourceUnitComponent struct {
 	header                bool
 	catchupDays           int
 	since                 model.CollectionDate
+	filesPerSource        int
+	backupDir             string
+	backupKeepDays        int
 	logger                *slog.Logger
 
 	emitCtx *runtime.Context
 }
 
 type job struct {
-	ctx  context.Context
-	req  model.CollectionRequested
-	done chan error
+	req model.CollectionRequested
 }
 
 func (c *SourceUnitComponent) Name() string { return "source-unit:" + string(c.sourceID) }
@@ -226,14 +228,18 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
 		Config: collector.Config{
-			BatchSize:   c.batchSize,
-			DatePolicy:  c.policy,
-			CatchupDays: c.catchupDays,
-			Since:       c.since,
-			Logger:      c.logger,
+			BatchSize:      c.batchSize,
+			DatePolicy:     c.policy,
+			CatchupDays:    c.catchupDays,
+			Since:          c.since,
+			Logger:         c.logger,
+			FilesPerSource: c.filesPerSource,
+			BackupDir:      c.backupDir,
+			BackupKeepDays: c.backupKeepDays,
 		},
 	}
 	c.emitCtx = ctx
+	exec.Observer = outcomeObserver{emitCtx: ctx}
 	workerCtx, cancel := context.WithCancel(ctx.Context())
 	reqCh := make(chan job, 8)
 	workerDone := make(chan struct{})
@@ -257,20 +263,19 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		if req.SourceID != "" && req.SourceID != c.sourceID {
 			return nil // a different Source owns this request
 		}
-		j := job{ctx: dctx, req: req, done: make(chan error, 1)}
+		// 扇出：入本单元队列后立即返回，不再阻塞事件分发——多个源的
+		// worker 由此并行推进（全局受 max_parallel_sources 闸约束）。
+		// 作业结果与失败经在途账本（parallelism）汇回 run-to-completion
+		// 路径；事件经 Executor.Observer 在发生点即时发布。
+		parallelism.Begin()
 		select {
-		case reqCh <- j:
+		case reqCh <- job{req: req}:
+			return nil
 		case <-dctx.Done():
+			parallelism.Finish(dctx.Err())
 			return dctx.Err()
 		case <-workerCtx.Done():
-			return workerCtx.Err()
-		}
-		select {
-		case err := <-j.done:
-			return err
-		case <-dctx.Done():
-			return dctx.Err()
-		case <-workerCtx.Done():
+			parallelism.Finish(workerCtx.Err())
 			return workerCtx.Err()
 		}
 	})
@@ -285,27 +290,28 @@ func (c *SourceUnitComponent) worker(ctx context.Context, reqCh <-chan job, done
 	for {
 		select {
 		case j := <-reqCh:
-			runCtx, runCancel := context.WithCancel(j.ctx)
-			stop := make(chan struct{})
-			go func() {
-				select {
-				case <-ctx.Done():
-					runCancel()
-				case <-stop:
-				}
-			}()
-			results, runErr := exec.Handle(runCtx, j.req)
-			for i := range results {
-				outcome.Publish(j.ctx, c.emitCtx, &results[i])
+			// runCtx 派生自组件上下文而非请求上下文：作业一经受理就有
+			// 自己的生命周期，触发方返回不再中止采集。
+			runCtx, runCancel := context.WithCancel(ctx)
+			if !parallelism.Acquire(runCtx) {
+				runCancel()
+				parallelism.Finish(runCtx.Err())
+				continue
 			}
-			close(stop)
+			_, runErr := exec.Handle(runCtx, j.req)
+			parallelism.Release()
 			runCancel()
-			select {
-			case j.done <- runErr:
-			case <-ctx.Done():
-			}
+			parallelism.Finish(runErr)
 		case <-ctx.Done():
-			return
+			// 结清队列里再也不会被执行的作业，账本必须归零。
+			for {
+				select {
+				case <-reqCh:
+					parallelism.Finish(context.Canceled)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
@@ -442,6 +448,23 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
+	// 并发与备份开关（fleet 默认由源编排透传；不配置即维持旧行为：
+	// 文件串行、进程级 4 源并发闸、无备份）。
+	filesPerSource := configutil.OptionalInt(cc, "files_per_source", 1)
+	if filesPerSource < 1 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "files_per_source must be >= 1")
+	}
+	if n := configutil.OptionalInt(cc, "max_parallel_sources", 0); n > 0 {
+		parallelism.Configure(n)
+	}
+	backupDir := configutil.OptionalString(cc, "backup_dir", "")
+	backupKeepDays := configutil.OptionalInt(cc, "backup_keep_days", 0)
+	if backupKeepDays < 0 {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "backup_keep_days must be >= 0")
+	}
+	if backupKeepDays > 0 && backupDir == "" {
+		return nil, errs.Sourcef(errs.ErrInvalidConfig, "backup_keep_days requires backup_dir")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -478,8 +501,30 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		policy:                policy,
 		batchSize:             batch,
 		catchupDays:           catchup,
+		filesPerSource:        filesPerSource,
+		backupDir:             backupDir,
+		backupKeepDays:        backupKeepDays,
 		logger:                logger,
 	}, nil
+}
+
+// outcomeObserver 把 Executor 的即时观察回调投影为 Runtime 事件。
+type outcomeObserver struct{ emitCtx *runtime.Context }
+
+func (o outcomeObserver) CollectionStarted(ctx context.Context, key model.CollectionKey) {
+	outcome.PublishCollectionStarted(ctx, o.emitCtx, key)
+}
+
+func (o outcomeObserver) FileStarted(ctx context.Context, key model.CollectionKey, file model.FileIdentity) {
+	outcome.PublishFileStarted(ctx, o.emitCtx, key, file)
+}
+
+func (o outcomeObserver) FileDone(ctx context.Context, key model.CollectionKey, fr *model.FileResult) {
+	outcome.PublishFileResult(ctx, o.emitCtx, key, fr)
+}
+
+func (o outcomeObserver) CollectionDone(ctx context.Context, res *model.CollectionResult) {
+	outcome.PublishCollectionResult(ctx, o.emitCtx, res)
 }
 
 func buildParser(cfg map[string]any) (model.CSVParser, error) {
@@ -664,11 +709,12 @@ func parseTableColumns(raw any) ([]storage.ColumnMapping, error) {
 		}
 		cc := config.ComponentConfig{Config: m}
 		out = append(out, storage.ColumnMapping{
-			From:     storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
-			Name:     configutil.OptionalString(cc, "name", ""),
-			Column:   configutil.OptionalString(cc, "column", ""),
-			Type:     configutil.OptionalString(cc, "type", "text"),
-			Required: configutil.OptionalBool(cc, "required", false),
+			From:       storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
+			Name:       configutil.OptionalString(cc, "name", ""),
+			Column:     configutil.OptionalString(cc, "column", ""),
+			Type:       configutil.OptionalString(cc, "type", "text"),
+			Required:   configutil.OptionalBool(cc, "required", false),
+			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
 		})
 	}
 	return out, nil

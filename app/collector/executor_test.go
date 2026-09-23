@@ -3,10 +3,12 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -397,5 +399,113 @@ func TestCollectorParseFailureIsRecordedInLedger(t *testing.T) {
 	}
 	if len(failures) != 1 || failures[0].File.Name != "broken.csv" {
 		t.Fatalf("ledger = %#v, want broken.csv only", failures)
+	}
+}
+
+// recordingObserver 按到达顺序记录即时事件（并发安全，供 -race 验证）。
+type recordingObserver struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (o *recordingObserver) add(s string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, s)
+}
+
+func (o *recordingObserver) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.events...)
+}
+
+func (o *recordingObserver) CollectionStarted(_ context.Context, key model.CollectionKey) {
+	o.add("started:" + key.Date.String())
+}
+func (o *recordingObserver) FileStarted(_ context.Context, _ model.CollectionKey, file model.FileIdentity) {
+	o.add("file:" + file.Name)
+}
+func (o *recordingObserver) FileDone(_ context.Context, _ model.CollectionKey, fr *model.FileResult) {
+	o.add("done:" + fr.File.Name + ":" + string(fr.Status))
+}
+func (o *recordingObserver) CollectionDone(_ context.Context, res *model.CollectionResult) {
+	o.add("done:" + res.Key.Date.String() + ":" + string(res.Status))
+}
+
+func TestExecutorParallelFilesWithBackupAndImmediateEvents(t *testing.T) {
+	root := t.TempDir()
+	body := func(n int) string {
+		s := "id,name\n"
+		for i := 1; i <= n; i++ {
+			s += fmt.Sprintf("%d,r%d\n", i, i)
+		}
+		return s
+	}
+	writeDateCSV(t, root, "2026-09-06", "a.csv", body(3))
+	writeDateCSV(t, root, "2026-09-06", "b.csv", body(4))
+	writeDateCSV(t, root, "2026-09-06", "c.csv", body(5))
+	backup := t.TempDir()
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	obs := &recordingObserver{}
+	e.Observer = obs
+	e.Config.FilesPerSource = 3
+	e.Config.BackupDir = backup
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusSucceeded || res[0].Records != 12 {
+		t.Fatalf("result = %#v", res)
+	}
+	for _, name := range []string{"a.csv", "b.csv", "c.csv"} {
+		if _, err := os.Stat(filepath.Join(backup, "prod", "2026-09-06", name)); err != nil {
+			t.Fatalf("backup %s missing: %v", name, err)
+		}
+	}
+	seen := map[string]int{}
+	for _, ev := range obs.snapshot() {
+		seen[ev]++
+	}
+	for _, want := range []string{
+		"started:2026-09-06", "done:2026-09-06:" + string(model.StatusSucceeded),
+		"file:a.csv", "file:b.csv", "file:c.csv",
+		"done:a.csv:" + string(model.StatusSucceeded),
+		"done:b.csv:" + string(model.StatusSucceeded),
+		"done:c.csv:" + string(model.StatusSucceeded),
+	} {
+		if seen[want] != 1 {
+			t.Fatalf("event %q count = %d, want 1 (all: %v)", want, seen[want], obs.snapshot())
+		}
+	}
+}
+
+func TestExecutorBackupFailureFailsFile(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
+	// backup_dir 指向一个普通文件：MkdirAll 必然失败。
+	blocked := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	e.Config.BackupDir = filepath.Join(blocked, "sub")
+	_, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err == nil {
+		t.Fatal("backup failure must fail the run (strict semantics)")
+	}
+	if mem.Total() != 1 {
+		t.Fatalf("rows = %d, want 1 (write precedes backup)", mem.Total())
+	}
+	failures, ferr := st.ListFileFailures(context.Background(), "prod")
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	if len(failures) != 1 || failures[0].File.Name != "a.csv" || !strings.Contains(failures[0].Error, "backup") {
+		t.Fatalf("ledger = %#v, want a.csv backup failure", failures)
 	}
 }

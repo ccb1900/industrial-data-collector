@@ -134,7 +134,7 @@ func TestSourceCompositionIndependentUnitsAndState(t *testing.T) {
 	}
 
 	date := ptrD(cfgDate(t, "2026-09-06"))
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u1) != 1 || sourceUnitRows(u2) != 0 {
@@ -147,7 +147,7 @@ func TestSourceCompositionIndependentUnitsAndState(t *testing.T) {
 		t.Fatalf("machine002 state created early: %v", err)
 	}
 
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u1) != 1 || sourceUnitRows(u2) != 1 {
@@ -265,10 +265,10 @@ func TestSourceCompositionRemoveOneKeepsOtherRunning(t *testing.T) {
 	u1 := sourceUnit(h, "machine001-exports")
 	u2 := sourceUnit(h, "machine002-exports")
 	date1 := ptrD(cfgDate(t, "2026-09-06"))
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date1}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", SourceID: "machine001-exports", Date: date1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date1}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: date1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestSourceCompositionRemoveOneKeepsOtherRunning(t *testing.T) {
 	if sourceUnit(h, "machine002-exports") == nil {
 		t.Fatal("machine002 source unit lost after deletion")
 	}
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: ptrD(cfgDate(t, "2026-09-07"))}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", SourceID: "machine002-exports", Date: ptrD(cfgDate(t, "2026-09-07"))}); err != nil {
 		t.Fatal(err)
 	}
 	if sourceUnitRows(u2) != 2 {

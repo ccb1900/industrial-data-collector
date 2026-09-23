@@ -5,15 +5,18 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	host "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 func discardLog() *slog.Logger {
@@ -57,9 +60,22 @@ func active(ctx context.Context, t *testing.T, h *host.Host, cfg config.Config) 
 
 func trigger(ctx context.Context, t *testing.T, h *host.Host, date string) {
 	t.Helper()
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual", Date: ptrD(cfgDate(t, date))}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual", Date: ptrD(cfgDate(t, date))}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// triggerReq 派发一次采集请求并做扇入：等待在途账本清零、取回本轮全部
+// 作业错误。source-unit 处理器现在派发即返回（真并发），e2e 断言仍需要
+// "这一轮已经结束"的同步语义——生产路径不经此处，保持即发即回。
+func triggerReq(ctx context.Context, h *host.Host, req model.CollectionRequested) error {
+	err := h.Trigger(ctx, req)
+	wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if werr := parallelism.Wait(wctx); werr != nil {
+		return errors.Join(err, werr)
+	}
+	return errors.Join(err, parallelism.DrainErrors())
 }
 
 func ptrD(d model.CollectionDate) *model.CollectionDate { return &d }

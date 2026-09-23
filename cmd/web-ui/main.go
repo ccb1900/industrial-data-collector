@@ -30,12 +30,12 @@ import (
 	"syscall"
 	"time"
 
-	"gocordis-csv-collector/internal/applock"
 	consoleexplorer "dynamic-runtime/extensions/console/explorer"
 	consolehost "dynamic-runtime/extensions/console/host"
 	consolewebui "dynamic-runtime/extensions/console/webui"
 	appconfig "gocordis-csv-collector/app/config"
 	apphost "gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/web"
 )
 

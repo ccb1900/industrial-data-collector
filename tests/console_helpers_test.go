@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	consolehost "dynamic-runtime/extensions/console/host"
-
 )
 
 // hubQuery runs a named console query through the adapter and decodes the

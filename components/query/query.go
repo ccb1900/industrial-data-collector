@@ -96,6 +96,20 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	// Started 锚点：只进观察流、不改读取模型投影——它们标记时间线
+	// 起点（"正在采"），终结事件负责状态本身。
+	if err := runtime.On(ctx, events.CollectionStarted, func(dctx context.Context, p events.CollectionStartedPayload) error {
+		c.obs.Publish(query.ObservationEvent{Type: "CollectionStarted", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := runtime.On(ctx, events.FileStarted, func(dctx context.Context, p events.FileStartedPayload) error {
+		c.obs.Publish(query.ObservationEvent{Type: "FileStarted", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	cmd := &command{emit: ctx}
 	if err := runtime.Provide(ctx, CollectionQueryKey, query.CollectionQuery(c.model)); err != nil {

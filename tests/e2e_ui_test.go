@@ -113,13 +113,26 @@ func TestUIE2EQueryObservationCommandLoop(t *testing.T) {
 	if !found {
 		t.Fatalf("file product-A.csv missing from UI files view")
 	}
-	// U-07: the observation history retains the canonical event types.
+	// U-07: the observation history retains the canonical event types —
+	// including the Started anchors emitted at the point of occurrence.
 	types := map[string]bool{}
 	for _, ev := range ui.Observations() {
 		types[ev.Type] = true
 	}
-	if !types["FileCompleted"] || !types["CollectionCompleted"] {
-		t.Fatalf("event feed types = %#v, want FileCompleted+CollectionCompleted", types)
+	for _, want := range []string{"CollectionStarted", "FileStarted", "FileCompleted", "CollectionCompleted"} {
+		if !types[want] {
+			t.Fatalf("event feed missing %s (types = %#v)", want, types)
+		}
+	}
+	// 时间线顺序：Started 锚点必须排在对应终结事件之前。
+	order := map[string]int{}
+	for i, ev := range ui.Observations() {
+		if _, dup := order[ev.Type]; !dup {
+			order[ev.Type] = i
+		}
+	}
+	if !(order["CollectionStarted"] < order["FileStarted"] && order["FileStarted"] < order["FileCompleted"] && order["FileCompleted"] < order["CollectionCompleted"]) {
+		t.Fatalf("event order = %#v, want CollectionStarted→FileStarted→FileCompleted→CollectionCompleted", order)
 	}
 }
 

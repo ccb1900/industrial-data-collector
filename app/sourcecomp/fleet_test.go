@@ -216,3 +216,33 @@ func TestExpandFleetMachineSchedule(t *testing.T) {
 		t.Fatalf("unknown schedule: %v", err)
 	}
 }
+
+// 并发/备份横切默认：非默认值才下发进源配置（默认形态逐字节不变）。
+func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
+	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
+	sinks := []SinkDef{{Name: "db", Driver: "oracle", DSN: "oracle://x"}}
+	formats := []FormatDef{{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "t", Sink: "db"}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"aaa"}}}
+	machines := []MachineDef{{No: "A-01", IP: "10.0.0.1", Path: "logs-A01", Group: "g"}}
+	out, _, err := expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"files_per_source", "max_parallel_sources", "backup_dir", "backup_keep_days"} {
+		if _, present := out[0].Config[k]; present {
+			t.Fatalf("%s must be omitted when default, got %#v", k, out[0].Config[k])
+		}
+	}
+	d.FilesPerSource = 8
+	d.MaxParallelSources = 6
+	d.BackupDir = "../backup"
+	d.BackupKeepDays = 30
+	out, _, err = expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out[0].Config["files_per_source"] != 8 || out[0].Config["max_parallel_sources"] != 6 ||
+		out[0].Config["backup_dir"] != "../backup" || out[0].Config["backup_keep_days"] != 30 {
+		t.Fatalf("cfg = %#v", out[0].Config)
+	}
+}

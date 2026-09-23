@@ -25,7 +25,7 @@ func TestCSVE2E11SchedulerEventCollector(t *testing.T) {
 	active(ctx, t, h, cfg(basicComponents(root, "src", "local-file-source", "store", "", "specific", "2026-09-06")...))
 	// Trigger is the scheduler capability entry point, which dispatches through
 	// the typed Runtime Event key rather than calling Collector directly.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", Date: ptrD(cfgDate(t, "2026-09-06"))}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", Date: ptrD(cfgDate(t, "2026-09-06"))}); err != nil {
 		t.Fatal(err)
 	}
 	if got := rows(h, "store"); got != 1 {
@@ -83,7 +83,7 @@ func TestCSVE2E12SchedulerGroupRouting(t *testing.T) {
 	}
 
 	// 调度 nightly 发射：只有 mt-a 响应。
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", Group: "__sched_nightly"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", Group: "__sched_nightly"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := rowsOf("mt-a"); got != 1 {
@@ -94,7 +94,7 @@ func TestCSVE2E12SchedulerGroupRouting(t *testing.T) {
 	}
 
 	// 手动触发（无组）：两者都响应，mt-b 补上它的那份。
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "manual"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "manual"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := rowsOf("mt-b"); got != 1 {

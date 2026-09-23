@@ -107,7 +107,7 @@ time = "02:00"
 	// The machine was off for two days: one trigger (as the Windows
 	// scheduler or the daily tick would issue) must reach back through the
 	// catch-up window and collect every missing day in date order.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	u := opsUnit(h, "machine001-exports")
@@ -124,7 +124,7 @@ time = "02:00"
 	}
 
 	// A repeat trigger is a no-op: succeeded dates are never re-entered.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := u.MemoryStore().Total(); got != 3 {
@@ -249,7 +249,7 @@ time = "02:00"
 	// Every observation below re-opens the state file: the collector's own
 	// component instance owns the live state, and a FileState reader only
 	// sees the snapshot persisted at its construction.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
 		t.Fatal("pass against a down database must fail")
 	}
 	failures, err := opsState(t, stateDir, "machine001-exports").ListFileFailures(context.Background(), "machine001-exports")
@@ -265,7 +265,7 @@ time = "02:00"
 
 	// The database recovers: the next trigger replays the failed file.
 	opsSQLDriver.up.Store(true)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	gone, err := opsState(t, stateDir, "machine001-exports").ListFileFailures(context.Background(), "machine001-exports")
@@ -278,7 +278,7 @@ time = "02:00"
 
 	// The replay is idempotent row-wise: another trigger (recovered chain
 	// complete) re-runs nothing and the state marks the date succeeded.
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	incomplete, err := opsState(t, stateDir, "machine001-exports").ListIncomplete(context.Background(), "machine001-exports", cfgDate(t, "2026-09-07"), 0)
@@ -350,7 +350,7 @@ time = "02:00"
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
 
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	u := opsUnit(h, "machine001-exports")

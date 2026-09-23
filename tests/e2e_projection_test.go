@@ -98,7 +98,7 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	defer cancel()
 	h1 := newApp(t)
 	active(ctx, t, h1, parsed.Config)
-	if err := h1.Trigger(ctx, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
+	if err := triggerReq(ctx, h1, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err == nil {
 		t.Fatal("pass with a malformed file must fail")
 	}
 	adapter := uiAdapter(h1)
@@ -170,7 +170,7 @@ func TestProjectionSkippedDateNotMaterialized(t *testing.T) {
 	h := newApp(t)
 	defer h.Close(context.Background())
 	active(ctx, t, h, parsed.Config)
-	if err := h.Trigger(ctx, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
+	if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "scheduled", SourceID: "machine001-exports"}); err != nil {
 		t.Fatal(err)
 	}
 	adapter := uiAdapter(h)

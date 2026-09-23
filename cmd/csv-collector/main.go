@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	logstore "dynamic-runtime/extensions/console/logstore"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,9 +16,10 @@ import (
 	procplugin "dynamic-runtime/extensions/console/procplugin"
 
 	"gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
+	"gocordis-csv-collector/internal/applock"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 func main() {
@@ -151,15 +153,26 @@ func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error 
 		return fmt.Errorf("config reconcile: %w", err)
 	}
 	logger.Info("configuration active; running one collection pass", "config", configPath)
-	if err := app.Startup(ctx); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("collection pass interrupted: %w", ctx.Err())
-		}
+	startupErr := app.Startup(ctx)
+	// 扇入：Trigger 现在只负责派发入队；等在途账本清零，并把本轮全部
+	// 作业失败汇回退出码——对外语义不变：采集失败 = 非零退出。
+	waitErr := parallelism.Wait(ctx)
+	var passErrs []error
+	if startupErr != nil {
+		passErrs = append(passErrs, startupErr)
+	}
+	if waitErr != nil {
+		passErrs = append(passErrs, fmt.Errorf("interrupted: %w", waitErr))
+	}
+	if perr := parallelism.DrainErrors(); perr != nil {
+		passErrs = append(passErrs, perr)
+	}
+	if len(passErrs) > 0 {
 		// A failed pass is an expected operational outcome (unreachable
 		// source, broken rows, unavailable database): report it through the
 		// exit code so the external scheduler can alert, while the local
 		// failure ledger keeps the retry state for the next trigger.
-		return fmt.Errorf("collection pass: %w", err)
+		return fmt.Errorf("collection pass: %w", errors.Join(passErrs...))
 	}
 	if err := app.Close(ctx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
