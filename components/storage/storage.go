@@ -157,7 +157,7 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 }
 
 // parseColumns decodes the declarative column mapping. Column entries carry
-// from (csv|metadata), name, column, type, required.
+// from (csv|metadata), name, column, type, required, occurrence.
 func parseColumns(raw any) ([]storage.ColumnMapping, error) {
 	if raw == nil {
 		return nil, nil
@@ -174,11 +174,12 @@ func parseColumns(raw any) ([]storage.ColumnMapping, error) {
 		}
 		cc := config.ComponentConfig{Config: m}
 		col := storage.ColumnMapping{
-			From:     storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
-			Name:     configutil.OptionalString(cc, "name", ""),
-			Column:   configutil.OptionalString(cc, "column", ""),
-			Type:     configutil.OptionalString(cc, "type", "text"),
-			Required: configutil.OptionalBool(cc, "required", false),
+			From:       storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
+			Name:       configutil.OptionalString(cc, "name", ""),
+			Column:     configutil.OptionalString(cc, "column", ""),
+			Type:       configutil.OptionalString(cc, "type", "text"),
+			Required:   configutil.OptionalBool(cc, "required", false),
+			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
 		}
 		out = append(out, col)
 	}

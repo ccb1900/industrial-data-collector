@@ -38,11 +38,12 @@ const (
 // ColumnMapping declares one typed database column fed from the CSV data
 // header or from the merged business metadata of the file.
 type ColumnMapping struct {
-	From     ColumnSource `toml:"from"`
-	Name     string       `toml:"name"`     // source key: CSV header field or metadata key
-	Column   string       `toml:"column"`   // database column name
-	Type     string       `toml:"type"`     // text|int|bigint|float|bool|timestamp|date
-	Required bool         `toml:"required"` // missing value fails the file
+	From       ColumnSource `toml:"from"`
+	Name       string       `toml:"name"`       // source key: CSV header field or metadata key
+	Column     string       `toml:"column"`     // database column name
+	Type       string       `toml:"type"`       // text|int|bigint|float|bool|timestamp|date
+	Required   bool         `toml:"required"`   // missing value fails the file
+	Occurrence int          `toml:"occurrence"` // csv 源：取表头名的第 N 次出现（0 起）；重名表头用它区分
 }
 
 // TableConfig configures the typed relational sink.
@@ -57,7 +58,8 @@ type TableConfig struct {
 	Exposer   bool            // expose the RowsQuery capability for consoles
 	Lazy      bool            // defer connection to first use
 	// AutoColumns 自动字段映射：Columns 未声明时，首个批次的解码表头
-	// 自动建列（全部 TEXT，列名即表头文本）。声明了 Columns 时本开关无效。
+	// 自动建列（全部 TEXT，列名即表头文本；重名表头第 k(k>=2) 次出现
+	// 加后缀 __k）。声明了 Columns 时本开关无效。
 	AutoColumns bool
 }
 
@@ -84,6 +86,7 @@ func (c *TableConfig) Validate() error {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: no columns declared (set columns or auto_columns)", c.Table)
 	}
 	seen := map[string]bool{}
+	seenSrc := map[string]bool{}
 	for i := range c.Columns {
 		col := &c.Columns[i]
 		switch col.From {
@@ -96,6 +99,12 @@ func (c *TableConfig) Validate() error {
 		if col.Name == "" {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: name required", col.Column)
 		}
+		if col.Occurrence < 0 {
+			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: occurrence must be >= 0", col.Column)
+		}
+		if col.From == SourceMetadata && col.Occurrence != 0 {
+			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: occurrence applies to csv sources only", col.Column)
+		}
 		if !tableNamePattern.MatchString(col.Column) {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q is not a simple identifier", col.Column)
 		}
@@ -103,6 +112,13 @@ func (c *TableConfig) Validate() error {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q declared twice", col.Column)
 		}
 		seen[col.Column] = true
+		if col.From == SourceCSV {
+			src := col.Name + "\x00" + strconv.Itoa(col.Occurrence)
+			if seenSrc[src] {
+				return errs.Sourcef(errs.ErrInvalidConfig, "csv source %q occurrence %d declared twice", col.Name, col.Occurrence)
+			}
+			seenSrc[src] = true
+		}
 		switch col.Type {
 		case "text":
 			col.Type = "text"
@@ -182,14 +198,16 @@ func (t *TableStorage) effectiveColumns() []ColumnMapping {
 }
 
 // deriveColumns 从解码表头生成列声明：Name 保留表头原文（mapRow 按表头
-// 名精确取值），Column 即表头文本（quoteIdent 负责安全引用）。空白列跳
-// 过；重复表头只声明一次（按名取值本就取最后一次出现）。
+// 名取值），Column 即表头文本（quoteIdent 负责安全引用）。空白列跳过。
+// 重名表头全部物化：首次出现用裸名，第 k (k>=2) 次出现加后缀 __k；
+// 若候选名与既有表头/既有生成名冲突则继续递增后缀，保证全表唯一。
 func deriveColumns(header []string) []ColumnMapping {
 	cols := make([]ColumnMapping, 0, len(header))
-	seen := map[string]bool{}
+	used := map[string]bool{}
+	count := map[string]int{}
 	for _, raw := range header {
 		name := strings.TrimSpace(raw)
-		if name == "" || seen[name] {
+		if name == "" {
 			continue
 		}
 		name = strings.Map(func(r rune) rune {
@@ -202,8 +220,20 @@ func deriveColumns(header []string) []ColumnMapping {
 		if name == "" {
 			continue // 剥离控制字符后为空（如纯 \x01 的表头）——跳过
 		}
-		seen[name] = true
-		cols = append(cols, ColumnMapping{From: SourceCSV, Name: raw, Column: name, Type: "text"})
+		occ := count[name]
+		count[name]++
+		colName := name
+		if occ > 0 {
+			for n := occ + 1; ; n++ {
+				cand := name + "__" + strconv.Itoa(n)
+				if !used[cand] {
+					colName = cand
+					break
+				}
+			}
+		}
+		used[colName] = true
+		cols = append(cols, ColumnMapping{From: SourceCSV, Name: raw, Column: colName, Type: "text", Occurrence: occ})
 	}
 	return cols
 }
@@ -506,11 +536,15 @@ func convert(typ, raw string) (any, error) {
 // mapRow builds the column values of one CSV record. Missing required columns
 // fail with an explicit column/row error.
 func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, header []string, fields []string, md model.Metadata, rowNumber int64) ([]any, error) {
-	byHeader := map[string]string{}
+	// 按表头名收集全部出现的值（保持出现顺序），Occurrence 选第几个；
+	// ragged 行越界补 ""，保证出现次数不因缺列而错位。
+	byHeader := map[string][]string{}
 	for i, h := range header {
+		v := ""
 		if i < len(fields) {
-			byHeader[h] = fields[i]
+			v = fields[i]
 		}
+		byHeader[h] = append(byHeader[h], v)
 	}
 	// collection_date：Oracle 方言绑 time.Time（DATE 列的严格类型匹配；
 	// 字符串会触发 ORA-01861），其余方言绑字符串（TEXT/DATE 隐式转换）。
@@ -536,7 +570,10 @@ func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, 
 				raw = ""
 			}
 		default:
-			raw, present = byHeader[c.Name]
+			if vals := byHeader[c.Name]; c.Occurrence < len(vals) {
+				raw = vals[c.Occurrence]
+				present = true
+			}
 		}
 		if !present || raw == "" {
 			if c.Required {
@@ -611,26 +648,33 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	}
 
 	cols := []string{"source_id", "collection_date", "file_id", "row_number"}
-	declared := map[string]bool{}
+	declared := map[string]int{} // csv 源列名 -> 声明的出现次数
 	for _, c := range t.effectiveColumns() {
 		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
-		declared[c.Name] = true
+		if c.From != SourceMetadata {
+			declared[c.Name]++
+		}
 	}
 	if t.cfg.AutoColumns {
-		// 自动映射模式下列集在首批评次固定：后续文件新增的表头字段无法
-		// 落列，必须告警而不是静默丢弃。
+		// 自动映射模式下列集在首批评次固定：后续文件新增的表头字段（含
+		// 已有表头的新一次出现）无法落列，必须告警而不是静默丢弃。
+		seen := map[string]int{}
 		for _, h := range batch.Header {
 			name := strings.TrimSpace(h)
-			if name == "" || declared[name] {
+			if name == "" {
 				continue
 			}
-			if t.driftWarned == nil {
-				t.driftWarned = map[string]bool{}
-			}
-			if !t.driftWarned[name] {
-				t.driftWarned[name] = true
-				slog.Warn("auto-mapped source grew a new header column after first batch; value ignored (declare columns or re-create table)",
-					"table", t.cfg.Table, "column", name)
+			seen[name]++
+			if seen[name] > declared[name] {
+				if t.driftWarned == nil {
+					t.driftWarned = map[string]bool{}
+				}
+				if !t.driftWarned[name] {
+					t.driftWarned[name] = true
+					slog.Warn("auto-mapped source grew a new header column after first batch; value ignored (declare columns or re-create table)",
+						"table", t.cfg.Table, "column", name)
+				}
+				declared[name] = seen[name] // 同名只告警一次
 			}
 		}
 	}
