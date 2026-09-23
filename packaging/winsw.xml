@@ -1,0 +1,33 @@
+<!--
+  GOCORDIS 采集器 Windows 服务包装（WinSW v2/v3）。
+
+  部署步骤（发布包 dist/<TS>/windows/ 目录内）：
+    1. 下载 WinSW-x64.exe，与本文件同目录改名为 winsw.exe（必须同名不同扩展）；
+    2. 按需修改下方 arguments 中的配置文件名；
+    3. winsw.exe install && winsw.exe start   （stop / uninstall 同理）。
+
+  日志由 WinSW 接管写入 logs/，采集器自身日志见 configs/state/logs。
+  如要把控制台（web-ui）也做成服务，复制本文件改 id/executable/arguments 即可：
+    <executable>%BASE%\web-ui.exe</executable>
+    <arguments>-config configs\desktop.toml -addr :8080</arguments>
+-->
+<service>
+  <id>gocordis-collector</id>
+  <name>GOCORDIS 数据采集器</name>
+  <description>Configurable CSV collector (resident: config watch + daily scheduler).</description>
+
+  <workingdirectory>%BASE%</workingdirectory>
+  <executable>%BASE%\csv-collector.exe</executable>
+  <arguments>-config configs\laser_prod.toml</arguments>
+
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+</service>

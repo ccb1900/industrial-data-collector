@@ -7,3 +7,4 @@ plugins/alarm-demo/alarm-demo
 .DS_Store
 /configs/state/
 /tests/state/
+dist/
