@@ -326,6 +326,245 @@
       "Enabled": null
     },
     {
+      "ID": "ui-page-config",
+      "Type": "ui-page",
+      "Config": {
+        "actions": [
+          {
+            "command": "fleet.reset",
+            "label": "恢复 TOML"
+          }
+        ],
+        "description": "四层声明的可视化编辑：改完即重调和，等价于改 TOML 文件。声明存储在 SQLite；恢复文件权威用“恢复 TOML”。",
+        "icon": "setting",
+        "order": 30,
+        "page_id": "config",
+        "renderer": "views",
+        "route": "/config",
+        "title": "配置",
+        "views": [
+          {
+            "command": "fleet.machine.add",
+            "fields": [
+              {
+                "key": "no",
+                "label": "机台号"
+              },
+              {
+                "key": "path",
+                "label": "路径"
+              },
+              {
+                "key": "ip",
+                "label": "IP"
+              },
+              {
+                "key": "group",
+                "label": "格式组"
+              },
+              {
+                "key": "since",
+                "label": "投产日(YYYY-MM-DD)"
+              },
+              {
+                "key": "schedule",
+                "label": "调度名"
+              }
+            ],
+            "kind": "form",
+            "submitLabel": "添加",
+            "title": "添加机台"
+          },
+          {
+            "command": "fleet.schedule.add",
+            "fields": [
+              {
+                "key": "name",
+                "label": "名称"
+              },
+              {
+                "key": "cron",
+                "label": "Cron"
+              },
+              {
+                "key": "time",
+                "label": "每日时刻 HH:MM"
+              }
+            ],
+            "kind": "form",
+            "submitLabel": "添加",
+            "title": "添加调度"
+          },
+          {
+            "columns": [
+              {
+                "key": "no",
+                "title": "机台号"
+              },
+              {
+                "key": "path",
+                "title": "路径"
+              },
+              {
+                "key": "group",
+                "title": "格式组"
+              },
+              {
+                "key": "since",
+                "title": "投产日"
+              },
+              {
+                "key": "schedule",
+                "title": "调度"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 20,
+            "query": "fleet.machines",
+            "rowActions": [
+              {
+                "args": {
+                  "no": "$row.no"
+                },
+                "command": "fleet.machine.remove",
+                "label": "删除"
+              }
+            ],
+            "title": "机台清单（纯事实）"
+          },
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "名称"
+              },
+              {
+                "key": "cron",
+                "title": "Cron"
+              },
+              {
+                "key": "time",
+                "title": "时刻"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 10,
+            "query": "fleet.schedules",
+            "rowActions": [
+              {
+                "args": {
+                  "name": "$row.name"
+                },
+                "command": "fleet.schedule.remove",
+                "label": "删除"
+              }
+            ],
+            "title": "调度（机台的节奏）"
+          },
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "名称"
+              },
+              {
+                "key": "match",
+                "title": "文件签名"
+              },
+              {
+                "key": "table",
+                "title": "目标表"
+              },
+              {
+                "key": "sink",
+                "title": "sink"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 20,
+            "query": "fleet.formats",
+            "rowActions": [
+              {
+                "args": {
+                  "name": "$row.name"
+                },
+                "command": "fleet.format.remove",
+                "label": "删除"
+              }
+            ],
+            "title": "格式清单（一张表 = 一类数据）"
+          },
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "名称"
+              },
+              {
+                "key": "formats",
+                "title": "包含格式"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 10,
+            "query": "fleet.format_groups",
+            "rowActions": [
+              {
+                "args": {
+                  "name": "$row.name"
+                },
+                "command": "fleet.group.remove",
+                "label": "删除"
+              }
+            ],
+            "title": "格式清单组"
+          },
+          {
+            "columns": [
+              {
+                "key": "name",
+                "title": "名称"
+              },
+              {
+                "key": "driver",
+                "title": "驱动"
+              },
+              {
+                "key": "dsn",
+                "title": "DSN"
+              },
+              {
+                "key": "file_table",
+                "title": "文件登记表"
+              }
+            ],
+            "kind": "table",
+            "pageSize": 10,
+            "query": "fleet.sinks",
+            "rowActions": [
+              {
+                "args": {
+                  "name": "$row.name"
+                },
+                "command": "fleet.sink.remove",
+                "label": "删除"
+              }
+            ],
+            "title": "sink 清单（连接即凭证）"
+          },
+          {
+            "command": "fleet.set",
+            "jsonKey": "doc",
+            "kind": "json",
+            "query": "fleet",
+            "submitLabel": "应用",
+            "title": "整文档编辑（高级）"
+          }
+        ]
+      },
+      "Enabled": null
+    },
+    {
       "ID": "ui-panel-logs",
       "Type": "ui-panel",
       "Config": {

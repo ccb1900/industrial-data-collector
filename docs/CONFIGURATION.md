@@ -54,6 +54,12 @@ Raw `[[components]]` tables are also passed through unchanged (the shape the
 Runtime consumes directly) — the four-layer tables are the operator-facing
 form that composes into them. See `Fleet Composition` below.
 
+The console's 配置 page edits these tables in place: edits are validated by
+the full composition pipeline, persisted to a SQLite store
+(`<state_dir>/config.db`), and reconciled live. The store and the file are
+structurally equivalent (round-trip tested per bundled config); while the
+store is empty the file is authoritative, and 恢复 TOML returns to it.
+
 ## Source Unit
 
 One `csv-source-unit` component = one (machine, format) collection unit. In

@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"dynamic-runtime/extensions/configwatch"
 	procplugin "dynamic-runtime/extensions/console/procplugin"
 
+	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
+	"gocordis-csv-collector/internal/applock"
 )
 
 func main() {
@@ -99,6 +101,14 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 	if err := loadDesiredPatches(app.Host, configPath, patchPaths); err != nil {
 		return fmt.Errorf("patch files: %w", err)
 	}
+	// fleet 声明存储（与 web-ui 同一文件）：常驻模式同样接受控制台的
+	// 配置编辑（编辑方是 web-ui，双方共享 state/config.db）。
+	fleetStore, ferr := fleetstore.Open(filepath.Join(fleetStateDir(configPath), "config.db"))
+	if ferr != nil {
+		return fmt.Errorf("fleet store: %w", ferr)
+	}
+	defer fleetStore.Close()
+	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -115,6 +125,25 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 	}
 	logger.Info("shutdown requested")
 	return app.Close(ctx)
+}
+
+// fleetStateDir 解析配置的 defaults.state_dir（与 web-ui 同一规则），
+// fleet 存储与采集台账共用一个状态根。
+func fleetStateDir(configPath string) string {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return "state"
+	}
+	doc, err := configwatch.ParseDocument(raw)
+	if err != nil {
+		return "state"
+	}
+	if defaults, ok := doc["defaults"].(map[string]any); ok {
+		if sd, ok := defaults["state_dir"].(string); ok && sd != "" {
+			return sd
+		}
+	}
+	return "state"
 }
 
 // runOnce is the externally triggered shape (Windows Task Scheduler, cron,

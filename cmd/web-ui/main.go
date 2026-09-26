@@ -30,12 +30,15 @@ import (
 	"syscall"
 	"time"
 
-	"gocordis-csv-collector/internal/applock"
+	"dynamic-runtime/extensions/configwatch"
+
 	consoleexplorer "dynamic-runtime/extensions/console/explorer"
 	consolehost "dynamic-runtime/extensions/console/host"
 	consolewebui "dynamic-runtime/extensions/console/webui"
 	appconfig "gocordis-csv-collector/app/config"
+	"gocordis-csv-collector/app/fleetstore"
 	apphost "gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/web"
 )
 
@@ -103,6 +106,15 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 			return fmt.Errorf("patch files: %w", err)
 		}
 	}
+	// fleet 声明存储（SQLite，随配置目录锚定的 state 旁）：控制台编辑的
+	// 四层声明落这里；为空时配置文件权威。resync = 适配器 Sync（重解析
+	// + 重调和），编辑落库后异步触发。
+	fleetStore, err := fleetstore.Open(filepath.Join(fleetStateDir(configPath), "config.db"))
+	if err != nil {
+		return fmt.Errorf("fleet store: %w", err)
+	}
+	defer fleetStore.Close()
+	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -204,6 +216,26 @@ func (a lifecycleAdapter) Config(ctx context.Context, id string) (map[string]any
 
 func (a lifecycleAdapter) SetConfig(ctx context.Context, id string, cfg map[string]any) error {
 	return a.h.SetComponentConfig(ctx, id, cfg)
+}
+
+// fleetStateDir 解析配置的 defaults.state_dir（fleet 存储与采集台账
+// 同一状态根）；配置未声明时用 ./state。文件相对配置目录锚定后解析，
+// 与运行时行为一致。
+func fleetStateDir(configPath string) string {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return "state"
+	}
+	doc, err := configwatch.ParseDocument(raw)
+	if err != nil {
+		return "state"
+	}
+	if defaults, ok := doc["defaults"].(map[string]any); ok {
+		if sd, ok := defaults["state_dir"].(string); ok && sd != "" {
+			return sd
+		}
+	}
+	return "state"
 }
 
 func findUIComponent(h *apphost.Host) *consolehost.UIComponent {

@@ -11,14 +11,17 @@ import (
 	"time"
 
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/configwatch"
 	"dynamic-runtime/extensions/patch"
 	"dynamic-runtime/runtime"
 
 	consoleexplorer "dynamic-runtime/extensions/console/explorer"
 	explorerplugin "dynamic-runtime/extensions/console/explorer"
 	appconfig "gocordis-csv-collector/app/config"
+	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
+	"gocordis-csv-collector/app/sourcecomp"
 	configplugin "gocordis-csv-collector/components/config"
 	consolebridge "gocordis-csv-collector/components/consolebridge"
 	queryplugin "gocordis-csv-collector/components/query"
@@ -55,7 +58,131 @@ type Host struct {
 	// uninstall permanent: restore would reconcile a set that no longer
 	// contains the row.)
 	lastDesired config.Config
-	mu          sync.Mutex
+	// fleet 是控制台可编辑的声明存储（SQLite）。非空时其四层键整体覆盖
+	// 配置文件的对应键（文件仍是 bundles/显式行的载体）；为空时文件权威。
+	// fleetSeed 保存最近一次解析的原始 TOML 字节：fleet 查询与首次
+	// 覆盖都需要"文件里声明了什么"。resync 在 fleet 变更后触发重调和，
+	// 由 WatchHost 注入（raw Host 无文件监督）。
+	fleet         *fleetstore.Store
+	fleetSeedData []byte
+	resync        func(ctx context.Context) error
+	resyncMu      sync.Mutex
+	mu            sync.Mutex
+}
+
+// SetFleetStore wires the console-editable fleet declaration store. resync
+// triggers a full re-parse + reconcile after a successful store mutation
+// (the WatchHost injects its adapter's Sync).
+func (h *Host) SetFleetStore(store *fleetstore.Store, resync func(ctx context.Context) error) {
+	h.mu.Lock()
+	h.fleet, h.resync = store, resync
+	h.mu.Unlock()
+}
+
+// fleetBase returns the store's declaration overlay, or nil when the file
+// is authoritative.
+func (h *Host) fleetBase() (map[string]any, error) {
+	h.mu.Lock()
+	store := h.fleet
+	h.mu.Unlock()
+	if store == nil {
+		return nil, nil
+	}
+	doc, exists, err := store.Load()
+	if err != nil || !exists {
+		if err != nil {
+			h.log.Warn("fleet store unreadable; using file declarations", "error", err.Error())
+		}
+		return nil, nil
+	}
+	return doc.AsBase(), nil
+}
+
+// FleetSnapshot returns the EFFECTIVE fleet declaration: the store's when
+// present, else the seed file's — what the runtime actually expands.
+func (h *Host) FleetSnapshot() (fleetstore.FleetDoc, error) {
+	h.mu.Lock()
+	store := h.fleet
+	seed := h.fleetSeedData
+	h.mu.Unlock()
+	if store != nil {
+		if doc, exists, err := store.Load(); err == nil && exists {
+			return doc, nil
+		}
+	}
+	if len(seed) == 0 {
+		return fleetstore.FleetDoc{}, nil
+	}
+	doc, err := configwatch.ParseDocument(seed)
+	if err != nil {
+		return fleetstore.FleetDoc{}, err
+	}
+	return fleetstore.FromDocument(doc), nil
+}
+
+// FleetMutate validates a candidate document by composing it over the seed
+// (引用完整性 + 全量校验都在组合管线里), then persists. Validation failure
+// means the store keeps its previous content — the console shows why.
+func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
+	h.mu.Lock()
+	store := h.fleet
+	seed := h.fleetSeedData
+	resync := h.resync
+	h.mu.Unlock()
+	if store == nil || len(seed) == 0 {
+		return fmt.Errorf("fleet store is not wired into this runtime")
+	}
+	if _, err := sourcecomp.ExpandWithPluginsBase(seed, "", doc.AsBase()); err != nil {
+		return fmt.Errorf("fleet declaration rejected: %w", err)
+	}
+	if err := store.Save(doc); err != nil {
+		return err
+	}
+	h.log.Info("fleet declaration updated via console; re-reconciling")
+	if resync == nil {
+		return nil
+	}
+	// 异步重调和：命令立刻返回（观察流会把新组合推给控制台），调和
+	// 串行化由 resync 实现方保证。
+	h.resyncMu.Lock()
+	fn := resync
+	h.resyncMu.Unlock()
+	go func() {
+		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := fn(rctx); err != nil {
+			h.notifyReconcileFailure(err)
+		}
+	}()
+	return nil
+}
+
+// FleetReset drops the stored declaration: the seed file becomes
+// authoritative again, and the runtime re-reconciles from it.
+func (h *Host) FleetReset(ctx context.Context) error {
+	h.mu.Lock()
+	store, resync := h.fleet, h.resync
+	h.mu.Unlock()
+	if store == nil {
+		return fmt.Errorf("fleet store is not wired into this runtime")
+	}
+	if err := store.Reset(); err != nil {
+		return err
+	}
+	if resync == nil {
+		return nil
+	}
+	h.resyncMu.Lock()
+	fn := resync
+	h.resyncMu.Unlock()
+	go func() {
+		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := fn(rctx); err != nil {
+			h.notifyReconcileFailure(err)
+		}
+	}()
+	return nil
 }
 
 func New(log *slog.Logger) (*Host, error) {
@@ -74,6 +201,20 @@ func New(log *slog.Logger) (*Host, error) {
 	return &Host{
 		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
 	}, nil
+}
+
+// rememberSeed keeps the raw seed TOML of the last parse — the fleet query
+// and first-overlay need what the FILE declared, independent of the store.
+func (h *Host) rememberSeed(data []byte) {
+	h.mu.Lock()
+	h.fleetSeedData = append([]byte(nil), data...)
+	h.mu.Unlock()
+}
+
+func (h *Host) seedBytes() []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.fleetSeedData
 }
 
 // setBaseDesired snapshots the raw parsed composition (before patches).
@@ -500,6 +641,18 @@ func (h *Host) attachStateProjection() {
 	if bridge != nil {
 		bridge.SetUnits(unitComps)
 		bridge.SetConfigSource(func() any { return h.EffectiveSnapshot() })
+		// fleet 声明存储接线：查询返回有效文档（store 优先，文件兜底），
+		// 编辑走宿主的干跑校验 + 落库 + 异步重调和。
+		h.mu.Lock()
+		hasFleet := h.fleet != nil
+		h.mu.Unlock()
+		if hasFleet {
+			bridge.SetFleetHandlers(
+				func() (any, error) { return h.FleetSnapshot() },
+				func(ctx context.Context, doc fleetstore.FleetDoc) error { return h.FleetMutate(ctx, doc) },
+				func(ctx context.Context) error { return h.FleetReset(ctx) },
+			)
+		}
 	}
 	if qp == nil || len(units) == 0 {
 		return

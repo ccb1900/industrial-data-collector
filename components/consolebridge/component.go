@@ -28,6 +28,7 @@ import (
 	logstore "dynamic-runtime/extensions/console/logstore"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
+	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 	queryplugin "gocordis-csv-collector/components/query"
@@ -51,6 +52,11 @@ type Component struct {
 	// "effective-config" 命名查询据此作答——控制台能看到运行时真正
 	// 收敛到的那棵组件树，而不是靠猜。
 	configSource func() any
+	// fleet 能力由宿主注入（SetFleetHandlers，见 fleet.go）：有效声明
+	// 文档的查询与编辑。nil = 本运行时未接声明存储（纯文件部署）。
+	fleetQuery  func() (any, error)
+	fleetMutate func(context.Context, fleetstore.FleetDoc) error
+	fleetReset  func(context.Context) error
 }
 
 // SetUnits 注入源单元集合（宿主在每次 reconcile 后调用）。
@@ -270,6 +276,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			}
 			return out, nil
 		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
+		return c.registerFleet(hubRegistry)
 	}); err != nil {
 		return nil, err
 	}
