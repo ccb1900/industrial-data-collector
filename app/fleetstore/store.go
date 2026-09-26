@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"dynamic-runtime/extensions/configwatch"
@@ -82,7 +83,9 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("fleetstore: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	// busy_timeout：dump-config/-once 与运行中的 web-ui 并发读存储时
+	// 等待写锁而不是立即报 SQLITE_BUSY。
+	db, err := sql.Open("sqlite", dsnWithBusyTimeout(path))
 	if err != nil {
 		return nil, fmt.Errorf("fleetstore: %w", err)
 	}
@@ -97,6 +100,14 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("fleetstore: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func dsnWithBusyTimeout(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_pragma=busy_timeout(5000)"
 }
 
 // Close closes the underlying database.
