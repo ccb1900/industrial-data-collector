@@ -42,6 +42,8 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 	}
 
 	reg(hubRegistry.RegisterCommand("fleet.set", "console-bridge", func(ctx context.Context, body json.RawMessage) error {
+		c.fleetMu.Lock()
+		defer c.fleetMu.Unlock()
 		_, mutate, _ := c.fleetHandlers()
 		if mutate == nil {
 			return &hub.Error{Code: "unavailable", Message: "fleet store is not wired into this runtime"}
@@ -58,6 +60,8 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 		return nil
 	}))
 	reg(hubRegistry.RegisterCommand("fleet.reset", "console-bridge", func(ctx context.Context, _ json.RawMessage) error {
+		c.fleetMu.Lock()
+		defer c.fleetMu.Unlock()
 		_, _, reset := c.fleetHandlers()
 		if reset == nil {
 			return &hub.Error{Code: "unavailable", Message: "fleet store is not wired into this runtime"}
@@ -89,7 +93,7 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 			if key == "" {
 				return &hub.Error{Code: "invalid_request", Message: spec.name + " requires " + spec.field}
 			}
-			return c.mutateFleetRows(func(doc *fleetstore.FleetDoc) error {
+			return c.mutateFleetRows(ctx, func(doc *fleetstore.FleetDoc) error {
 				return removeRow(doc, spec.name, spec.field, key)
 			})
 		}))
@@ -103,7 +107,7 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 		if req["no"] == "" || req["path"] == "" {
 			return &hub.Error{Code: "invalid_request", Message: "fleet.machine.add requires no and path"}
 		}
-		return c.mutateFleetRows(func(doc *fleetstore.FleetDoc) error {
+		return c.mutateFleetRows(ctx, func(doc *fleetstore.FleetDoc) error {
 			for _, raw := range doc.Machines {
 				if m, ok := raw.(map[string]any); ok && fmt.Sprint(m["no"]) == req["no"] {
 					return fmt.Errorf("机台 %q 已存在", req["no"])
@@ -128,7 +132,7 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 		if req["name"] == "" || (req["cron"] == "" && req["time"] == "") {
 			return &hub.Error{Code: "invalid_request", Message: "fleet.schedule.add requires name and cron/time"}
 		}
-		return c.mutateFleetRows(func(doc *fleetstore.FleetDoc) error {
+		return c.mutateFleetRows(ctx, func(doc *fleetstore.FleetDoc) error {
 			for _, raw := range doc.Schedules {
 				if m, ok := raw.(map[string]any); ok && fmt.Sprint(m["name"]) == req["name"] {
 					return fmt.Errorf("调度 %q 已存在", req["name"])
@@ -212,7 +216,11 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 }
 
 // mutateFleetRows 载入有效文档 → 行级修改 → 交给宿主干跑校验 + 落库。
-func (c *Component) mutateFleetRows(edit func(*fleetstore.FleetDoc) error) error {
+// 整个读-改-写在 fleetMu 内完成：快照到落库之间若有并发编辑会丢更新。
+// 注意快照是脱敏副本——行级增删不触碰敏感值，宿主写回时按身份还原。
+func (c *Component) mutateFleetRows(ctx context.Context, edit func(*fleetstore.FleetDoc) error) error {
+	c.fleetMu.Lock()
+	defer c.fleetMu.Unlock()
 	query, mutate, _ := c.fleetHandlers()
 	if mutate == nil {
 		return &hub.Error{Code: "unavailable", Message: "fleet store is not wired into this runtime"}
@@ -228,7 +236,7 @@ func (c *Component) mutateFleetRows(edit func(*fleetstore.FleetDoc) error) error
 	if err := edit(&doc); err != nil {
 		return &hub.Error{Code: "invalid_request", Message: err.Error()}
 	}
-	if err := mutate(context.Background(), doc); err != nil {
+	if err := mutate(ctx, doc); err != nil {
 		return &hub.Error{Code: "invalid_request", Message: err.Error()}
 	}
 	return nil

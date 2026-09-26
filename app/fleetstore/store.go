@@ -11,10 +11,13 @@ package fleetstore
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"dynamic-runtime/extensions/configwatch"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 )
@@ -113,14 +116,15 @@ func (s *Store) Load() (doc FleetDoc, exists bool, err error) {
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return FleetDoc{}, true, fmt.Errorf("fleetstore load: %w", err)
 	}
-	doc.normalize()
+	doc.Normalize()
 	return doc, true, nil
 }
 
-// normalize 把 JSON 解码产生的 float64 还原为整型（整数值时）：TOML
+// Normalize 把 JSON 解码产生的 float64 还原为整型（整数值时）：TOML
 // 解析整数得到 int64，组合层按 int64 消费（如 catchup_days）——存储
-// 往返必须还原出与文件解析相同的值形状，等价性才成立。
-func (d *FleetDoc) normalize() {
+// 往返与编辑写回都必须还原出与文件解析相同的值形状，等价性才成立。
+// 一切来自 JSON 的文档（编辑命令体、存储加载）在进入组合层前必须调用。
+func (d *FleetDoc) Normalize() {
 	var walk func(v any) any
 	walk = func(v any) any {
 		switch x := v.(type) {
@@ -176,4 +180,43 @@ func (s *Store) Reset() error {
 		return fmt.Errorf("fleetstore reset: %w", err)
 	}
 	return nil
+}
+
+// FleetDBPath 解析配置的 fleet 存储路径：defaults.state_dir（缺省
+// ./state）下的 config.db。路径相对配置目录锚定后解析，与运行时的
+// state_dir 行为一致（调用方需已 AnchorConfigDir）。
+func FleetDBPath(configPath string) string {
+	stateDir := "state"
+	if raw, err := os.ReadFile(configPath); err == nil {
+		if doc, err := configwatch.ParseDocument(raw); err == nil {
+			if defaults, ok := doc["defaults"].(map[string]any); ok {
+				if sd, ok := defaults["state_dir"].(string); ok && sd != "" {
+					stateDir = sd
+				}
+			}
+		}
+	}
+	return filepath.Join(stateDir, "config.db")
+}
+
+// LoadBase 只读地解析存储为组合叠加层：存储不存在或为空 → nil（文件
+// 权威）。供 -once 采集、dump-config 等不经 WatchHost 的路径使用——
+// 控制台编辑后的声明必须对每一个调和入口生效，否则就是静默分叉。
+func LoadBase(dbPath string) (map[string]any, error) {
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	store, err := Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	doc, exists, err := store.Load()
+	if err != nil || !exists {
+		return nil, err
+	}
+	if doc.Empty() {
+		return nil, nil
+	}
+	return doc.AsBase(), nil
 }

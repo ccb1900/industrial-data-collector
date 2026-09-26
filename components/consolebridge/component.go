@@ -57,6 +57,9 @@ type Component struct {
 	fleetQuery  func() (any, error)
 	fleetMutate func(context.Context, fleetstore.FleetDoc) error
 	fleetReset  func(context.Context) error
+	// fleetMu 串行化读-改-写编辑：并发命令（两个操作员同时改配置）
+	// 若不串行会互相覆盖（last-writer-wins 丢更新）。
+	fleetMu sync.Mutex
 }
 
 // SetUnits 注入源单元集合（宿主在每次 reconcile 后调用）。

@@ -63,11 +63,12 @@ type Host struct {
 	// fleetSeed 保存最近一次解析的原始 TOML 字节：fleet 查询与首次
 	// 覆盖都需要"文件里声明了什么"。resync 在 fleet 变更后触发重调和，
 	// 由 WatchHost 注入（raw Host 无文件监督）。
-	fleet         *fleetstore.Store
-	fleetSeedData []byte
-	resync        func(ctx context.Context) error
-	resyncMu      sync.Mutex
-	mu            sync.Mutex
+	fleet          *fleetstore.Store
+	fleetSeedData  []byte
+	fleetAnnounced bool
+	resync         func(ctx context.Context) error
+	resyncMu       sync.Mutex
+	mu             sync.Mutex
 }
 
 // SetFleetStore wires the console-editable fleet declaration store. resync
@@ -80,26 +81,36 @@ func (h *Host) SetFleetStore(store *fleetstore.Store, resync func(ctx context.Co
 }
 
 // fleetBase returns the store's declaration overlay, or nil when the file
-// is authoritative.
+// is authoritative. 存储生效只打一次日志：操作员改文件却"不生效"时，
+// 这条日志就是自查入口。
 func (h *Host) fleetBase() (map[string]any, error) {
 	h.mu.Lock()
 	store := h.fleet
+	announced := h.fleetAnnounced
 	h.mu.Unlock()
 	if store == nil {
 		return nil, nil
 	}
 	doc, exists, err := store.Load()
-	if err != nil || !exists {
+	if err != nil || !exists || doc.Empty() {
 		if err != nil {
 			h.log.Warn("fleet store unreadable; using file declarations", "error", err.Error())
 		}
 		return nil, nil
 	}
+	if !announced {
+		h.mu.Lock()
+		h.fleetAnnounced = true
+		h.mu.Unlock()
+		h.log.Info("fleet store active: console-edited declarations override the config file's four-layer tables (恢复 TOML reverts)")
+	}
 	return doc.AsBase(), nil
 }
 
 // FleetSnapshot returns the EFFECTIVE fleet declaration: the store's when
-// present, else the seed file's — what the runtime actually expands.
+// present, else the seed file's — what the runtime actually expands. This
+// copy is for DISPLAY: sensitive values (dsn/password/…) are replaced by
+// RedactedSentinel; writing it back through FleetMutate restores them.
 func (h *Host) FleetSnapshot() (fleetstore.FleetDoc, error) {
 	h.mu.Lock()
 	store := h.fleet
@@ -107,7 +118,9 @@ func (h *Host) FleetSnapshot() (fleetstore.FleetDoc, error) {
 	h.mu.Unlock()
 	if store != nil {
 		if doc, exists, err := store.Load(); err == nil && exists {
-			return doc, nil
+			return redactFleet(doc), nil
+		} else if err != nil {
+			h.log.Warn("fleet store unreadable; showing file declarations", "error", err.Error())
 		}
 	}
 	if len(seed) == 0 {
@@ -117,12 +130,13 @@ func (h *Host) FleetSnapshot() (fleetstore.FleetDoc, error) {
 	if err != nil {
 		return fleetstore.FleetDoc{}, err
 	}
-	return fleetstore.FromDocument(doc), nil
+	return redactFleet(fleetstore.FromDocument(doc)), nil
 }
 
-// FleetMutate validates a candidate document by composing it over the seed
-// (引用完整性 + 全量校验都在组合管线里), then persists. Validation failure
-// means the store keeps its previous content — the console shows why.
+// FleetMutate validates a candidate document the same way a reconcile would
+// (组合管线干跑 + 补丁叠加 + 应用层校验), restores redacted secrets, then
+// persists. Validation failure means the store keeps its previous content —
+// the console shows why.
 func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
 	h.mu.Lock()
 	store := h.fleet
@@ -132,7 +146,33 @@ func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
 	if store == nil || len(seed) == 0 {
 		return fmt.Errorf("fleet store is not wired into this runtime")
 	}
-	if _, err := sourcecomp.ExpandWithPluginsBase(seed, "", doc.AsBase()); err != nil {
+	if doc.Empty() {
+		return fmt.Errorf("empty fleet declaration is not a valid edit — use 恢复 TOML (fleet.reset) to return to the file")
+	}
+	// 显示副本写回：哨兵值从当前有效文档还原（sinks 按 name、machines
+	// 按 no 身份匹配，数组重排不串位），round-trip 永不毁掉真实凭证。
+	current, err := h.unredactedFleet()
+	if err != nil {
+		return fmt.Errorf("fleet secret restore: %w", err)
+	}
+	if err := restoreFleetSecrets(&doc, &current); err != nil {
+		return fmt.Errorf("fleet secret restore: %w", err)
+	}
+	// 编辑体来自 JSON（float64），还原的 JSON 往返也会再产生 float64：
+	// 干跑与落库前必须还原 TOML 数值形状（int64），否则组合层按 int64
+	// 消费的键（catchup_days/batch_size）在本轮与下轮行为不一致。
+	doc.Normalize()
+	// 干跑 = 真实调和的解析与校验链路：组合（引用完整性）→ 补丁叠加 →
+	// 应用层校验。任一失败即拒绝，存储保持原内容。
+	parsed, err := sourcecomp.ExpandWithPluginsBase(seed, "", doc.AsBase())
+	if err != nil {
+		return fmt.Errorf("fleet declaration rejected: %w", err)
+	}
+	cfg := parsed.Config
+	if err := h.applyOverlay(&cfg); err != nil {
+		return fmt.Errorf("fleet declaration rejected: %w", err)
+	}
+	if err := appconfig.Validate(cfg); err != nil {
 		return fmt.Errorf("fleet declaration rejected: %w", err)
 	}
 	if err := store.Save(doc); err != nil {

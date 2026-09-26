@@ -2,6 +2,7 @@ package fleetstore
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -42,7 +43,7 @@ func ExportTOML(doc FleetDoc) ([]byte, error) {
 		keys := sortedKeys(doc.Defaults)
 		fmt.Fprintf(b, "[defaults]\n")
 		for _, k := range keys {
-			writePair(b, "", k, doc.Defaults[k])
+			writePair(b, k, doc.Defaults[k])
 		}
 		b.WriteString("\n")
 	}
@@ -78,10 +79,10 @@ func writeTableArray(b *strings.Builder, name string, rows []any) error {
 		fmt.Fprintf(b, "[[%s]]\n", name)
 		scalars, inlines, subs := splitKeys(m)
 		for _, k := range scalars {
-			writePair(b, "", k, m[k])
+			writePair(b, k, m[k])
 		}
 		for _, k := range inlines {
-			writePair(b, "", k, m[k])
+			writePair(b, k, m[k])
 		}
 		for _, k := range subs {
 			fmt.Fprintf(b, "[%s.%s]\n", name, tomlKey(k))
@@ -91,10 +92,10 @@ func writeTableArray(b *strings.Builder, name string, rows []any) error {
 			}
 			subScalars, subInlines, _ := splitKeys(sub)
 			for _, sk := range subScalars {
-				writePair(b, "", sk, sub[sk])
+				writePair(b, sk, sub[sk])
 			}
 			for _, sk := range subInlines {
-				writePair(b, "", sk, sub[sk])
+				writePair(b, sk, sub[sk])
 			}
 		}
 		b.WriteString("\n")
@@ -119,21 +120,17 @@ func splitKeys(m map[string]any) (scalars, inlines, subs []string) {
 	return scalars, inlines, subs
 }
 
-func writePair(b *strings.Builder, prefix, key string, v any) {
-	fmt.Fprintf(b, "%s = %s\n", tomlKey(key), tomlValue(v, prefix))
+func writePair(b *strings.Builder, key string, v any) {
+	fmt.Fprintf(b, "%s = %s\n", tomlKey(key), tomlValue(v))
 }
 
 func sortedKeys(m map[string]any) []string {
+	// TOML 键序无语义；排序输出利于 diff 与测试。
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// 简单排序即可：TOML 键序无语义，稳定的输出利于 diff 与测试。
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
-			keys[j], keys[j-1] = keys[j-1], keys[j]
-		}
-	}
+	sort.Strings(keys)
 	return keys
 }
 
@@ -149,7 +146,7 @@ func tomlKey(k string) string {
 	return k
 }
 
-func tomlValue(v any, prefix string) string {
+func tomlValue(v any) string {
 	switch x := v.(type) {
 	case nil:
 		return `""`
@@ -169,14 +166,14 @@ func tomlValue(v any, prefix string) string {
 	case []any:
 		parts := make([]string, 0, len(x))
 		for _, item := range x {
-			parts = append(parts, tomlValue(item, prefix))
+			parts = append(parts, tomlValue(item))
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case map[string]any:
 		// 内联表（columns/metadata）：TOML 内联表里必须是标量或数组。
 		parts := make([]string, 0, len(x))
 		for _, k := range sortedKeys(x) {
-			parts = append(parts, fmt.Sprintf("%s = %s", tomlKey(k), tomlValue(x[k], prefix)))
+			parts = append(parts, fmt.Sprintf("%s = %s", tomlKey(k), tomlValue(x[k])))
 		}
 		return "{ " + strings.Join(parts, ", ") + " }"
 	default:
