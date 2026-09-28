@@ -2,8 +2,8 @@
 # 激光加工机本机日志采集 — 生产部署 0923（三陵 3/5/6 线，60 机台）
 #
 # 拓扑（对照 2026-09-28 机型文件清单表）：
-#       sanling3 = 37 台 × 18 格式，sanling5 = 2 台 × 22 格式，
-#       sanling6 = 21 台 × 23 格式 —— 共 60 机台 = 1193 个源实例。
+#       sanling3 = 37 台 × 16 格式，sanling5 = 2 台 × 22 格式，
+#       sanling6 = 21 台 × 23 格式 —— 共 60 机台 = 1119 个源实例。
 # 目录形状：\\<机台IP>\log\YYYYMM\<前缀>_YYMMDD.log —— 月份目录 +
 #       两位年份文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
 # 全部格式显式声明 columns（公共 15 个取三组表头并集；跨组前缀取现场
@@ -30,7 +30,7 @@ batch_size = 1000
 
 # ---- 并发（本次新特性）----
 # 千级源实例 + UNC 列目录是网络等待型瓶颈：源间并发让各机台的扫描
-# 等待互相重叠。1193 源 ÷ 16 并行 ≈ 75 批，每批亚秒级 → 整轮分钟级。
+# 等待互相重叠。1119 源 ÷ 16 并行 ≈ 70 批，每批亚秒级 → 整轮分钟级。
 # 上限受采集机网卡/会话数与 Oracle 侧共享池（32 会话）约束，勿超 32。
 max_parallel_sources = 16
 files_per_source = 1       # 每源每天 1 个文件，文件级并发无收益
@@ -502,16 +502,16 @@ cron = "01 9 * * *"        # 每天 09:01（分 时 日 月 周）
 # 原 nightly2 与 nightly 同表达式且无机台引用，已删——如日后需要
 # 双班错峰（如 "31 21 * * *"）再恢复此名字并在机台行引用。
 
-# sanling3 = III 代机 18 格式（对照清单表：公共 15 中去掉 sin_statis/
-#   sinsyuku/table，补入 energy_measure/galv_mask_measure/glv_cnd_send/
-#   pc_direct/proc_state/pwrmulti）。
-#   ⚠ 表内"III代机 文件数量=16"与非空格子数 18 不符，本清单按格子取，
-#     若确应剔除 2 项请指明后修改。
+# sanling3 = III 代机 16 格式（清单表 2026-09-28 裁决：公共 15 个 +
+#   pwrmulti；不含 energy_measure/galv_mask_measure/glv_cnd_send/
+#   pc_direct/proc_state/sensor——那些是 V/6 代专属）。
 # columns 取三组表头并集，异名同义列映射到同一库列。
 [[format_groups]]
 name = "sanling3"
-formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "energy_measure", "galv_mask_measure", "glv_cnd_send", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pc_direct", "proc_state", "pwr", "pwrmulti", "zaxis"]
-# sanling5 = V 代机 22 格式 = sanling3 全集 + sin_statis/sinsyuku/table，无 twin_scale_dsp。
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis"]
+# sanling5 = V 代机 22 格式 = sanling3 全集 + 六个跨组前缀
+#   （energy_measure/galv_mask_measure/glv_cnd_send/pc_direct/proc_state/
+#   sensor），无 twin_scale_dsp。
 [[format_groups]]
 name = "sanling5"
 formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor"]
@@ -1181,7 +1181,8 @@ encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# pwrmulti：清单表 No.23，三代机型共有；现场样例中无此文件、表头未知，
+# pwrmulti：清单表 No.23 三代机型共有（样例文件名 pwrmulti_260527——5 月的
+# 文件）；example 样例目录只含 9 月文件，故无此样例、表头未知，
 # 暂保持自动映射（功能保留），拿到真实表头后补显式 columns。
 [[formats]]
 name = "pwrmulti"
