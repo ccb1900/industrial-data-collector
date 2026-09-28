@@ -45,6 +45,8 @@ windows:
 	cp $(PLUGIN)/manifest.toml $(PLUGIN)/ui.js $(DIST)/windows/plugins/alarm-demo/
 	cp $(CONFIGS) $(DIST)/windows/configs/
 	cp packaging/winsw.xml $(DIST)/windows/winsw.xml
+	cp packaging/winswv3.exe $(DIST)/windows/winswv3.exe
+	cp packaging/run.bat $(DIST)/windows/run.bat
 	@echo "windows -> $(DIST)/windows"
 
 linux:

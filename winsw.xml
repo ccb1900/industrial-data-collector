@@ -1,0 +1,10 @@
+<service>
+  <id>industrial-data-collector</id>
+  <name>industrial data collector</name>
+  <description>industrial data collector</description>
+  <executable>industrial-data-collector.exe</executable>
+  <arguments>-config ./configs/laser_prod.toml -addr :12500</arguments>
+  <log mode="roll" />
+  <onfailure action="restart" />
+  <workingdirectory>D:\采集测试\collectorv20260921</workingdirectory>
+</service>
