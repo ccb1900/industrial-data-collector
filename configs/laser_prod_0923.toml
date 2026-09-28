@@ -954,7 +954,8 @@ encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# ---- 机型清单表中的跨组前缀：列跨机台不一致，不声明 columns，按表头自动映射 ----
+# ---- 机型清单表中的跨组前缀：列跨机台不一致，不声明 columns，按表头自动映射
+#      （同名文件同表、同名字段同列，机台间字段差异自动加列） ----
 
 [[formats]]
 name = "energy_measure"
