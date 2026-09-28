@@ -1,12 +1,13 @@
 # ========================================================================
 # 激光加工机本机日志采集 — 生产部署 0923（三陵 3/5/6 线，60 机台）
 #
-# 拓扑：sanling3 = 37 台 × 15 格式，sanling5 = 2 台 × 21 格式，
-#       sanling6 = 21 台 × 22 格式 —— 共 60 机台 ≈ 1059 个源实例。
+# 拓扑（对照 2026-09-28 机型文件清单表）：
+#       sanling3 = 37 台 × 18 格式，sanling5 = 2 台 × 22 格式，
+#       sanling6 = 21 台 × 23 格式 —— 共 60 机台 = 1193 个源实例。
 # 目录形状：\\<机台IP>\log\YYYYMM\<前缀>_YYMMDD.log —— 月份目录 +
 #       两位年份文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
 # 15 个公共格式显式声明 columns（三组表头并集，异名同义列映射到
-#       同一库列）；5/6 组独有前缀列跨机台不一致，按表头自动映射。
+#       同一库列）；其余前缀列跨机台不一致，按表头自动映射。
 # 调度：全部机台引用 nightly（每天 09:01），-once/常驻均可。
 #
 # ⚠ 两处机台 IP 疑点（按原样保留，投放前请核对现场）：
@@ -29,14 +30,14 @@ batch_size = 1000
 
 # ---- 并发（本次新特性）----
 # 千级源实例 + UNC 列目录是网络等待型瓶颈：源间并发让各机台的扫描
-# 等待互相重叠。1059 源 ÷ 16 并行 ≈ 66 批，每批亚秒级 → 整轮分钟级。
+# 等待互相重叠。1193 源 ÷ 16 并行 ≈ 75 批，每批亚秒级 → 整轮分钟级。
 # 上限受采集机网卡/会话数与 Oracle 侧共享池（32 会话）约束，勿超 32。
 max_parallel_sources = 16
 files_per_source = 1       # 每源每天 1 个文件，文件级并发无收益
 
 # ---- 备份（本次新特性，严格语义：备份失败 = 采集失败，下轮重试）----
 backup_dir = "../backup"   # 副本：<backup_dir>/<机台-格式>/<业务日>/<文件>
-                           # 60 台 × 22 格式 × N 天，注意磁盘容量规划
+                           # 60 台 × 23 格式 × N 天，注意磁盘容量规划
 backup_keep_days = 90
 
 [[sinks]]
@@ -501,16 +502,23 @@ cron = "01 9 * * *"        # 每天 09:01（分 时 日 月 周）
 # 原 nightly2 与 nightly 同表达式且无机台引用，已删——如日后需要
 # 双班错峰（如 "31 21 * * *"）再恢复此名字并在机台行引用。
 
-# sanling3 = 15 个格式（columns 取三组表头并集，异名同义列映射到同一库列）
+# sanling3 = III 代机 18 格式（对照清单表：公共 15 中去掉 sin_statis/
+#   sinsyuku/table，补入 energy_measure/galv_mask_measure/glv_cnd_send/
+#   pc_direct/proc_state/pwrmulti）。
+#   ⚠ 表内"III代机 文件数量=16"与非空格子数 18 不符，本清单按格子取，
+#     若确应剔除 2 项请指明后修改。
+# columns 取三组表头并集，异名同义列映射到同一库列。
 [[format_groups]]
 name = "sanling3"
-formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "sin_statis", "sinsyuku", "table", "zaxis"]
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "energy_measure", "galv_mask_measure", "glv_cnd_send", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pc_direct", "proc_state", "pwr", "pwrmulti", "zaxis"]
+# sanling5 = V 代机 22 格式 = sanling3 全集 + sin_statis/sinsyuku/table，无 twin_scale_dsp。
 [[format_groups]]
 name = "sanling5"
-formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor"]
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor"]
+# sanling6 = 6 代机 23 格式 = sanling5 全集 + twin_scale_dsp。
 [[format_groups]]
 name = "sanling6"
-formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor", "twin_scale_dsp"]
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor", "twin_scale_dsp"]
 
 [[formats]]
 name = "aaa"
@@ -946,7 +954,7 @@ encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# ---- 5/6 组独有前缀：列跨机台不一致（6 比 5 多列），不声明 columns，按表头自动映射 ----
+# ---- 机型清单表中的跨组前缀：列跨机台不一致，不声明 columns，按表头自动映射 ----
 
 [[formats]]
 name = "energy_measure"
@@ -980,7 +988,7 @@ allow_ragged = true
 
 [[formats]]
 name = "pc_direct"
-match = "PcDirect_YYMMDD.log"
+match = "ProcDirect_YYMMDD.log" # 清单表前缀为 ProcDirect（原 PcDirect 系笔误）
 table = "laser_pc_direct"
 sink = "plant-oracle"
 [formats.parser]
@@ -1012,6 +1020,17 @@ allow_ragged = true
 name = "twin_scale_dsp"
 match = "TwinScaleDsp_YYMMDD.log"
 table = "laser_twin_scale_dsp"
+sink = "plant-oracle"
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+# pwrmulti：清单表 No.23，三代机型共有（pwrmulti_260527 起）。
+[[formats]]
+name = "pwrmulti"
+match = "pwrmulti_YYMMDD.log"
+table = "laser_pwrmulti"
 sink = "plant-oracle"
 [formats.parser]
 encoding = "gb18030"
