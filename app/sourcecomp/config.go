@@ -63,11 +63,18 @@ type ParseResult struct {
 //
 // ExpandWithPlugins is Parse with plugin discovery rooted at pluginsDir.
 func Parse(data []byte) (*ParseResult, error) {
-	return parseWithPlugins(data, "")
+	return parseWithPlugins(data, "", nil)
 }
 
 func ExpandWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
-	return parseWithPlugins(data, pluginsDir)
+	return parseWithPlugins(data, pluginsDir, nil)
+}
+
+// ExpandWithPluginsBase composes the seed TOML with a fleet-store overlay:
+// base's top-level keys (the four-layer declaration tables) override the
+// file's after parsing and before layers run. Nil base == ExpandWithPlugins.
+func ExpandWithPluginsBase(data []byte, pluginsDir string, base map[string]any) (*ParseResult, error) {
+	return parseWithPlugins(data, pluginsDir, base)
 }
 
 // Expand returns only the Runtime Component Config (no plugin discovery).
@@ -80,11 +87,12 @@ func Expand(data []byte) (extconfig.Config, error) {
 	return res.Config, nil
 }
 
-func parseWithPlugins(data []byte, pluginsDir string) (*ParseResult, error) {
+func parseWithPlugins(data []byte, pluginsDir string, base map[string]any) (*ParseResult, error) {
 	layer := NewSourcesLayer()
 	cfg, err := configwatch.ComposeDocument(context.Background(), data, configwatch.ComposeOptions{
 		PluginDir: pluginsDir,
 		Layers:    []configwatch.Layer{layer.Layer()},
+		Base:      base,
 	})
 	if err != nil {
 		return nil, err

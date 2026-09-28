@@ -185,6 +185,101 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 		}),
+		bundle.Row("ui-page-config", "ui-page", map[string]any{
+			"page_id":     "config",
+			"title":       "配置",
+			"route":       "/config",
+			"description": "四层声明的可视化编辑：改完即重调和，等价于改 TOML 文件。声明存储在 SQLite；恢复文件权威用“恢复 TOML”。",
+			"renderer":    "views",
+			"icon":        "setting",
+			"order":       30,
+			"views": []any{
+				map[string]any{
+					"kind": "form", "title": "添加机台", "command": "fleet.machine.add", "submitLabel": "添加",
+					"fields": []any{
+						map[string]any{"key": "no", "label": "机台号"},
+						map[string]any{"key": "path", "label": "路径"},
+						map[string]any{"key": "ip", "label": "IP"},
+						map[string]any{"key": "group", "label": "格式组"},
+						map[string]any{"key": "since", "label": "投产日(YYYY-MM-DD)"},
+						map[string]any{"key": "schedule", "label": "调度名"},
+					},
+				},
+				map[string]any{
+					"kind": "form", "title": "添加调度", "command": "fleet.schedule.add", "submitLabel": "添加",
+					"fields": []any{
+						map[string]any{"key": "name", "label": "名称"},
+						map[string]any{"key": "cron", "label": "Cron"},
+						map[string]any{"key": "time", "label": "每日时刻 HH:MM"},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "机台清单（纯事实）", "query": "fleet.machines", "pageSize": 20,
+					"columns": []any{
+						map[string]any{"key": "no", "title": "机台号"},
+						map[string]any{"key": "path", "title": "路径"},
+						map[string]any{"key": "group", "title": "格式组"},
+						map[string]any{"key": "since", "title": "投产日"},
+						map[string]any{"key": "schedule", "title": "调度"},
+					},
+					"rowActions": []any{
+						map[string]any{"label": "删除", "command": "fleet.machine.remove", "args": map[string]any{"no": "$row.no"}},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "调度（机台的节奏）", "query": "fleet.schedules", "pageSize": 10,
+					"columns": []any{
+						map[string]any{"key": "name", "title": "名称"},
+						map[string]any{"key": "cron", "title": "Cron"},
+						map[string]any{"key": "time", "title": "时刻"},
+					},
+					"rowActions": []any{
+						map[string]any{"label": "删除", "command": "fleet.schedule.remove", "args": map[string]any{"name": "$row.name"}},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "格式清单（一张表 = 一类数据）", "query": "fleet.formats", "pageSize": 20,
+					"columns": []any{
+						map[string]any{"key": "name", "title": "名称"},
+						map[string]any{"key": "match", "title": "文件签名"},
+						map[string]any{"key": "table", "title": "目标表"},
+						map[string]any{"key": "sink", "title": "sink"},
+					},
+					"rowActions": []any{
+						map[string]any{"label": "删除", "command": "fleet.format.remove", "args": map[string]any{"name": "$row.name"}},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "格式清单组", "query": "fleet.format_groups", "pageSize": 10,
+					"columns": []any{
+						map[string]any{"key": "name", "title": "名称"},
+						map[string]any{"key": "formats", "title": "包含格式"},
+					},
+					"rowActions": []any{
+						map[string]any{"label": "删除", "command": "fleet.group.remove", "args": map[string]any{"name": "$row.name"}},
+					},
+				},
+				map[string]any{
+					"kind": "table", "title": "sink 清单（连接即凭证）", "query": "fleet.sinks", "pageSize": 10,
+					"columns": []any{
+						map[string]any{"key": "name", "title": "名称"},
+						map[string]any{"key": "driver", "title": "驱动"},
+						map[string]any{"key": "dsn", "title": "DSN"},
+						map[string]any{"key": "file_table", "title": "文件登记表"},
+					},
+					"rowActions": []any{
+						map[string]any{"label": "删除", "command": "fleet.sink.remove", "args": map[string]any{"name": "$row.name"}},
+					},
+				},
+				map[string]any{
+					"kind": "json", "title": "整文档编辑（高级）", "query": "fleet", "command": "fleet.set", "jsonKey": "doc",
+					"submitLabel": "应用",
+				},
+			},
+			"actions": []any{
+				map[string]any{"label": "恢复 TOML", "command": "fleet.reset"},
+			},
+		}),
 		bundle.Row("ui-panel-logs", "ui-panel", map[string]any{
 			"panel_id": "logs",
 			"pages":    []any{"overview"},

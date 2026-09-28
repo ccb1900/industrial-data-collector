@@ -26,7 +26,14 @@ func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, 
 	if err := ctx.Err(); err != nil {
 		return config.Config{}, err
 	}
-	parsed, err := sourcecomp.ExpandWithPlugins(data, p.pluginDir)
+	p.host.rememberSeed(data)
+	// fleet 声明存储非空时其四层键覆盖文件对应键（控制台编辑的真相）；
+	// 为空则文件权威。base 由宿主持有（SetFleetStore 接线）。
+	base, err := p.host.fleetBase()
+	if err != nil {
+		return config.Config{}, err
+	}
+	parsed, err := sourcecomp.ExpandWithPluginsBase(data, p.pluginDir, base)
 	if err != nil {
 		return config.Config{}, err
 	}

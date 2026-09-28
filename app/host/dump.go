@@ -13,6 +13,7 @@ import (
 	"dynamic-runtime/extensions/patch"
 
 	appconfig "gocordis-csv-collector/app/config"
+	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/sourcecomp"
 )
 
@@ -26,7 +27,13 @@ func DumpEffectiveConfig(configPath string, patchPaths []string, overlayPath str
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := sourcecomp.ExpandWithPlugins(data, procplugin.PluginsDirForConfig(configPath))
+	// dump 回答"什么会真正运行"：fleet 声明存储非空时同样叠加——
+	// 否则 dump 展示的与调和实际用的不是同一份声明。
+	base, err := fleetstore.LoadBase(fleetstore.FleetDBPath(configPath))
+	if err != nil {
+		return fmt.Errorf("fleet store: %w", err)
+	}
+	parsed, err := sourcecomp.ExpandWithPluginsBase(data, procplugin.PluginsDirForConfig(configPath), base)
 	if err != nil {
 		return fmt.Errorf("expand %s: %w", configPath, err)
 	}

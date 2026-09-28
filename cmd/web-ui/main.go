@@ -34,6 +34,7 @@ import (
 	consolehost "dynamic-runtime/extensions/console/host"
 	consolewebui "dynamic-runtime/extensions/console/webui"
 	appconfig "gocordis-csv-collector/app/config"
+	"gocordis-csv-collector/app/fleetstore"
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/web"
@@ -103,6 +104,15 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 			return fmt.Errorf("patch files: %w", err)
 		}
 	}
+	// fleet 声明存储（SQLite，随配置目录锚定的 state 旁）：控制台编辑的
+	// 四层声明落这里；为空时配置文件权威。resync = 适配器 Sync（重解析
+	// + 重调和），编辑落库后异步触发。
+	fleetStore, err := fleetstore.Open(fleetstore.FleetDBPath(configPath))
+	if err != nil {
+		return fmt.Errorf("fleet store: %w", err)
+	}
+	defer fleetStore.Close()
+	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

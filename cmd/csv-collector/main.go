@@ -15,6 +15,7 @@ import (
 
 	procplugin "dynamic-runtime/extensions/console/procplugin"
 
+	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
@@ -101,6 +102,14 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 	if err := loadDesiredPatches(app.Host, configPath, patchPaths); err != nil {
 		return fmt.Errorf("patch files: %w", err)
 	}
+	// fleet 声明存储（与 web-ui 同一文件）：常驻模式同样接受控制台的
+	// 配置编辑（编辑方是 web-ui，双方共享 state/config.db）。
+	fleetStore, ferr := fleetstore.Open(fleetstore.FleetDBPath(configPath))
+	if ferr != nil {
+		return fmt.Errorf("fleet store: %w", ferr)
+	}
+	defer fleetStore.Close()
+	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -145,7 +154,13 @@ func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error 
 	if err != nil {
 		return fmt.Errorf("config file: %w", err)
 	}
-	parsed, err := sourcecomp.ExpandWithPlugins(data, procplugin.PluginsDirForConfig(configPath))
+	// fleet 声明存储与 web-ui 共用：控制台编辑后的声明对 -once 调和
+	// 同样生效（否则任务计划模式会按旧声明采集——静默分叉）。
+	base, err := fleetstore.LoadBase(fleetstore.FleetDBPath(configPath))
+	if err != nil {
+		return fmt.Errorf("fleet store: %w", err)
+	}
+	parsed, err := sourcecomp.ExpandWithPluginsBase(data, procplugin.PluginsDirForConfig(configPath), base)
 	if err != nil {
 		return fmt.Errorf("config expand: %w", err)
 	}
