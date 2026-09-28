@@ -6,8 +6,8 @@
 #       sanling6 = 21 台 × 23 格式 —— 共 60 机台 = 1193 个源实例。
 # 目录形状：\\<机台IP>\log\YYYYMM\<前缀>_YYMMDD.log —— 月份目录 +
 #       两位年份文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
-# 15 个公共格式显式声明 columns（三组表头并集，异名同义列映射到
-#       同一库列）；其余前缀列跨机台不一致，按表头自动映射。
+# 全部格式显式声明 columns（公共 15 个取三组表头并集；跨组前缀取现场
+#       样例表头并集，见下文注释）；仅 pwrmulti 无样例暂走自动映射。
 # 调度：全部机台引用 nightly（每天 09:01），-once/常驻均可。
 #
 # ⚠ 两处机台 IP 疑点（按原样保留，投放前请核对现场）：
@@ -954,14 +954,22 @@ encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# ---- 机型清单表中的跨组前缀：列跨机台不一致，不声明 columns，按表头自动映射
-#      （同名文件同表、同名字段同列，机台间字段差异自动加列） ----
+# ---- 跨组前缀：columns 按现场样例（\\10.40.26.102\采集测试\collectorv20260921\example
+#      三代目录）表头并集显式声明；同名列以 occurrence 分别落列（本批样例无重名）。 ----
 
 [[formats]]
 name = "energy_measure"
 match = "EnergyMeasure_YYMMDD.log"
 table = "laser_energy_measure"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "基准能量(mJ)", column = "base_energy_mj", type = "text" },
+  { name = "容许范围(%)", column = "tolerance_pct", type = "text" },
+  { name = "ZL测量能量(mJ)", column = "zl_measured_energy_mj", type = "text" },
+  { name = "ZR测量能量(mJ)", column = "zr_measured_energy_mj", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
@@ -972,16 +980,50 @@ name = "galv_mask_measure"
 match = "GalvMaskMeasure_YYMMDD.log"
 table = "laser_galv_mask_measure"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "光罩编号", column = "mask_no", type = "text" },
+  { name = "模式", column = "mode", type = "text" },
+  { name = "许容?(mm)", column = "tol_mm", type = "text" },
+  { name = "ZL最大误差 R", column = "zl_max_err_r", type = "text" },
+  { name = "ZL最大误差 X", column = "zl_max_err_x", type = "text" },
+  { name = "ZL最大误差 Y", column = "zl_max_err_y", type = "text" },
+  { name = "ZR最大误差 R", column = "zr_max_err_r", type = "text" },
+  { name = "ZR最大误差 X", column = "zr_max_err_x", type = "text" },
+  { name = "ZR最大误差 Y", column = "zr_max_err_y", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
 allow_ragged = true
 
+# glv_cnd_send 现场有两种表头：11 列与 17 列（后者多
+# Warning,Err,RefR,RefL,GainNo,R8163）——并集声明，短表头文件的缺位列为 NULL。
 [[formats]]
 name = "glv_cnd_send"
 match = "GlvCndSend_YYMMDD.log"
 table = "laser_glv_cnd_send"
 sink = "plant-oracle"
+columns = [
+  { name = "DATE", column = "biz_date", type = "text" },
+  { name = "TIME", column = "biz_time", type = "text" },
+  { name = "No.", column = "no", type = "text" },
+  { name = "R8162", column = "r8162", type = "text" },
+  { name = "R8145", column = "r8145", type = "text" },
+  { name = "R8144", column = "r8144", type = "text" },
+  { name = "R8146", column = "r8146", type = "text" },
+  { name = "R8147", column = "r8147", type = "text" },
+  { name = "R8159", column = "r8159", type = "text" },
+  { name = "R8156", column = "r8156", type = "text" },
+  { name = "R8148", column = "r8148", type = "text" },
+  { name = "Warning", column = "warning", type = "text" },
+  { name = "Err", column = "err", type = "text" },
+  { name = "RefR", column = "ref_r", type = "text" },
+  { name = "RefL", column = "ref_l", type = "text" },
+  { name = "GainNo", column = "gain_no", type = "text" },
+  { name = "R8163", column = "r8163", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
@@ -989,9 +1031,18 @@ allow_ragged = true
 
 [[formats]]
 name = "pc_direct"
-match = "ProcDirect_YYMMDD.log" # 清单表前缀为 ProcDirect（原 PcDirect 系笔误）
+match = "PcDirect_YYMMDD.log" # 现场真实前缀是 PcDirect（清单表写成了 ProcDirect）
 table = "laser_pc_direct"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "尺寸", column = "size", type = "text" },
+  { name = "搜索方法", column = "search_method", type = "text" },
+  { name = "结果概要", column = "result_summary", type = "text" },
+  { name = "结果详细", column = "result_detail", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
@@ -1002,6 +1053,24 @@ name = "proc_state"
 match = "ProcState_YYMMDD.log"
 table = "laser_proc_state"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "PRG. FILENAME", column = "prg_filename", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "START.TIME", column = "start_time", type = "text" },
+  { name = "END.TIME", column = "end_time", type = "text" },
+  { name = "PROC.TIME", column = "proc_time", type = "text" },
+  { name = "END.BLOCK", column = "end_block", type = "text" },
+  { name = "VIA.HOLE", column = "via_hole", type = "text" },
+  { name = "UTILITY.HOLE", column = "utility_hole", type = "text" },
+  { name = "PROC.HOLE.R", column = "proc_hole_r", type = "text" },
+  { name = "PROC.HOLE.L", column = "proc_hole_l", type = "text" },
+  { name = "TOTAL.PROC.HOLE.R", column = "total_proc_hole_r", type = "text" },
+  { name = "TOTAL.PROC.HOLE.L", column = "total_proc_hole_l", type = "text" },
+  { name = "TOTAL.SHOT", column = "total_shot", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
@@ -1012,6 +1081,16 @@ name = "sensor"
 match = "sensor_YYMMDD.log"
 table = "laser_sensor"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Dust Air", column = "dust_air", type = "text" },
+  { name = "Table Air", column = "table_air", type = "text" },
+  { name = "PRG.", column = "prg", type = "text" },
+  { name = "Block No.", column = "block_no", type = "text" },
+  { name = "R stage f-theta Temp", column = "r_stage_ftheta_temp", type = "text" },
+  { name = "L stage f-theta Temp", column = "l_stage_ftheta_temp", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
@@ -1022,12 +1101,85 @@ name = "twin_scale_dsp"
 match = "TwinScaleDsp_YYMMDD.log"
 table = "laser_twin_scale_dsp"
 sink = "plant-oracle"
+columns = [
+  { name = "Date", column = "Date", type = "text" },
+  { name = "Time", column = "Time", type = "text" },
+  { name = "YawingAngleX", column = "YawingAngleX", type = "text" },
+  { name = "YawingAngleY", column = "YawingAngleY", type = "text" },
+  { name = "YawingOffsetXm", column = "YawingOffsetXm", type = "text" },
+  { name = "YawingOffsetXs", column = "YawingOffsetXs", type = "text" },
+  { name = "YawingOffsetYm", column = "YawingOffsetYm", type = "text" },
+  { name = "YawingOffsetYs", column = "YawingOffsetYs", type = "text" },
+  { name = "PitchOrgIndexXm", column = "PitchOrgIndexXm", type = "text" },
+  { name = "PitchOrgIndexXs", column = "PitchOrgIndexXs", type = "text" },
+  { name = "PitchOrgIndexYm", column = "PitchOrgIndexYm", type = "text" },
+  { name = "PitchOrgIndexYs", column = "PitchOrgIndexYs", type = "text" },
+  { name = "PitchMaxIndexXm", column = "PitchMaxIndexXm", type = "text" },
+  { name = "PitchMaxIndexXs", column = "PitchMaxIndexXs", type = "text" },
+  { name = "PitchMaxIndexYm", column = "PitchMaxIndexYm", type = "text" },
+  { name = "PitchMaxIndexYs", column = "PitchMaxIndexYs", type = "text" },
+  { name = "PitchMinIndexXm", column = "PitchMinIndexXm", type = "text" },
+  { name = "PitchMinIndexXs", column = "PitchMinIndexXs", type = "text" },
+  { name = "PitchMinIndexYm", column = "PitchMinIndexYm", type = "text" },
+  { name = "PitchMinIndexYs", column = "PitchMinIndexYs", type = "text" },
+  { name = "PitchScaleXm", column = "PitchScaleXm", type = "text" },
+  { name = "PitchScaleXs", column = "PitchScaleXs", type = "text" },
+  { name = "PitchScaleYm", column = "PitchScaleYm", type = "text" },
+  { name = "PitchScaleYs", column = "PitchScaleYs", type = "text" },
+  { name = "PitchSpaceXm", column = "PitchSpaceXm", type = "text" },
+  { name = "PitchSpaceXs", column = "PitchSpaceXs", type = "text" },
+  { name = "PitchSpaceYm", column = "PitchSpaceYm", type = "text" },
+  { name = "PitchSpaceYs", column = "PitchSpaceYs", type = "text" },
+  { name = "PicthIndex0Xm", column = "PicthIndex0Xm", type = "text" },
+  { name = "PicthIndex0Xs", column = "PicthIndex0Xs", type = "text" },
+  { name = "PicthIndex0Ym", column = "PicthIndex0Ym", type = "text" },
+  { name = "PicthIndex0Ys", column = "PicthIndex0Ys", type = "text" },
+  { name = "PicthIndexXm", column = "PicthIndexXm", type = "text" },
+  { name = "PicthIndexXs", column = "PicthIndexXs", type = "text" },
+  { name = "PicthIndexYm", column = "PicthIndexYm", type = "text" },
+  { name = "PicthIndexYs", column = "PicthIndexYs", type = "text" },
+  { name = "LinearScaleValXm", column = "LinearScaleValXm", type = "text" },
+  { name = "LinearScaleValXs", column = "LinearScaleValXs", type = "text" },
+  { name = "LinearScaleValYm", column = "LinearScaleValYm", type = "text" },
+  { name = "LinearScaleValYs", column = "LinearScaleValYs", type = "text" },
+  { name = "LinearScalePulsUMXm", column = "LinearScalePulsUMXm", type = "text" },
+  { name = "LinearScalePulsUMXs", column = "LinearScalePulsUMXs", type = "text" },
+  { name = "LinearScalePulsUMYm", column = "LinearScalePulsUMYm", type = "text" },
+  { name = "LinearScalePulsUMYs", column = "LinearScalePulsUMYs", type = "text" },
+  { name = "EncPosXm", column = "EncPosXm", type = "text" },
+  { name = "EncPosXs", column = "EncPosXs", type = "text" },
+  { name = "EncPosYm", column = "EncPosYm", type = "text" },
+  { name = "EncPosYs", column = "EncPosYs", type = "text" },
+  { name = "MachinePosXm", column = "MachinePosXm", type = "text" },
+  { name = "MachinePosXs", column = "MachinePosXs", type = "text" },
+  { name = "MachinePosYm", column = "MachinePosYm", type = "text" },
+  { name = "MachinePosYs", column = "MachinePosYs", type = "text" },
+  { name = "LinearOrgVaXm", column = "LinearOrgVaXm", type = "text" },
+  { name = "LinearOrgVaXs", column = "LinearOrgVaXs", type = "text" },
+  { name = "LinearOrgVaYm", column = "LinearOrgVaYm", type = "text" },
+  { name = "LinearOrgVaYs", column = "LinearOrgVaYs", type = "text" },
+  { name = "RealValXm", column = "RealValXm", type = "text" },
+  { name = "RealValXs", column = "RealValXs", type = "text" },
+  { name = "RealValYm", column = "RealValYm", type = "text" },
+  { name = "RealValYs", column = "RealValYs", type = "text" },
+  { name = "EncPosBkXm", column = "EncPosBkXm", type = "text" },
+  { name = "EncPosBkXs", column = "EncPosBkXs", type = "text" },
+  { name = "EncPosBkYm", column = "EncPosBkYm", type = "text" },
+  { name = "EncPosBkYs", column = "EncPosBkYs", type = "text" },
+  { name = "TableCenterX", column = "TableCenterX", type = "text" },
+  { name = "TableCenterY", column = "TableCenterY", type = "text" },
+  { name = "TableCenterEncPosX", column = "TableCenterEncPosX", type = "text" },
+  { name = "TableCenterEncPosY", column = "TableCenterEncPosY", type = "text" },
+  { name = "Scalewx", column = "Scalewx", type = "text" },
+  { name = "Scalewy", column = "Scalewy", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# pwrmulti：清单表 No.23，三代机型共有（pwrmulti_260527 起）。
+# pwrmulti：清单表 No.23，三代机型共有；现场样例中无此文件、表头未知，
+# 暂保持自动映射（功能保留），拿到真实表头后补显式 columns。
 [[formats]]
 name = "pwrmulti"
 match = "pwrmulti_YYMMDD.log"
