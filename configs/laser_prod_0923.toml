@@ -7,7 +7,7 @@
 # 目录形状：\\<机台IP>\log\YYYYMM\<前缀>_YYMMDD.log —— 月份目录 +
 #       两位年份文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
 # 全部格式显式声明 columns（公共 15 个取三组表头并集；跨组前缀取现场
-#       样例表头并集，见下文注释）；仅 pwrmulti 无样例暂走自动映射。
+#       样例表头并集，见下文注释）——自动映射已全部退役，仅留功能未用。
 # 调度：全部机台引用 nightly（每天 09:01），-once/常驻均可。
 #
 # ⚠ 两处机台 IP 疑点（按原样保留，投放前请核对现场）：
@@ -1181,14 +1181,63 @@ encoding = "gb18030"
 header = true
 allow_ragged = true
 
-# pwrmulti：清单表 No.23 三代机型共有（样例文件名 pwrmulti_260527——5 月的
-# 文件）；example 样例目录只含 9 月文件，故无此样例、表头未知，
-# 暂保持自动映射（功能保留），拿到真实表头后补显式 columns。
+# pwrmulti：现场样例在 example/3（pwrmulti_260618，49 列）与 example/6
+# （pwrmulti_260831，50 列，多末列"光路类型NO."）顶层（不在月份目录）。
+# 取两代并集显式声明；28/30/32（三代另含 44）为空表头占位，不建列。
 [[formats]]
 name = "pwrmulti"
 match = "pwrmulti_YYMMDD.log"
 table = "laser_pwrmulti"
 sink = "plant-oracle"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "容许范围%", column = "tolerance_pct", type = "text" },
+  { name = "测量范围%", column = "measured_range_pct", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+  { name = "测量能量1", column = "measured_energy_1", type = "text" },
+  { name = "测量能量2", column = "measured_energy_2", type = "text" },
+  { name = "测量能量3", column = "measured_energy_3", type = "text" },
+  { name = "测量能量4", column = "measured_energy_4", type = "text" },
+  { name = "测量能量5", column = "measured_energy_5", type = "text" },
+  { name = "测量能量6", column = "measured_energy_6", type = "text" },
+  { name = "测量能量7", column = "measured_energy_7", type = "text" },
+  { name = "测量能量8", column = "measured_energy_8", type = "text" },
+  { name = "测量能量9", column = "measured_energy_9", type = "text" },
+  { name = "测量能量10", column = "measured_energy_10", type = "text" },
+  { name = "测量能量11", column = "measured_energy_11", type = "text" },
+  { name = "测量能量12", column = "measured_energy_12", type = "text" },
+  { name = "测量能量13", column = "measured_energy_13", type = "text" },
+  { name = "测量能量14", column = "measured_energy_14", type = "text" },
+  { name = "测量能量15", column = "measured_energy_15", type = "text" },
+  { name = "测量能量16", column = "measured_energy_16", type = "text" },
+  { name = "测量能量17", column = "measured_energy_17", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "上限频率", column = "freq_limit", type = "text" },
+  { name = "shot群数", column = "shot_group", type = "text" },
+  { name = "显示测量频率", column = "display_freq", type = "text" },
+  { name = "光路类型NO.", column = "optical_path_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+  { name = "Retry No.", column = "retry_no", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
 [formats.parser]
 encoding = "gb18030"
 header = true
