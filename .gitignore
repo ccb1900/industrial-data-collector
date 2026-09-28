@@ -8,3 +8,5 @@ plugins/alarm-demo/alarm-demo
 /configs/state/
 /tests/state/
 dist/
+/web-ui
+/dist/

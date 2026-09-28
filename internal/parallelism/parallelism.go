@@ -68,11 +68,20 @@ func Begin() {
 	mu.Unlock()
 }
 
-// Finish 结清一笔在途作业；err 非空时并入本轮账本（含 nil 作业的取消错）。
+// maxRetainedErrors 限制错误账本的驻留长度。-once 路径每轮 DrainErrors
+// 清零；驻留路径（web-ui）无人取回，失败若不设上限会随时间无限累积
+// （每次失败一条，经月常驻即成泄漏）。
+const maxRetainedErrors = 1024
+
+// Finish 结清一笔在途作业；err 非空时并入账本（含 nil 作业的取消错）。
+// 超过上限丢弃最旧的：账本只服务 -once 扇入与诊断，不要求完整。
 func Finish(err error) {
 	mu.Lock()
 	if err != nil {
 		errs = append(errs, err)
+		if len(errs) > maxRetainedErrors {
+			errs = errs[len(errs)-maxRetainedErrors:]
+		}
 	}
 	pending--
 	if pending <= 0 {
