@@ -861,6 +861,9 @@ columns = [
   { name = "偏置X", column = "offset_x", type = "text" },
   { name = "偏置Y", column = "offset_y", type = "text" },
   { name = "θ", column = "theta", type = "text" },
+  # 真实表头里"状态"出现两次（第 10 位与第 15 位）：第二次用
+  # occurrence=1 单独落列，否则该位数值被静默丢弃。
+  { name = "状态", column = "status2", type = "text", occurrence = 1 },
   { name = "<manual work comp>", column = "manual_work_comp", type = "text" },
   { name = "<OFFSET PROC. X>", column = "offset_proc_x", type = "text" },
   { name = "<OFFSET PROC. Y>", column = "offset_proc_y", type = "text" },
