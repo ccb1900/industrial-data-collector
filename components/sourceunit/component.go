@@ -96,6 +96,11 @@ func (c *SourceUnitComponent) MemoryStore() *storage.MemoryStore { return c.mem 
 // for this source: known incomplete rows plus calendar gaps (bounded by the
 // configured catch-up window). It is the recovery planner's view, exposed
 // for the console's "待补采" display.
+// Records 暴露本源的台账记录（诊断与测试用；不进任何能力面）。
+func (c *SourceUnitComponent) Records(ctx context.Context) ([]model.CollectionRecord, error) {
+	return c.stateSvc.CollectionRecords(ctx, c.sourceID)
+}
+
 func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionKey, error) {
 	target, err := c.policy.Resolve()
 	if err != nil {

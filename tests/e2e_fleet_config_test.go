@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +16,11 @@ import (
 
 	"gocordis-csv-collector/app/fleetstore"
 	apphost "gocordis-csv-collector/app/host"
+	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
+	"gocordis-csv-collector/internal/hostgate"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 // 等价性的展开级保证：同一份 TOML，直接展开与"存储往返后以 Base 叠加"
@@ -321,5 +325,106 @@ schedule = "nightly"
 `
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 审查修复回归（多 UNC 场景）：宿主机健康闸——关机机台的 ~21s SMB 超
+// 时被 2s 的 445 端口探测代替（同宿主 TTL 内其余源秒过），且聚合语义
+// 生效：一次 pass 只记一条宿主级 Failed（首个计划日），其余日期不物化、
+// 下轮随 catchup 自然重排。
+func TestUncHostGateAggregatesFailures(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "unc.toml")
+	cfg := `
+bundles = ["collector-core", "collector-console"]
+
+[defaults]
+state_dir = "./state"
+date_policy = "yesterday"
+catchup_days = 31
+since = "2026-09-01"
+batch_size = 100
+
+[[sinks]]
+name = "db"
+driver = "sqlite"
+dsn = "./state/collect.db"
+
+[[formats]]
+name = "readings"
+match = "r_YYMMDD.log"
+table = "R"
+sink = "db"
+
+[[format_groups]]
+name = "g"
+formats = ["readings"]
+
+[[schedules]]
+name = "nightly"
+cron = "0 3 * * *"
+
+[[machines]]
+no = "m1"
+path = '\\127.0.0.1\share\YYYYMM'
+group = "g"
+schedule = "nightly"
+since = "2026-09-01"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 探测端口换成必被拒绝的端口：对 127.0.0.1 立即 RST，不依赖 445 空闲。
+	hostgate.SetProbePort("1")
+	defer hostgate.Reset()
+
+	app, err := apphost.NewWatchHost(cfgPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := app.Trigger(ctx, model.CollectionRequested{Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parallelism.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 错误账本是进程级全局：本轮失败必须取走，否则下一个用 triggerReq
+	// 的测试会把它误当成自己的失败（跨测试污染）。
+	_ = parallelism.DrainErrors()
+	elapsed := time.Since(started)
+	if elapsed > 15*time.Second {
+		t.Fatalf("gate did not short-circuit the SMB timeout: %v", elapsed)
+	}
+
+	var failed []model.CollectionRecord
+	for _, o := range app.Host.Owned() {
+		if sc, ok := o.Fiber.Component().(*sourceunitplugin.SourceUnitComponent); ok {
+			recs, err := sc.Records(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range recs {
+				if r.Status == model.StatusFailed {
+					failed = append(failed, r)
+				}
+			}
+		}
+	}
+	if len(failed) != 1 {
+		var got []string
+		for _, r := range failed {
+			got = append(got, r.Key.Date.String())
+		}
+		t.Fatalf("failed instances = %d %v, want exactly 1 (host-gate aggregation)", len(failed), got)
+	}
+	if failed[0].Key.Date.String() != "2026-09-01" {
+		t.Fatalf("failed date = %s, want 2026-09-01 (first planned date)", failed[0].Key.Date.String())
 	}
 }
