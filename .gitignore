@@ -10,3 +10,4 @@ plugins/alarm-demo/alarm-demo
 dist/
 /web-ui
 /dist/
+/csv-collector
