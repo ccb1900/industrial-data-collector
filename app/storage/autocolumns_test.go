@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"flag"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite" // register the pure-Go sqlite driver
@@ -128,6 +130,145 @@ func TestDeclaredColumnsOccurrenceSplit(t *testing.T) {
 	}
 	if page.Rows[0][4] != "a" || page.Rows[0][5] != "c" {
 		t.Fatalf("v1=%v v2=%v, want a and c", page.Rows[0][4], page.Rows[0][5])
+	}
+}
+
+// 增量加列：首批 [a,b] 建表后，后续文件表头 [a,c] 触发 ALTER 补列 c，
+// 再 [a,a] 补 a__2；同名文件恒落同表、同名字段恒落同列。
+func TestAutoColumnsGrowsOnLaterHeaders(t *testing.T) {
+	ctx := context.Background()
+	tw, err := OpenTable(ctx, TableConfig{
+		Driver: "sqlite", DSN: *autoDSN, Dialect: "sqlite",
+		Table: "auto_grow", AutoColumns: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tw.Close()
+
+	var date model.CollectionDate
+	if err := date.UnmarshalText([]byte("2026-09-17")); err != nil {
+		t.Fatal(err)
+	}
+	key := model.CollectionKey{SourceID: "m1", Date: date}
+	write := func(name string, header, fields []string) {
+		t.Helper()
+		err := tw.Write(ctx, model.Batch{
+			Key: key, File: model.FileIdentity{SourceID: "m1", Path: "/" + name, Name: name, Hash: name},
+			Header:  header,
+			Records: []model.Record{{RowNumber: 1, Fields: fields}},
+		})
+		if err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("f1.log", []string{"a", "b"}, []string{"1", "2"})
+	write("f2.log", []string{"a", "c"}, []string{"3", "4"})
+	write("f3.log", []string{"a", "a"}, []string{"5", "6"})
+
+	page, err := tw.QueryRows(ctx, "m1", "2026-09-17", 10, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"source_id", "collection_date", "file_id", "row_number", "a", "b", "c", "a__2"}
+	if len(page.Columns) != len(want) {
+		t.Fatalf("columns = %v, want %v", page.Columns, want)
+	}
+	byFile := map[string][]any{}
+	for _, r := range page.Rows {
+		// file_id = "m1|/f1.log|f1.log"，按文件名子串归行。
+		for _, n := range []string{"f1.log", "f2.log", "f3.log"} {
+			if strings.Contains(r[2].(string), n) {
+				byFile[n] = r
+			}
+		}
+	}
+	if r := byFile["f2.log"]; r[5] != nil || r[6] != "4" { // b 缺位为 NULL，c 落值
+		t.Fatalf("f2 row = %v, want b=nil c=4", r)
+	}
+	if r := byFile["f3.log"]; r[7] != "6" { // 第二次出现的 a 落 a__2
+		t.Fatalf("f3 row = %v, want a__2=6", r)
+	}
+}
+
+// 跨实例（不同机台共享同一张表）：B 实例的首批表头给表补上 A 没见过的
+// 列；A 实例再写自己视图时列集并入并保留 B 的行。
+func TestAutoColumnsGrowsAcrossInstances(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "grow.db")
+	cfgA := TableConfig{Driver: "sqlite", DSN: dsn, Dialect: "sqlite", Table: "shared_t", AutoColumns: true}
+	a, err := OpenTable(ctx, cfgA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := OpenTable(ctx, TableConfig{Driver: "sqlite", DSN: dsn, Dialect: "sqlite", Table: "shared_t", AutoColumns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	var date model.CollectionDate
+	if err := date.UnmarshalText([]byte("2026-09-17")); err != nil {
+		t.Fatal(err)
+	}
+	w := func(tw *TableStorage, src, name string, header, fields []string) {
+		t.Helper()
+		err := tw.Write(ctx, model.Batch{
+			Key: model.CollectionKey{SourceID: model.SourceID(src), Date: date},
+			File: model.FileIdentity{SourceID: model.SourceID(src), Path: "/" + name, Name: name, Hash: name},
+			Header: header, Records: []model.Record{{RowNumber: 1, Fields: fields}},
+		})
+		if err != nil {
+			t.Fatalf("%s write: %v", src, err)
+		}
+	}
+	w(a, "m1", "f1.log", []string{"a", "x"}, []string{"1", "2"})
+	w(b, "m2", "f1.log", []string{"a", "y"}, []string{"3", "4"})
+
+	var cols []string
+	rows, err := a.db.QueryContext(ctx, "PRAGMA table_info(shared_t)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		cols = append(cols, name)
+	}
+	want := map[string]bool{"a": true, "x": true, "y": true}
+	for _, c := range cols[4:] { // 前四列是键列
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		t.Fatalf("table columns = %v, want union incl a/x/y", cols)
+	}
+}
+
+// mergeDerivedCols 的冲突顺延：既有裸名列被字面表头占用时，新派生列
+// 按 __k 递增避让（大小写不敏感）。
+func TestMergeDerivedColsCollisionDefers(t *testing.T) {
+	existing := []ColumnMapping{{Name: "A__2", Column: "A__2", Occurrence: 0, Type: "text"}}
+	derived := deriveColumns([]string{"A", "A"}) // A(occ0) 与 A__2(occ1)
+	merged, grew := mergeDerivedCols(&existing, derived)
+	if !grew || len(merged) != 3 {
+		t.Fatalf("merged = %+v, want 3 cols", merged)
+	}
+	if merged[1].Column != "A" {
+		t.Fatalf("bare A should land as column A, got %q", merged[1].Column)
+	}
+	if merged[2].Column != "A__3" { // A__2 已被字面表头占用 → 顺延
+		t.Fatalf("second A must defer to A__3, got %q", merged[2].Column)
+	}
+	if _, again := mergeDerivedCols(&merged, derived); again {
+		t.Fatal("re-merge of same header must be a no-op")
 	}
 }
 

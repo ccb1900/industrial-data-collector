@@ -8,6 +8,10 @@ plugins/alarm-demo/alarm-demo
 /configs/state/
 /tests/state/
 dist/
+# 例外：web/dist 是 go:embed 输入的前端产物，必须完整入库（这条曾被 dist/ 吞掉，
+# index.html 于是引用了仓库里不存在的 JS，控制台白屏）。
+!/web/dist/
+!/web/dist/**
 /web-ui
 /dist/
 /csv-collector

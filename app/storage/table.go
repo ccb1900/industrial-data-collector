@@ -57,9 +57,9 @@ type TableConfig struct {
 	ExtraRows bool            // store unmapped CSV fields into row_values TEXT
 	Exposer   bool            // expose the RowsQuery capability for consoles
 	Lazy      bool            // defer connection to first use
-	// AutoColumns 自动字段映射：Columns 未声明时，首个批次的解码表头
-	// 自动建列（全部 TEXT，列名即表头文本；重名表头第 k(k>=2) 次出现
-	// 加后缀 __k）。声明了 Columns 时本开关无效。
+	// AutoColumns 自动字段映射：Columns 未声明时，按解码表头建列（全部
+	// TEXT，列名即表头文本；重名表头第 k(k>=2) 次出现加后缀 __k），后续
+	// 文件出现新表头字段时增量 ALTER 补列。声明了 Columns 时本开关无效。
 	AutoColumns bool
 }
 
@@ -179,12 +179,14 @@ type TableStorage struct {
 	cfg     TableConfig
 	closeMe func() error
 
-	// 自动字段映射：columns 未声明时，首个批次用解码后的表头建列。
+	// 自动字段映射：columns 未声明时，以解码表头建列并可随后续文件增量
+	// 加列（同名文件同表、同名字段同列、新字段 ALTER 补列）。
 	// effectiveColumns 是全部读路径的列来源；原子指针保证控制台查询
-	// 与采集写入并发时的可见性与无竞争。
-	autoOnce    sync.Once
-	autoCols    atomic.Pointer[[]ColumnMapping]
-	autoSchema  atomic.Bool
+	// 与采集写入并发时的可见性与无竞争。evoMu 串行化演进（合并列集 +
+	// ensureSchema 补建），写路径本身按源串行。
+	autoCols atomic.Pointer[[]ColumnMapping]
+	evoMu    sync.Mutex
+	// 声明式 columns + auto_columns 并存时声明优先，多余表头字段告警。
 	driftWarned map[string]bool // 写路径串行访问
 }
 
@@ -236,6 +238,64 @@ func deriveColumns(header []string) []ColumnMapping {
 		cols = append(cols, ColumnMapping{From: SourceCSV, Name: raw, Column: colName, Type: "text", Occurrence: occ})
 	}
 	return cols
+}
+
+// evolveAutoColumns 把 header 派生出的新列（按 表头名+出现次数 认定）并入
+// 现有自动列集，并借 ensureSchema 的增量 ALTER 补建到库。补列失败即回退
+// 列集——写路径绝不引用库里不存在的列，下一批次自然重试。
+func (t *TableStorage) evolveAutoColumns(ctx context.Context, header []string) error {
+	derived := deriveColumns(header)
+	t.evoMu.Lock()
+	defer t.evoMu.Unlock()
+	prev := t.autoCols.Load()
+	merged, grew := mergeDerivedCols(prev, derived)
+	if !grew {
+		return nil
+	}
+	t.autoCols.Store(&merged)
+	if err := t.ensureSchema(ctx); err != nil {
+		t.autoCols.Store(prev)
+		return err
+	}
+	if prev != nil {
+		slog.Info("auto-mapped table grew columns",
+			"table", t.cfg.Table, "added", len(merged)-len(*prev), "total", len(merged))
+	}
+	return nil
+}
+
+// mergeDerivedCols 在 existing 基础上并入 derived 中尚未物化的 (Name,
+// Occurrence) 对；列名沿用派生名，与既有列冲突则按 __k 顺延（大小写不
+// 敏感——多数目录按小写比对列名）。
+func mergeDerivedCols(existing *[]ColumnMapping, derived []ColumnMapping) ([]ColumnMapping, bool) {
+	out := []ColumnMapping{}
+	if existing != nil {
+		out = append(out, *existing...)
+	}
+	have := make(map[string]bool, len(out)*2)
+	used := make(map[string]bool, len(out)*2)
+	for _, c := range out {
+		have[c.Name+"\x00"+strconv.Itoa(c.Occurrence)] = true
+		used[strings.ToLower(c.Column)] = true
+	}
+	grew := false
+	for _, d := range derived {
+		key := d.Name + "\x00" + strconv.Itoa(d.Occurrence)
+		if have[key] {
+			continue
+		}
+		have[key] = true
+		col := d.Column
+		for n := d.Occurrence + 1; used[strings.ToLower(col)]; n++ {
+			col = d.Name + "__" + strconv.Itoa(n+1)
+		}
+		used[strings.ToLower(col)] = true
+		nc := d
+		nc.Column = col
+		out = append(out, nc)
+		grew = true
+	}
+	return out, grew
 }
 
 // OpenTable opens the typed sink eagerly.
@@ -605,20 +665,11 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 			return err
 		}
 	}
-	// 自动字段映射：以首个批次的解码表头建列。派生后补一次 ensureSchema
-	//（幂等：CREATE IF NOT EXISTS + 增量 ALTER 补齐新列）。
+	// 自动字段映射：以解码表头建列；后续文件出现新表头字段（或既有字段
+	// 的新一次出现）时增量加列，同名文件恒落同表、同名字段恒落同列。
 	if t.cfg.AutoColumns && len(t.cfg.Columns) == 0 && len(batch.Header) > 0 {
-		t.autoOnce.Do(func() {
-			cols := deriveColumns(batch.Header)
-			t.autoCols.Store(&cols)
-		})
-		if t.autoCols.Load() != nil && !t.autoSchema.Swap(true) {
-			if err := t.ensureSchema(ctx); err != nil {
-				// 建列失败必须回退闸门：否则一次瞬时错误（如 SQLITE_BUSY
-				// 超时）就让后续所有批次永久引用不存在的列。
-				t.autoSchema.Store(false)
-				return err
-			}
+		if err := t.evolveAutoColumns(ctx, batch.Header); err != nil {
+			return err
 		}
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
@@ -655,9 +706,10 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 			declared[c.Name]++
 		}
 	}
-	if t.cfg.AutoColumns {
-		// 自动映射模式下列集在首批评次固定：后续文件新增的表头字段（含
-		// 已有表头的新一次出现）无法落列，必须告警而不是静默丢弃。
+	if t.cfg.AutoColumns && len(t.cfg.Columns) > 0 {
+		// 声明式 columns 与 auto_columns 并存时声明优先：表头里未声明的
+		// 字段无法落列，必须告警而不是静默丢弃。纯自动映射已由增量加列
+		// 覆盖，不会再出现漂移。
 		seen := map[string]int{}
 		for _, h := range batch.Header {
 			name := strings.TrimSpace(h)
