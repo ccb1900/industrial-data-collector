@@ -1182,8 +1182,9 @@ header = true
 allow_ragged = true
 
 # pwrmulti：现场样例在 example/3（pwrmulti_260618，49 列）与 example/6
-# （pwrmulti_260831，50 列，多末列"光路类型NO."）顶层（不在月份目录）。
-# 取两代并集显式声明；28/30/32（三代另含 44）为空表头占位，不建列。
+# （pwrmulti_260831，50 列）顶层（不在月份目录）。六代比三代多两列：
+# 下标 44 的"光路类型NO."（三代该位为空表头）与末列"加工程序"。
+# 取两代并集显式声明；空表头占位（下标 0 起：28/30/32，三代另含 44）不建列。
 [[formats]]
 name = "pwrmulti"
 match = "pwrmulti_YYMMDD.log"
