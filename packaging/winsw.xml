@@ -10,6 +10,18 @@
   如要把控制台（web-ui）也做成服务，复制本文件改 id/executable/arguments 即可：
     <executable>%BASE%\web-ui.exe</executable>
     <arguments>-config configs\desktop.toml -addr :8080</arguments>
+
+  【必须填 serviceaccount，否则读不了机台共享】默认的 LocalSystem 对外以计算机账户
+  认证，且看不到任何用户的凭据库——凭据属于登录会话/用户，不属于进程。源在 UNC 上时
+  取消下方注释并填本机那个已配置共享凭据的账号（密码不能为空）。一个账号可以按服务器
+  各存一条凭据（TERMSRV/<ip>），所以“60 台机器各不同账号”与此不冲突。
+  allowservicelogon 让 WinSW 自动补“作为服务登录”权限；手工用 sc config obj= 换账号时
+  若启动报 1069，就是这个权限缺失。改完必须 winsw.exe uninstall && install && start 才生效。
+    <serviceaccount>
+      <username>.\用户名</username>
+      <password>口令</password>
+      <allowservicelogon>true</allowservicelogon>
+    </serviceaccount>
 -->
 <service>
   <id>gocordis-collector</id>
@@ -17,8 +29,8 @@
   <description>Configurable CSV collector (resident: config watch + daily scheduler).</description>
 
   <workingdirectory>%BASE%</workingdirectory>
-  <executable>%BASE%\csv-collector.exe</executable>
-  <arguments>-config configs\laser_prod.toml</arguments>
+  <executable>%BASE%\web-ui.exe</executable>
+  <arguments>-config configs\laser_prod_0923.toml</arguments>
 
   <logpath>%BASE%\logs</logpath>
   <log mode="roll-by-size">
