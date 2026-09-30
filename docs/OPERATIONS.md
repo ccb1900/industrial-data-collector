@@ -192,6 +192,22 @@ Recovery is planned at every trigger, in the collector application layer
 只写"按语法分支 + fail-fast"。本文里的 uuid 对照数字来自一次性测量（跑完即删，仓库内无
 基准代码），需要新数字须重建测量。
 
+**2026-09-30 实施：方案 1（计数器行）落地，四处方言缺陷连带修复。**
+
+- 发号改为 `<file_table>_file_key_seq` 单行计数器表：同事务 `UPDATE next=next+1`
+  + `SELECT next` 回读，五方言同一条 SQL；UPDATE 行锁即发号互斥，MAX+1 的
+  读-改-写竞争不复存在。计数器行缺失时以注册表 `MAX(file_key)` 为基线初始化
+  （存量迁移库补键场景），`fileKeyMu` 保留为进程内串行兜底。
+- 四处缺陷逐项：①lookup/UPDATE/INSERT 全部经 `placeholders()`（各方言占位符
+  正确）；②`INSERT…SELECT MAX+1` 已随发号改造消失（新文件走计数器 + 普通
+  INSERT，空注册表不再有 0 行问题）；③唯一索引按方言分支——sqlite/postgres
+  `IF NOT EXISTS`、oracle 匿名块捕 ORA-955、sqlserver 查 sys.indexes、mysql
+  直接 CREATE（重复即报错，语义等价）；④注册表 INSERT 的 mysql 分支改
+  `INSERT IGNORE`，oracle/sqlserver 保持 MERGE（并发登记同文件幂等，命中后
+  读回既有键）。
+- `Validate()` 的 sqlite-only 闸门与相关断言退役；`file_key` 现在声明支持五
+  方言（验证边界不变：实测仅 sqlite，其余按语法分支 + fail-fast）。
+
 ## Unreliable remote database
 
 - **Idempotent writes**: the storage row key is

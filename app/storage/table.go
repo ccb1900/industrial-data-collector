@@ -5,7 +5,7 @@
 //   - legacy (default): (source_id, collection_date, file_id, row_number).
 //     file_id is the full identity string, so it repeats ~77 bytes on every
 //     row — and repeats again inside the composite-PK autoindex.
-//   - file_key mode (`file_key = true`, sqlite only): the data table stores
+//   - file_key mode (`file_key = true`): the data table stores
 //     (file_key, row_number) where file_key is a small integer allocated once
 //     per file in the file registry table, which becomes load-bearing. The
 //     per-row duplication of path/source/date disappears; measured on the
@@ -104,12 +104,10 @@ func (c *TableConfig) Validate() error {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage file_table %q is not a simple identifier", c.FileTable)
 	}
 	if c.FileKey {
-		// 注册表承担键分配，从可选变为必需。
+		// 注册表承担键分配，从可选变为必需。方言不再受限：发号是
+		// 五方言同构的计数器行（见 resolveFileKey）。
 		if c.FileTable == "" {
 			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key mode requires file_table (the registry allocates the keys)", c.Table)
-		}
-		if c.Dialect != "sqlite" {
-			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key mode supports the sqlite dialect only (key allocation relies on its single-writer connection)", c.Table)
 		}
 	}
 	if len(c.Columns) == 0 && !c.AutoColumns {
@@ -499,8 +497,9 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 				return err
 			}
 		}
-		// file_key 模式的键位：注册表加一列整型键 + 唯一索引。存量注册表
-		// 走 ADD COLUMN（旧行键为 NULL，被引用时由 resolveFileKey 就地补键）。
+		// file_key 模式的键位：注册表加一列整型键 + 唯一索引 + 发号计数器。
+		// 存量注册表走 ADD COLUMN（旧行键为 NULL，被引用时由 resolveFileKey
+		// 就地补键，补键后回写计数器基线）。
 		if t.cfg.FileKey {
 			rcols, err := t.existingColumns(ctx, t.cfg.FileTable)
 			if err != nil {
@@ -519,13 +518,42 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			}
 			// 唯一约束是键分配的最后防线：分配若被并发击穿，这里报错而不是
 			// 让两个文件共用一个键（那会让数据行静默挂到别的文件上）。
-			if err := t.execDDL(ctx, fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (file_key)",
-				quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_uq"), ft)); err != nil {
+			// IF NOT EXISTS 只有 sqlite/postgres（含 MariaDB）支持——
+			// oracle/sqlserver 查系统目录按需建。
+			uq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_uq")
+			uqDDL := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (file_key)", uq, ft)
+			switch t.cfg.Dialect {
+			case "oracle":
+				uqDDL = fmt.Sprintf("BEGIN EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX %s ON %s (file_key)'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END", uq, ft)
+			case "sqlserver":
+				uqDDL = fmt.Sprintf("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = '%s' AND object_id = OBJECT_ID('%s')) CREATE UNIQUE INDEX %s ON %s (file_key)",
+					t.cfg.FileTable+"_file_key_uq", t.cfg.FileTable, uq, ft)
+			case "mysql":
+				uqDDL = fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (file_key)", uq, ft)
+			}
+			if err := t.execDDL(ctx, uqDDL); err != nil {
+				return err
+			}
+			// 发号计数器表：单行 (name, next)。五方言同构的 UPDATE+SELECT
+			// 发号，不依赖 identity/SEQUENCE/RETURNING 等方言对象。
+			seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
+			if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
+				if !t.tableExists(ctx, t.cfg.FileTable+"_file_key_seq") {
+					if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE %s (name %s NOT NULL, next %s NOT NULL, %s)", seq, dt["text"], dt["bigint"], pkConstraint(t.cfg.Dialect, "name"))); err != nil {
+						return err
+					}
+				}
+			} else if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (name %s NOT NULL, next %s NOT NULL, %s)", seq, dt["text"], dt["bigint"], pkConstraint(t.cfg.Dialect, "name"))); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// pkConstraint 按方言生成内联主键子句（表名/列名由调用方保证已引用）。
+func pkConstraint(dialect, col string) string {
+	return "PRIMARY KEY (" + quoteIdent(dialect, col) + ")"
 }
 
 // tableExists reports whether the table already exists (Oracle dialect).
@@ -726,54 +754,120 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 	return values, nil
 }
 
-// fileKeyMu 串行化同进程内多个 sink 实例的键分配。源单元逐个持有自己的
-// TableStorage（连接池按 dsn 共享，实例不共享），所以这把锁必须是包级的。
-// 跨进程由 SQLite 单写者 + busy_timeout 兜底。
-var fileKeyMu sync.Mutex
-
 // resolveFileKey 返回该文件在注册表里的整型键，注册表行缺失或键未分配时
-// 就地补齐。分配用同事务内的 MAX(file_key)+1：sqlite 单库一条连接
-// （openTuned 设 MaxOpenConns(1)）让写事务互斥，加上 fileKeyMu 与注册表
-// 的 file_key 唯一索引，击穿只会报错、不会让两个文件共用一个键。
+// 就地补齐。发号用计数器表（<file_table>_file_key_seq 单行 next）：同事务
+// 内 UPDATE next=next+1 再 SELECT 回读——五方言同一条 SQL，不依赖
+// identity/SEQUENCE/RETURNING 等方言对象；UPDATE 的行锁就是发号互斥，
+// MVCC 库下并发事务在 UPDATE 上串行化，MAX+1 的读-改-写竞争不复存在。
+//
+// 注册表的 (file_key) 唯一索引是最后防线：万一发号被并发击穿，这里报错
+// 而不是让两个文件共用一个键（那会让数据行静默挂到别的文件上）。
+// fileKeyMu 保留给 sqlite 的单连接同句多语句语义之外的进程内串行。
 //
 // 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
 // 会在跨实例场景下读到过期键。
 func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch model.Batch) (int64, error) {
 	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
+	seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
+	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
 	triple := []any{string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity()}
-	lookup := fmt.Sprintf("SELECT file_key FROM %s WHERE source_id = ? AND collection_date = ? AND file_id = ?", ft)
+	lookup := fmt.Sprintf("SELECT file_key FROM %s WHERE source_id = %s AND collection_date = %s AND file_id = %s", ft, p(1, 1), p(2, 1), p(3, 1))
 	var found sql.NullInt64
 	switch err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); {
 	case err == nil && found.Valid:
 		return found.Int64, nil
 	case err == nil:
-		// 注册表行早于 file_key 列（存量库迁移到这里）：补键后复用同一行。
-		alloc := fmt.Sprintf("UPDATE %s SET file_key = (SELECT COALESCE(MAX(file_key), 0) + 1 FROM %s) WHERE source_id = ? AND collection_date = ? AND file_id = ?", ft, ft)
-		fileKeyMu.Lock()
-		defer fileKeyMu.Unlock()
-		if _, err := tx.ExecContext(ctx, alloc, triple...); err != nil {
+		// 注册表行早于 file_key 列（存量库迁移到这里）：就地补键。键值取
+		// 计数器发号（并回写计数器基线，使计数器 ≥ 既有最大键）。
+		key, err := t.nextFileKey(ctx, tx, seq)
+		if err != nil {
+			return 0, err
+		}
+		backfill := fmt.Sprintf("UPDATE %s SET file_key = %s WHERE source_id = %s AND collection_date = %s AND file_id = %s",
+			ft, p(4, 1), p(5, 1), p(6, 1), p(7, 1))
+		if _, err := tx.ExecContext(ctx, backfill, key, triple[0], triple[1], triple[2]); err != nil {
 			return 0, errs.ClassifyStorageError("file key backfill "+batch.File.Name, err)
 		}
+		return key, nil
 	case errors.Is(err, sql.ErrNoRows):
-		insert := fmt.Sprintf("INSERT INTO %s (file_key, source_id, collection_date, file_id, path, name, records, header, collected_at) "+
-			"SELECT COALESCE(MAX(file_key), 0) + 1, %s, 0, %s FROM %s",
-			ft, placeholders(t.cfg.Dialect, 1, 5), placeholders(t.cfg.Dialect, 6, 2), ft)
-		fileKeyMu.Lock()
-		defer fileKeyMu.Unlock()
-		args := []any{
-			string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
-			batch.File.Path, batch.File.Name, strings.Join(batch.Header, ","), batch.CreatedAt,
+		key, err := t.nextFileKey(ctx, tx, seq)
+		if err != nil {
+			return 0, err
 		}
+		// 新文件首次登记。ON CONFLICT 分支按方言：mysql 是 INSERT IGNORE
+		// （既有缺陷在数据行路径已分开关照，注册表路径同规则）；oracle/
+		// sqlserver 保持 MERGE（并发触发同文件时幂等）。
+		cols := []string{"file_key", "source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
+		conflict := "source_id, collection_date, file_id"
+		var insert string
+		switch t.cfg.Dialect {
+		case "mysql":
+			insert = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", ft, strings.Join(cols, ", "), placeholders(t.cfg.Dialect, 1, len(cols)))
+		case "oracle", "sqlserver":
+			insert = mergeUpsert(t.cfg.Dialect, t.cfg.FileTable, cols, conflict)
+			// mergeUpsert 的参数序从 1 开始：file_key 是第一列，恰与键值在前一致。
+			args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
+				batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
+			if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
+				return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
+			}
+			// MERGE 命中既有行（并发登记同一文件）：读回那一行的键。
+			if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
+				return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
+			}
+			return found.Int64, nil
+		default:
+			insert = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
+				ft, strings.Join(cols, ", "), placeholders(t.cfg.Dialect, 1, len(cols)), conflict)
+		}
+		args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
+			batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
 		if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
 			return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
 		}
+		return key, nil
 	default:
 		return 0, errs.ClassifyStorageError("file lookup "+batch.File.Name, err)
 	}
-	if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
-		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
+}
+
+// nextFileKey 从计数器表发下一个键：同事务 UPDATE+SELECT，五方言同构。
+// 计数器行缺失（首用/手工建库）时以注册表现有最大键为基线初始化。
+func (t *TableStorage) nextFileKey(ctx context.Context, tx *sql.Tx, seq string) (int64, error) {
+	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
+	name := t.cfg.FileTable
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("UPDATE %s SET next = next + 1 WHERE name = %s", seq, p(1, 1)), name); err != nil {
+		return 0, errs.ClassifyStorageError("file key advance "+name, err)
 	}
-	return found.Int64, nil
+	var next sql.NullInt64
+	err := tx.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT next FROM %s WHERE name = %s", seq, p(1, 1)), name).Scan(&next)
+	switch {
+	case err == nil && next.Valid:
+		return next.Int64, nil
+	case err == nil:
+		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key counter %q holds NULL", name)
+	case errors.Is(err, sql.ErrNoRows):
+		// 基线：注册表里已有的最大键（存量迁移库），没有则 0。
+		var base sql.NullInt64
+		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
+		if err := tx.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT MAX(file_key) FROM %s", ft)).Scan(&base); err != nil {
+			return 0, errs.ClassifyStorageError("file key baseline "+name, err)
+		}
+		start := int64(1)
+		if base.Valid {
+			start = base.Int64 + 1
+		}
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO %s (name, next) VALUES (%s, %s)", seq, p(1, 1), p(2, 1)), name, start); err != nil {
+			return 0, errs.ClassifyStorageError("file key counter init "+name, err)
+		}
+		return start, nil
+	default:
+		return 0, errs.ClassifyStorageError("file key read "+name, err)
+	}
 }
 
 // Write implements model.Storage.

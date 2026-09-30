@@ -238,10 +238,12 @@ func TestFileKeyValidate(t *testing.T) {
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "requires file_table") {
 		t.Fatalf("Validate() = %v, want the file_table requirement", err)
 	}
+	// 发号已改为五方言同构的计数器行：方言不再受限（曾有的 sqlite-only
+	// 闸门随 MAX+1 一起退役）。oracle 配置必须被接受。
 	cfg = fileKeyCfg(":memory:")
 	cfg.Dialect = "oracle"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "sqlite") {
-		t.Fatalf("Validate() = %v, want the sqlite-only restriction", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (dialect gate retired)", err)
 	}
 	ok := fileKeyCfg(":memory:")
 	if err := ok.Validate(); err != nil {
