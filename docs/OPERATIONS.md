@@ -99,7 +99,7 @@ Recovery is planned at every trigger, in the collector application layer
 | 骨架 | 数据表主键 | 每行键开销 | 适用 |
 |---|---|---|---|
 | legacy（默认，历史库即此形状） | `(source_id, collection_date, file_id, row_number)` | `file_id` 是 `source\|完整路径\|size\|modtime` 的 77 字节串，逐行存一遍，复合主键的 `sqlite_autoindex_*` 里再存一遍 | 需要跨库通用（含 Oracle / SQL Server） |
-| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`MAX(file_key)+1` + 唯一索引） | **仅 sqlite**：分配依赖单库单连接（`openTuned` 的 `MaxOpenConns(1)`）与进程级 `fileKeyMu`；网络库需换成数据库侧序列后再放开 |
+| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`MAX(file_key)+1` + 唯一索引） | **仅 sqlite**：实际串行只来自单库单连接（`openTuned` 的 `MaxOpenConns(1)`），进程级 `fileKeyMu` 经核查在 commit 前就释放、对提交窗口无效；发号方式与方言缺陷的评审见下文小节 |
 
 现场实测（`collect2.db`，4.83 GiB，`freelist_count = 0`）：数据表 3306.9 MB +
 `sqlite_autoindex_*` 1639.6 MB（**33.1%**），其中 `laser_aaa` 单表 325 B/行里有
@@ -143,6 +143,54 @@ Recovery is planned at every trigger, in the collector application layer
   ```
   未迁移的旧表保持原样可继续读写；对旧表打开 `file_key = true` 会在启动时
   报 `legacy ... backbone` 而不是写坏数据。
+
+### `file_key` 评审结论与未决项（2026-09-30，评审未改代码）
+
+提出 2ca8198 之后的一轮评审问题、已核实的答案，以及**尚未拍板的发号方案**。
+此轮只评估，`app/storage/table.go` 等一行未改。
+
+| # | 问题 | 结论 |
+|---|---|---|
+| 1 | 1.7 GB 源日志为何落成 ~5 GB？ | 结构性开销，见上节现场实测；不是重复写入 |
+| 2 | `file_key` 改 uuidv7（时间有序）值多少空间？ | 整数 169.0 B/行 → uuidv7 **BLOB 200.1 B/行（+31 B，约 +18.5%）**；4.83 GiB 测试库上约多 0.36 GiB |
+| 3 | `MAX(file_key)+1` 这种发号方式有问题 | 成立。`fileKeyMu` 的 `defer Unlock()` 在 `resolveFileKey` 返回时执行，**早于 `Write` 的 commit**，对提交窗口无效（真正串行只来自单连接）；跨进程是读写升级竞争。sqlite 侧已实测可用替代形态：注册表 `file_key INTEGER PRIMARY KEY` 即 rowid 别名（`file_key == rowid`），引擎自动发号，`INSERT … RETURNING file_key` 可同句取键，`ON CONFLICT(三元组) DO NOTHING` 配 UNIQUE 索引可用 |
+| 4 | uuid 为什么用 BLOB 而不是 TEXT（反正是定长）？ | SQLite 无定宽列：BLOB16 与 TEXT36 的串类型头部都是 1 字节，差在负载；复合主键使每个键字节**付两遍**。实测 TEXT32 = 233.5 B/行、TEXT36 = 247.2 B/行（比 BLOB 分别 +33 / +47 B/行）；大写与小写**逐字节同价**，风险在语义（BINARY 排序下大小写不同即两个键） |
+| 5 | 设计上要支持多种数据库 | 成立，且当前 `file_key` 实现在 sqlite 之外**不是没优化而是直接坏**，见下表 |
+
+已核实的方言缺陷（行号为 2026-09-30 时点）：
+
+| 位置 | 缺陷 | 非 sqlite 后果 |
+|---|---|---|
+| `resolveFileKey` 的 lookup / UPDATE | 占位符硬写成 `?`，只有旁边的 insert 用了 `placeholders()` | postgres 要 `$n`、oracle 要 `:n`、sqlserver 要 `@pn`，首句即错 |
+| `resolveFileKey` 的 `INSERT … SELECT MAX+1 FROM 注册表` | Oracle 上注册表为空时 `SELECT … FROM t` 返回 0 行 | 插 0 行 → 到 re-lookup 才报 `file key unresolved`，**静默失败**；MVCC 库两个事务可算出同一 MAX |
+| `ensureSchema` 的 `CREATE UNIQUE INDEX IF NOT EXISTS` | oracle / sqlserver / mysql 无此语法（pg、sqlite、MariaDB 有） | `file_key` 模式启动即 DDL 失败 |
+| `Write` 的注册表写入 | 非 oracle/sqlserver 一律 `ON CONFLICT … DO NOTHING`，MySQL 需要 `INSERT IGNORE`（数据行路径 `multirow.go` 已分开处理） | MySQL 语法错误。属既有缺陷（3ef1a7c 引入），且说明方言分支从未实测 |
+
+佐证"方言分支没跑过"：全仓无引用 go-ora / pgx / go-mssqldb / go-sql-driver 的测试文件，
+无 `.github/workflows`；`configs/laser_prod_0923.toml` 里名为 `plant-oracle` 的 sink 其
+`driver` 实为 `sqlite`，oracle / sqlserver 的 sink 都在注释里。
+
+待拍板的发号方案（未选定，任选其一后实施）：
+
+1. **计数器行**（推荐）：`UPDATE <sink>_seq SET next = next + 1 WHERE name = ?` +
+   同事务 `SELECT next`。五方言同一条 SQL，不需要 identity / AUTO_INCREMENT / SEQUENCE
+   对象，也不需要 `RETURNING` / `OUTPUT` / `LAST_INSERT_ID()` 四套回读；键仍是应用分配的
+   普通 BIGINT，故"给已存在注册表 `ALTER ADD file_key` + 就地补键"的兼容路径在四种库上
+   都成立。只在**新文件首次登记**时发生（命中已有三元组即早退），非每行、非每批。
+2. **各方言原生 identity**：sqlite rowid 别名 / pg `GENERATED ALWAYS AS IDENTITY` /
+   mysql `AUTO_INCREMENT`（强制它是索引首列，会把注册表 PK 从三元组顶掉）/ oracle
+   `SEQ.NEXTVAL`（本仓分页按 11g 写，11g 无 identity 列）/ sqlserver `IDENTITY` +
+   `OUTPUT INSERTED.file_key`。正统，但是 5 份 DDL + 5 份回读；且 SQL Server / Oracle
+   不能给非空表加 identity 列，等于强制注册表必须新建，兼容路径消失。
+3. **uuid 应用层发号**：跨方言 SQL 最平（每方言一个二进制类型名，零发号语句），也彻底
+   没有并发发号问题；代价见上表 #2 / #4。注意 sqlite 引擎发号**同样复用**被删除的最高键
+   （实测 4 → 再取 4），所以换发号方式不消除键复用；仓内目前无任何删除注册表行的路径。
+4. **记账不修**：承认 `file_key` 仅支持 sqlite，把限制写进文档与报错文案，方言缺陷单独立账。
+
+无论选 1—3 中哪条，都要连带修上表四处，并把 `Validate()` 里 `file_key` 的 sqlite-only
+闸门换成真实支持的方言白名单。**验证边界**：本地只能实测 sqlite；其余方言不会标注"已验证"，
+只写"按语法分支 + fail-fast"。本文里的 uuid 对照数字来自一次性测量（跑完即删，仓库内无
+基准代码），需要新数字须重建测量。
 
 ## Unreliable remote database
 
