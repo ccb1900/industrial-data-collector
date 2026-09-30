@@ -56,3 +56,35 @@ func TestNewSourceUnitBackupAndFilesValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildStorageFileKey 骨架开关必须在两个 typed 分支都落到 TableConfig：
+// 声明列分支与表头自动映射分支。这里静默丢键的后果是照旧按 legacy 骨架
+// 建表且毫无报错，所以逐分支断言。
+func TestBuildStorageFileKey(t *testing.T) {
+	cols := []any{map[string]any{"from": "csv", "name": "a", "column": "a", "type": "text"}}
+	for _, tc := range []struct {
+		name string
+		cfg  map[string]any
+	}{
+		{"declared columns", map[string]any{"storage": "sqlite", "dsn": ":memory:", "table": "t", "file_table": "f", "columns": cols, "file_key": true}},
+		{"auto columns", map[string]any{"storage": "sqlite", "dsn": ":memory:", "table": "t", "file_table": "f", "file_key": true}},
+	} {
+		_, _, tableCfg, err := buildStorage(tc.cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if tableCfg == nil || !tableCfg.FileKey {
+			t.Fatalf("%s: FileKey not propagated: %+v", tc.name, tableCfg)
+		}
+	}
+	// 注册表缺失必须响亮失败：键无处可分。
+	bad := map[string]any{"storage": "sqlite", "dsn": ":memory:", "table": "t", "columns": cols, "file_key": true}
+	if _, _, _, err := buildStorage(bad); err == nil || !strings.Contains(err.Error(), "requires file_table") {
+		t.Fatalf("err = %v, want the file_table requirement", err)
+	}
+	// 非 sqlite 方言拒绝。
+	mssql := map[string]any{"storage": "sqlserver", "dsn": "x", "table": "t", "file_table": "f", "columns": cols, "file_key": true}
+	if _, _, _, err := buildStorage(mssql); err == nil || !strings.Contains(err.Error(), "sqlite") {
+		t.Fatalf("err = %v, want the sqlite-only restriction", err)
+	}
+}

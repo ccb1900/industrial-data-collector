@@ -656,6 +656,7 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 				Table:       configutil.OptionalString(cc, "table", "records"),
 				FileTable:   configutil.OptionalString(cc, "file_table", ""),
 				AutoColumns: true,
+				FileKey:     configutil.OptionalBool(cc, "file_key", false),
 				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
 			}
 			if err := tableCfg.Validate(); err != nil {
@@ -678,6 +679,7 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 				FileTable: configutil.OptionalString(cc, "file_table", ""),
 				Columns:   columns,
 				ExtraRows: configutil.OptionalBool(cc, "extra_rows", false),
+				FileKey:   configutil.OptionalBool(cc, "file_key", false),
 				Exposer:   configutil.OptionalBool(cc, "expose_console", false),
 			}
 			if err := tableCfg.Validate(); err != nil {

@@ -42,7 +42,10 @@ type SinkDef struct {
 	DriverOverride string // 可选：实际 sql driver 注册名（如测试桩）
 	DSN            string
 	FileTable      string // 可选：该 sink 的文件登记表（跨格式共享）
-	LazyConnect    *bool
+	// FileKey 用整型 file_key 替代逐行 file_id 文本作幂等骨架（仅 sqlite）。
+	// 骨架一经建表即固定，所以它是"新库/迁移后"才允许的开关。
+	FileKey     *bool
+	LazyConnect *bool
 }
 
 // FormatDef is the complete semantic contract of one data file family:
@@ -297,6 +300,10 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if sinkByName[f.Sink].FileTable != "" {
 				cfg["file_table"] = sinkByName[f.Sink].FileTable
 			}
+			// 骨架开关只在显式声明时下发，保持未配置时展开结果逐字节不变。
+			if sinkByName[f.Sink].FileKey != nil {
+				cfg["file_key"] = *sinkByName[f.Sink].FileKey
+			}
 			if sinkByName[f.Sink].LazyConnect != nil {
 				cfg["lazy_connect"] = *sinkByName[f.Sink].LazyConnect
 			}
@@ -492,6 +499,9 @@ func parseSinks(raw any) ([]SinkDef, error) {
 		sk.FileTable, _ = m["file_table"].(string)
 		if v, ok := m["lazy_connect"].(bool); ok {
 			sk.LazyConnect = &v
+		}
+		if v, ok := m["file_key"].(bool); ok {
+			sk.FileKey = &v
 		}
 		if sk.Name == "" || sk.Driver == "" {
 			return nil, fmt.Errorf("sinks #%d: name/driver are required", i)

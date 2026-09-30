@@ -1,15 +1,25 @@
 // Typed relational sink: maps CSV data columns and metadata keys onto real
 // database columns. No JSON blobs — every column is typed and queryable.
-// The idempotency backbone (source_id, collection_date, file_id, row_number)
-// is identical to the generic records sink, so replay/retry semantics are
-// unchanged. The CSV header of each collected file is stored once in a file
-// registry table as plain TEXT.
+// Two idempotency backbones are available:
+//
+//   - legacy (default): (source_id, collection_date, file_id, row_number).
+//     file_id is the full identity string, so it repeats ~77 bytes on every
+//     row — and repeats again inside the composite-PK autoindex.
+//   - file_key mode (`file_key = true`, sqlite only): the data table stores
+//     (file_key, row_number) where file_key is a small integer allocated once
+//     per file in the file registry table, which becomes load-bearing. The
+//     per-row duplication of path/source/date disappears; measured on the
+//     production shape this cuts the database by roughly half.
+//
+// The CSV header of each collected file is stored once in the file registry
+// table as plain TEXT.
 package storage
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -52,15 +62,26 @@ type TableConfig struct {
 	DSN       string
 	Dialect   string
 	Table     string
-	FileTable string          // optional per-file registry (header as TEXT)
+	FileTable string          // per-file registry (header as TEXT); required by FileKey
 	Columns   []ColumnMapping // typed columns
 	ExtraRows bool            // store unmapped CSV fields into row_values TEXT
 	Exposer   bool            // expose the RowsQuery capability for consoles
 	Lazy      bool            // defer connection to first use
+	// FileKey 用整型外键替代逐行的 file_id 文本：数据表主键变成
+	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配。
+	// 需要 FileTable（注册表从可选变为必需）。仅支持 sqlite：分配走
+	// "同事务 MAX+1 + 唯一索引"，依赖 openTuned 给单库只开一条连接
+	// （写事务互斥）；网络库要换成数据库侧序列后另行放开。
 	// AutoColumns 自动字段映射：Columns 未声明时，按解码表头建列（全部
 	// TEXT，列名即表头文本；重名表头第 k(k>=2) 次出现加后缀 __k），后续
 	// 文件出现新表头字段时增量 ALTER 补列。声明了 Columns 时本开关无效。
 	AutoColumns bool
+	// FileKey 用整型外键替代逐行的 file_id 文本：数据表主键变成
+	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配。
+	// 需要 FileTable（注册表从可选变为必需）。仅支持 sqlite：分配走
+	// "同事务 MAX+1 + 唯一索引"，依赖 openTuned 给单库只开一条连接
+	// （写事务互斥）；网络库要换成数据库侧序列后另行放开。
+	FileKey bool
 }
 
 func (c *TableConfig) Validate() error {
@@ -81,6 +102,15 @@ func (c *TableConfig) Validate() error {
 	}
 	if c.FileTable != "" && !tableNamePattern.MatchString(c.FileTable) {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage file_table %q is not a simple identifier", c.FileTable)
+	}
+	if c.FileKey {
+		// 注册表承担键分配，从可选变为必需。
+		if c.FileTable == "" {
+			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key mode requires file_table (the registry allocates the keys)", c.Table)
+		}
+		if c.Dialect != "sqlite" {
+			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key mode supports the sqlite dialect only (key allocation relies on its single-writer connection)", c.Table)
+		}
 	}
 	if len(c.Columns) == 0 && !c.AutoColumns {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: no columns declared (set columns or auto_columns)", c.Table)
@@ -374,18 +404,28 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	mssql := t.cfg.Dialect == "sqlserver"
 	// Data table: idempotency backbone + declared columns. Oracle 的键列
 	// 用定长类型：PK 索引键超长会 ORA-01450，不能用 VARCHAR2(4000)。
-	cols := []string{
-		"source_id " + dt["text"] + " NOT NULL",
-		"collection_date " + dt["date"] + " NOT NULL",
-		"file_id " + dt["text"] + " NOT NULL",
-		"row_number " + dt["bigint"] + " NOT NULL",
-	}
-	if oracle {
+	var cols []string
+	pk := "PRIMARY KEY (source_id, collection_date, file_id, row_number)"
+	switch {
+	case t.cfg.FileKey:
+		cols = []string{
+			"file_key " + dt["bigint"] + " NOT NULL",
+			"row_number " + dt["bigint"] + " NOT NULL",
+		}
+		pk = "PRIMARY KEY (file_key, row_number)"
+	case oracle:
 		cols = []string{
 			"source_id VARCHAR2(255) NOT NULL",
 			"collection_date DATE NOT NULL",
 			"file_id VARCHAR2(255) NOT NULL",
 			"row_number NUMBER(19) NOT NULL",
+		}
+	default:
+		cols = []string{
+			"source_id " + dt["text"] + " NOT NULL",
+			"collection_date " + dt["date"] + " NOT NULL",
+			"file_id " + dt["text"] + " NOT NULL",
+			"row_number " + dt["bigint"] + " NOT NULL",
 		}
 	}
 	for _, c := range t.effectiveColumns() {
@@ -394,7 +434,6 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values "+dt["text"])
 	}
-	pk := "PRIMARY KEY (source_id, collection_date, file_id, row_number)"
 	if oracle || mssql {
 		// Oracle / SQL Server 无 IF NOT EXISTS：查系统目录后按需建表。
 		if !t.tableExists(ctx, t.cfg.Table) {
@@ -414,6 +453,14 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 	have := map[string]bool{}
 	for _, c := range existing {
 		have[strings.ToLower(c)] = true
+	}
+	// 存量表不能悄悄换骨架：旧表带 file_id 却无 file_key，按新骨架写入会
+	// 在第一批就撞"无此列"。这里在增量 ALTER 之前判定并给出可执行的错误，
+	// 迁移（回填 file_key + 重建数据表）是一次离线动作，不该由采集进程顺手做。
+	if t.cfg.FileKey && have["file_id"] {
+		return errs.Sourcef(errs.ErrInvalidConfig,
+			"table %q already exists with the legacy (source_id, collection_date, file_id, row_number) backbone; file_key mode needs a table created with (file_key, row_number) — migrate it (see docs/OPERATIONS.md) or point this sink at a new table",
+			t.cfg.Table)
 	}
 	for _, c := range t.effectiveColumns() {
 		if have[strings.ToLower(c.Column)] {
@@ -449,6 +496,31 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		}
 		if fileDDL != "" {
 			if err := t.execDDL(ctx, fileDDL); err != nil {
+				return err
+			}
+		}
+		// file_key 模式的键位：注册表加一列整型键 + 唯一索引。存量注册表
+		// 走 ADD COLUMN（旧行键为 NULL，被引用时由 resolveFileKey 就地补键）。
+		if t.cfg.FileKey {
+			rcols, err := t.existingColumns(ctx, t.cfg.FileTable)
+			if err != nil {
+				return err
+			}
+			hasKey := false
+			for _, c := range rcols {
+				if strings.EqualFold(c, "file_key") {
+					hasKey = true
+				}
+			}
+			if !hasKey {
+				if err := t.execDDL(ctx, fmt.Sprintf("ALTER TABLE %s ADD file_key %s", ft, dt["bigint"])); err != nil {
+					return err
+				}
+			}
+			// 唯一约束是键分配的最后防线：分配若被并发击穿，这里报错而不是
+			// 让两个文件共用一个键（那会让数据行静默挂到别的文件上）。
+			if err := t.execDDL(ctx, fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (file_key)",
+				quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_uq"), ft)); err != nil {
 				return err
 			}
 		}
@@ -595,7 +667,7 @@ func convert(typ, raw string) (any, error) {
 
 // mapRow builds the column values of one CSV record. Missing required columns
 // fail with an explicit column/row error.
-func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, header []string, fields []string, md model.Metadata, rowNumber int64) ([]any, error) {
+func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model.FileIdentity, header []string, fields []string, md model.Metadata, rowNumber int64) ([]any, error) {
 	// 按表头名收集全部出现的值（保持出现顺序），Occurrence 选第几个；
 	// ragged 行越界补 ""，保证出现次数不因缺列而错位。
 	byHeader := map[string][]string{}
@@ -619,6 +691,9 @@ func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, 
 		dateVal,
 		file.Identity(),
 		rowNumber,
+	}
+	if t.cfg.FileKey {
+		values = []any{fileKey, rowNumber}
 	}
 	for _, c := range t.effectiveColumns() {
 		var raw string
@@ -651,6 +726,56 @@ func (t *TableStorage) mapRow(key model.CollectionKey, file model.FileIdentity, 
 	return values, nil
 }
 
+// fileKeyMu 串行化同进程内多个 sink 实例的键分配。源单元逐个持有自己的
+// TableStorage（连接池按 dsn 共享，实例不共享），所以这把锁必须是包级的。
+// 跨进程由 SQLite 单写者 + busy_timeout 兜底。
+var fileKeyMu sync.Mutex
+
+// resolveFileKey 返回该文件在注册表里的整型键，注册表行缺失或键未分配时
+// 就地补齐。分配用同事务内的 MAX(file_key)+1：sqlite 单库一条连接
+// （openTuned 设 MaxOpenConns(1)）让写事务互斥，加上 fileKeyMu 与注册表
+// 的 file_key 唯一索引，击穿只会报错、不会让两个文件共用一个键。
+//
+// 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
+// 会在跨实例场景下读到过期键。
+func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch model.Batch) (int64, error) {
+	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
+	triple := []any{string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity()}
+	lookup := fmt.Sprintf("SELECT file_key FROM %s WHERE source_id = ? AND collection_date = ? AND file_id = ?", ft)
+	var found sql.NullInt64
+	switch err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); {
+	case err == nil && found.Valid:
+		return found.Int64, nil
+	case err == nil:
+		// 注册表行早于 file_key 列（存量库迁移到这里）：补键后复用同一行。
+		alloc := fmt.Sprintf("UPDATE %s SET file_key = (SELECT COALESCE(MAX(file_key), 0) + 1 FROM %s) WHERE source_id = ? AND collection_date = ? AND file_id = ?", ft, ft)
+		fileKeyMu.Lock()
+		defer fileKeyMu.Unlock()
+		if _, err := tx.ExecContext(ctx, alloc, triple...); err != nil {
+			return 0, errs.ClassifyStorageError("file key backfill "+batch.File.Name, err)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		insert := fmt.Sprintf("INSERT INTO %s (file_key, source_id, collection_date, file_id, path, name, records, header, collected_at) "+
+			"SELECT COALESCE(MAX(file_key), 0) + 1, %s, 0, %s FROM %s",
+			ft, placeholders(t.cfg.Dialect, 1, 5), placeholders(t.cfg.Dialect, 6, 2), ft)
+		fileKeyMu.Lock()
+		defer fileKeyMu.Unlock()
+		args := []any{
+			string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
+			batch.File.Path, batch.File.Name, strings.Join(batch.Header, ","), batch.CreatedAt,
+		}
+		if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
+			return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
+		}
+	default:
+		return 0, errs.ClassifyStorageError("file lookup "+batch.File.Name, err)
+	}
+	if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
+		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
+	}
+	return found.Int64, nil
+}
+
 // Write implements model.Storage.
 func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if len(batch.Records) == 0 {
@@ -678,8 +803,9 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	}
 	defer tx.Rollback()
 
-	// File registry: one row per file (written with the first batch).
-	if t.cfg.FileTable != "" && batch.Sequence == 1 {
+	// File registry: one row per file (written with the first batch). file_key
+	// 模式下这一步改由 resolveFileKey 逐批负责（批批要有键，注册表行缺则补）。
+	if t.cfg.FileTable != "" && !t.cfg.FileKey && batch.Sequence == 1 {
 		header := strings.Join(batch.Header, ",")
 		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 		fCols := []string{"source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
@@ -698,7 +824,19 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		}
 	}
 
+	// file_key 骨架：整批共用一个键，逐行不再重复 file_id 文本。
+	var fileKey int64
+	if t.cfg.FileKey {
+		fk, kerr := t.resolveFileKey(ctx, tx, batch)
+		if kerr != nil {
+			return kerr
+		}
+		fileKey = fk
+	}
 	cols := []string{"source_id", "collection_date", "file_id", "row_number"}
+	if t.cfg.FileKey {
+		cols = []string{"file_key", "row_number"}
+	}
 	declared := map[string]int{} // csv 源列名 -> 声明的出现次数
 	for _, c := range t.effectiveColumns() {
 		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
@@ -734,12 +872,15 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		cols = append(cols, "row_values")
 	}
 	conflict := "source_id, collection_date, file_id, row_number"
+	if t.cfg.FileKey {
+		conflict = "file_key, row_number"
+	}
 	// 先把全部行映射成绑定值：任何一行映射失败（必填列缺失等）在任何
 	// DB 往返发生之前就失败整个文件——与旧行为（事务回滚）等价，且更省。
 	rowValues := make([][]any, 0, len(batch.Records))
 	for i := range batch.Records {
 		rec := &batch.Records[i]
-		values, merr := t.mapRow(batch.Key, batch.File, batch.Header, rec.Fields, batch.Metadata, rec.RowNumber)
+		values, merr := t.mapRow(batch.Key, fileKey, batch.File, batch.Header, rec.Fields, batch.Metadata, rec.RowNumber)
 		if merr != nil {
 			return errs.Sourcef(errs.ErrStoragePermanent, "file %q row %d: %v", batch.File.Name, rec.RowNumber, merr)
 		}
@@ -804,15 +945,32 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	for _, c := range t.effectiveColumns() {
 		declared[strings.ToLower(c.Column)] = true
 	}
+	// file_key 模式下三个业务键列住在注册表里，读侧 JOIN 回来。对控制台的
+	// 列名契约不变：source_id/collection_date/file_id 照旧可选、可滤、可显示。
+	qual := func(name string) string {
+		q := quoteIdent(t.cfg.Dialect, name)
+		if !t.cfg.FileKey {
+			return q
+		}
+		switch name {
+		case "source_id", "collection_date", "file_id":
+			// 声明列恰好取了同名（自动字段映射按表头命名，可能就叫
+			// source_id）：这时它是数据列，归 d.，不能被注册表同名列顶掉。
+			if !declared[strings.ToLower(name)] {
+				return "f." + q
+			}
+		}
+		return "d." + q
+	}
 	// sourceID/date 留空表示该维度不过滤：控制台的跨批次查询依赖这一点。
 	where := []string{}
 	args := []any{}
 	if sourceID != "" {
-		where = append(where, "source_id = ?")
+		where = append(where, qual("source_id")+" = ?")
 		args = append(args, sourceID)
 	}
 	if date != "" {
-		where = append(where, "collection_date = ?")
+		where = append(where, qual("collection_date")+" = ?")
 		args = append(args, date)
 	}
 	filterCols := make([]string, 0, len(filters))
@@ -824,7 +982,7 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		if !declared[strings.ToLower(c)] {
 			return page, errs.Sourcef(errs.ErrInvalidConfig, "filter column %q is not a declared column", c)
 		}
-		where = append(where, quoteIdent(t.cfg.Dialect, c)+" = ?")
+		where = append(where, qual(c)+" = ?")
 		args = append(args, filters[c])
 	}
 	w := ""
@@ -840,29 +998,34 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	}()...)
 	quoted := make([]string, 0, len(cols))
 	for _, c := range cols {
-		quoted = append(quoted, quoteIdent(t.cfg.Dialect, c))
+		quoted = append(quoted, qual(c))
 	}
 	tbl := quoteIdent(t.cfg.Dialect, t.cfg.Table)
+	from, orderBy := tbl, "collection_date, file_id, row_number"
+	if t.cfg.FileKey {
+		from = fmt.Sprintf("%s d JOIN %s f ON f.file_key = d.file_key", tbl, quoteIdent(t.cfg.Dialect, t.cfg.FileTable))
+		orderBy = "f.collection_date, f.file_id, d.row_number"
+	}
 	query := fmt.Sprintf(
-		"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number LIMIT %d OFFSET %d",
-		strings.Join(quoted, ", "), tbl, w, limit, offset)
+		"SELECT %s FROM %s %s ORDER BY %s LIMIT %d OFFSET %d",
+		strings.Join(quoted, ", "), from, w, orderBy, limit, offset)
 	switch t.cfg.Dialect {
 	case "oracle":
 		// Oracle 11g 兼容分页（ROWNUM 包装；绑定参数都在内层，边界用
 		// 已校验的整数字面量，无注入面）。11g 无 OFFSET/FETCH 语法。
 		query = fmt.Sprintf(
-			"SELECT * FROM (SELECT q.*, ROWNUM rn FROM (SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number) q WHERE ROWNUM <= %d) WHERE rn > %d",
-			strings.Join(quoted, ", "), tbl, w, offset+limit, offset)
+			"SELECT * FROM (SELECT q.*, ROWNUM rn FROM (SELECT %s FROM %s %s ORDER BY %s) q WHERE ROWNUM <= %d) WHERE rn > %d",
+			strings.Join(quoted, ", "), from, w, orderBy, offset+limit, offset)
 	case "sqlserver":
 		// SQL Server 2012+ OFFSET/FETCH。
 		query = fmt.Sprintf(
-			"SELECT %s FROM %s %s ORDER BY collection_date, file_id, row_number OFFSET %d ROWS FETCH NEXT %d ROWS ONLY",
-			strings.Join(quoted, ", "), tbl, w, offset, limit)
+			"SELECT %s FROM %s %s ORDER BY %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY",
+			strings.Join(quoted, ", "), from, w, orderBy, offset, limit)
 	}
 	// Total 先算：页面 SELECT 会在单连接池（SQLite）里占用唯一连接，
 	// 结果集未关就发 COUNT 会同池自锁（无限连接池掩盖了这一顺序缺陷）。
 	if err := t.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT COUNT(*) FROM %s %s", tbl, w), args...).Scan(&page.Total); err != nil {
+		"SELECT COUNT(*) FROM %s %s", from, w), args...).Scan(&page.Total); err != nil {
 		return page, errs.ClassifyStorageError("count rows", err)
 	}
 	rows, err := t.db.QueryContext(ctx, query, args...)

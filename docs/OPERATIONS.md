@@ -92,6 +92,58 @@ Recovery is planned at every trigger, in the collector application layer
    at the target are attempted. Known incomplete rows are always attempted
    regardless of the window — they are recorded evidence, not guesses.
 
+## 存储骨架与体积（`file_key` 模式）
+
+类型化落库有两种幂等骨架，**同一 sink 一经建表即固定，不能中途换**：
+
+| 骨架 | 数据表主键 | 每行键开销 | 适用 |
+|---|---|---|---|
+| legacy（默认，历史库即此形状） | `(source_id, collection_date, file_id, row_number)` | `file_id` 是 `source\|完整路径\|size\|modtime` 的 77 字节串，逐行存一遍，复合主键的 `sqlite_autoindex_*` 里再存一遍 | 需要跨库通用（含 Oracle / SQL Server） |
+| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`MAX(file_key)+1` + 唯一索引） | **仅 sqlite**：分配依赖单库单连接（`openTuned` 的 `MaxOpenConns(1)`）与进程级 `fileKeyMu`；网络库需换成数据库侧序列后再放开 |
+
+现场实测（`collect2.db`，4.83 GiB，`freelist_count = 0`）：数据表 3306.9 MB +
+`sqlite_autoindex_*` 1639.6 MB（**33.1%**），其中 `laser_aaa` 单表 325 B/行里有
+~153 B（**47%**）是 `file_id` 的两份重复；`laser_files` 注册表只占 8.45 MB。
+按现网形状做的对照测试（`TestFileKeyShrinksDatabase`，20000 行 × 20 列）实测
+**7.9 MB → 3.2 MB，省 59.1%**。
+
+因此 1.7 GB 源 CSV 落成 ~5 GB SQLite 是 legacy 骨架的结构性开销（约 3 倍），
+不是重复写入：全部 format 都声明了 `columns`，走的是类型化路径；`extra_rows`
+未开启，每个值只有一份。
+
+启用方式（二选一）：
+
+- **新库上线（推荐，零迁移）**：给 sink 同时改 `dsn` 和加 `file_key = true`，
+  让它按新骨架重新建表；旧库按保留策略归档或删除。注意 `file_id` 参与状态机
+  断点，但换骨架不改文件身份算法，已采集日期不会被判为新文件。
+- **存量库迁移**（离线，先停服务并备份）：
+  ```sql
+  -- 1) 注册表补键位（与采集进程的 ensureSchema 等价，可提前做）
+  ALTER TABLE laser_files ADD COLUMN file_key INTEGER;
+  CREATE UNIQUE INDEX laser_files_file_key_uq ON laser_files (file_key);
+  WITH r AS (SELECT rowid AS rid, row_number() OVER (ORDER BY source_id, collection_date, file_id) AS k
+             FROM laser_files)
+  UPDATE laser_files SET file_key = (SELECT k FROM r WHERE r.rid = laser_files.rowid);
+
+  -- 2) 逐表迁移前必须核对孤儿行：注册表缺行会让 JOIN 静默丢数据
+  --    （老代码只在首批 Sequence==1 写注册表，首批失败的表会有孤儿）
+  SELECT COUNT(*) FROM laser_aaa d LEFT JOIN laser_files f
+    ON f.source_id = d.source_id AND f.collection_date = d.collection_date AND f.file_id = d.file_id
+   WHERE f.file_key IS NULL;   -- 非 0 就先补注册表，或接受这部分行留在旧表里
+
+  -- 3) 建新骨架表 → 回填 → 换名（列清单与原表一致，只换骨架）
+  CREATE TABLE laser_aaa_new (file_key INTEGER NOT NULL, row_number INTEGER NOT NULL,
+    biz_date TEXT, /* …其余声明列… */ PRIMARY KEY (file_key, row_number));
+  INSERT INTO laser_aaa_new SELECT f.file_key, d.row_number, d.biz_date /* , … */
+    FROM laser_aaa d JOIN laser_files f
+    ON f.source_id = d.source_id AND f.collection_date = d.collection_date AND f.file_id = d.file_id;
+  DROP TABLE laser_aaa;
+  ALTER TABLE laser_aaa_new RENAME TO laser_aaa;
+  VACUUM;   -- 这一步才真正回收文件体积
+  ```
+  未迁移的旧表保持原样可继续读写；对旧表打开 `file_key = true` 会在启动时
+  报 `legacy ... backbone` 而不是写坏数据。
+
 ## Unreliable remote database
 
 - **Idempotent writes**: the storage row key is

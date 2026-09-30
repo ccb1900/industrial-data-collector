@@ -424,6 +424,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 			return fmt.Errorf("source-unit %q lazy_connect must be a boolean", cc.ID)
 		}
 	}
+	if raw, ok := cc.Config["file_key"]; ok {
+		if _, valid := boolCfgValue(raw); !valid {
+			return fmt.Errorf("source-unit %q file_key must be a boolean", cc.ID)
+		}
+	}
 	if _, err := appmetadata.ParseRules(cc.Config["path_metadata"]); err != nil {
 		return fmt.Errorf("source-unit %q path_metadata: %w", cc.ID, err)
 	}

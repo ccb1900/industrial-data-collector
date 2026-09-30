@@ -164,5 +164,9 @@ Persistent idempotency state is stored by the CollectionState component
 identity, so a retry skips successfully completed files and only retries failed
 ones. The storage row key is `source_id + collection_date + file_id +
 row_number`, making repeated writes idempotent even when an entire collection
-must be retried.
+must be retried. On sqlite a sink may instead set `file_key = true`, which keys
+rows by `(file_key, row_number)` — a small integer allocated once per file in
+the file registry — cutting the per-row repetition of the 77-byte `file_id`
+(measured ~59% smaller on the production table shape). See 存储骨架与体积 in
+`docs/OPERATIONS.md`.
 # industrial-data-collector

@@ -138,6 +138,7 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 				FileTable: configutil.OptionalString(cc, "file_table", ""),
 				Columns:   columns,
 				ExtraRows: configutil.OptionalBool(cc, "extra_rows", false),
+				FileKey:   configutil.OptionalBool(cc, "file_key", false),
 				Exposer:   configutil.OptionalBool(cc, "expose_console", false),
 				Lazy:      lazy,
 			}

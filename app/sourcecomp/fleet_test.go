@@ -246,3 +246,38 @@ func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 		t.Fatalf("cfg = %#v", out[0].Config)
 	}
 }
+
+// TestExpandFleetFileKeySink 骨架开关必须从 [[sinks]] 透传到展开后的源单元
+// 配置——sink 字段是白名单拷贝，漏一项就会静默失效。
+func TestExpandFleetFileKeySink(t *testing.T) {
+	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
+	on := true
+	sinks := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files", FileKey: &on}}
+	formats := []FormatDef{{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "t", Sink: "db"}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"aaa"}}}
+	machines := []MachineDef{{No: "A-01", IP: "10.0.0.1", Path: "logs-A01", Group: "g"}}
+
+	out, _, err := expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["file_key"]; got != true {
+		t.Fatalf("file_key = %#v, want true", got)
+	}
+	// 未声明的 sink 不得凭空多出这个键（golden 展开逐字节比对依赖此点）。
+	plain := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files"}}
+	if out, _, err = expandFleet(d, plain, formats, groups, machines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := out[0].Config["file_key"]; present {
+		t.Fatalf("file_key must be omitted when undeclared, got %#v", out[0].Config["file_key"])
+	}
+	// TOML 侧的解析入口同样要认这个键。
+	rows, err := parseSinks([]any{map[string]any{"name": "db", "driver": "sqlite", "dsn": "x", "file_key": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].FileKey == nil || *rows[0].FileKey != true {
+		t.Fatalf("parseSinks dropped file_key: %#v", rows)
+	}
+}

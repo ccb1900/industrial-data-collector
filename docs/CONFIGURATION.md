@@ -358,7 +358,7 @@ contributes the expanded Runtime rows before the Controller reconciles:
 | Layer | Declares | Keys |
 |---|---|---|
 | `defaults` | cross-cutting defaults | state_dir, date_policy, catchup_days, batch_size, file_stable_window_seconds, files_per_source (intra-source file concurrency, default 1), max_parallel_sources (process-wide parallel-source gate, default 4), backup_dir, backup_keep_days |
-| `[[sinks]]` | connection = credential | name, driver (sqlite/mysql/postgresql/oracle/sqlserver), dsn, file_table, lazy_connect |
+| `[[sinks]]` | connection = credential | name, driver (sqlite/mysql/postgresql/oracle/sqlserver), dsn, file_table, lazy_connect, file_key (sqlite only; store an integer file key instead of repeating `file_id` on every row — see 存储骨架与体积 in OPERATIONS.md) |
 | `[[formats]]` | one data file family = one table contract | name, match (file-name signature), table, sink reference, parser (encoding/header/allow_ragged/delimiter/skip_lines), columns (optional; default header auto-mapping), metadata (path/filename rules), layout |
 | `[[format_groups]]` | the collection scope of a machine type | name, formats (references to format names) |
 | `[[machines]]` | pure facts | no, ip, path (`{ip}`/`{no}` templates + date tokens YYYY/YY/MM/DD), group (references a format group), since, schedule (references a schedule name), metadata |
