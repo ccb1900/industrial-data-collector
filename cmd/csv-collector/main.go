@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	logstore "dynamic-runtime/extensions/console/logstore"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	procplugin "dynamic-runtime/extensions/console/procplugin"
@@ -66,6 +66,36 @@ func main() {
 		logger.Error("csv-collector failed", "error", err.Error())
 		os.Exit(1)
 	}
+}
+
+// summarizePassErrors 把本轮失败汇成一行规模 + 最多 5 条样例。
+func summarizePassErrors(errs []error) string {
+	total := 0
+	for _, e := range errs {
+		total += strings.Count(e.Error(), "\n") + 1
+	}
+	samples := make([]string, 0, 5)
+	shown := 0
+	for _, e := range errs {
+		for _, line := range strings.Split(e.Error(), "\n") {
+			if shown >= 5 {
+				break
+			}
+			samples = append(samples, line)
+			shown++
+		}
+		if shown >= 5 {
+			break
+		}
+	}
+	summary := fmt.Sprintf("%d 处失败", total)
+	if len(samples) > 0 {
+		summary += "; 样例: " + strings.Join(samples, " | ")
+	}
+	if total > len(samples) {
+		summary += fmt.Sprintf(" …其余 %d 条见采集台账", total-len(samples))
+	}
+	return summary
 }
 
 // multiFlag collects repeated --patch values.
@@ -187,7 +217,11 @@ func runOnce(logger *slog.Logger, configPath string, patchPaths []string) error 
 		// source, broken rows, unavailable database): report it through the
 		// exit code so the external scheduler can alert, while the local
 		// failure ledger keeps the retry state for the next trigger.
-		return fmt.Errorf("collection pass: %w", errors.Join(passErrs...))
+		//
+		// 汇总而非逐条拼接：千级源一次网络故障 = 数万条逐日期失败，
+		// 全文 join 出来的是十万行级的巨型错误（日志/内存双爆）。退避
+		// 状态在台账里，退出消息只需要规模 + 样例。
+		return fmt.Errorf("collection pass: %s", summarizePassErrors(passErrs))
 	}
 	if err := app.Close(ctx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)

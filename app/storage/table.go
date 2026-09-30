@@ -733,29 +733,10 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values")
 	}
-	placeholdersList := placeholders(t.cfg.Dialect, 1, len(cols))
 	conflict := "source_id, collection_date, file_id, row_number"
-	var stmt string
-	switch t.cfg.Dialect {
-	case "mysql":
-		stmt = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList)
-	case "oracle", "sqlserver":
-		// Oracle / SQL Server 无 ON CONFLICT：MERGE 幂等写入（与 generic
-		// 路径同语义）。src 子查询的每个绑定参数以目标列引用名为输出
-		// 别名，ON/INSERT 两处引用该别名——全部经 quoteIdent 保证一致。
-		// 差异只在 FROM DUAL（oracle）与无 FROM（sqlserver）。
-		stmt = mergeUpsert(t.cfg.Dialect, t.cfg.Table, cols, conflict)
-	default:
-		stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), placeholdersList, conflict)
-	}
-	// 语句整批预编译一次：database/sql 的 ExecContext 逐行调用会重复
-	// prepare，batch_size=1000 的 Oracle 批次就是 1000 次 prepare+execute；
-	// 预编译后循环内只做参数绑定与执行。
-	insertStmt, err := tx.PrepareContext(ctx, stmt)
-	if err != nil {
-		return errs.ClassifyStorageError("prepare insert", err)
-	}
-	defer insertStmt.Close()
+	// 先把全部行映射成绑定值：任何一行映射失败（必填列缺失等）在任何
+	// DB 往返发生之前就失败整个文件——与旧行为（事务回滚）等价，且更省。
+	rowValues := make([][]any, 0, len(batch.Records))
 	for i := range batch.Records {
 		rec := &batch.Records[i]
 		values, merr := t.mapRow(batch.Key, batch.File, batch.Header, rec.Fields, batch.Metadata, rec.RowNumber)
@@ -766,8 +747,33 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 			raw, _ := json.Marshal(rec.Fields)
 			values = append(values, string(raw))
 		}
-		if _, err := insertStmt.ExecContext(ctx, values...); err != nil {
-			return errs.ClassifyStorageError("write row "+batch.File.Name, err)
+		rowValues = append(rowValues, values)
+	}
+	// 多行写入：每 chunk 一次网络往返（逐行 ExecContext 在局域网
+	// Oracle 上是 1000 行 = 1000 次 RTT——切真库后的最大单项开销）。
+	// 幂等语义逐方言保留（见 buildMultiRow）。
+	n := chunkRowsFor(t.cfg.Dialect, len(cols))
+	for start := 0; start < len(rowValues); start += n {
+		end := start + n
+		if end > len(rowValues) {
+			end = len(rowValues)
+		}
+		chunk := rowValues[start:end]
+		stmt := buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
+		insertStmt, err := tx.PrepareContext(ctx, stmt)
+		if err != nil {
+			return errs.ClassifyStorageError("prepare insert", err)
+		}
+		args := make([]any, 0, len(chunk)*len(cols))
+		for _, v := range chunk {
+			args = append(args, v...)
+		}
+		if _, err := insertStmt.ExecContext(ctx, args...); err != nil {
+			insertStmt.Close()
+			return errs.ClassifyStorageError("write rows "+batch.File.Name, err)
+		}
+		if err := insertStmt.Close(); err != nil {
+			return errs.ClassifyStorageError("close insert", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

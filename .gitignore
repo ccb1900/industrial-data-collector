@@ -14,5 +14,6 @@ dist/
 !/web/dist/**
 /web-ui
 /dist/
+/csv-collector
 # 本地私有数据（含机台凭据），永不入库
 /.local/

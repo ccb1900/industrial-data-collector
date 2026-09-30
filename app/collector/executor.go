@@ -15,6 +15,7 @@ import (
 	appmetadata "gocordis-csv-collector/app/metadata"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/recovery"
+	"gocordis-csv-collector/internal/hostgate"
 )
 
 type Config struct {
@@ -136,9 +137,33 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 
 	var results []model.CollectionResult
 	var runErrs []error
-	for _, key := range keys {
+	// 宿主机健康闸的聚合语义：UNC 宿主不可达时只把第一个计划日期记为
+	// Failed（携带宿主级原因），其余日期本轮不物化、下轮随 catchup 自然
+	// 重排——否则一次网络故障就是 源数×窗口天数 的失败洪水，"需要处理"
+	// 不可读。宿主恢复后各日期照常补采。
+	skipRest := false
+	for i, key := range keys {
+		if skipRest {
+			cfg.Logger.Warn("unc host unreachable; remaining dates deferred to next pass",
+				"source", string(e.Source.ID()), "date", key.Date.String())
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return results, err
+		}
+		if i > 0 {
+			h := hostgate.HostOf(e.Source.Root())
+			if h == "" {
+				if rr, ok := e.Source.(interface{ RawRoot() string }); ok {
+					h = hostgate.HostOf(rr.RawRoot())
+				}
+			}
+			if h != "" && !hostgate.Reachable(ctx, h) {
+				skipRest = true
+				cfg.Logger.Warn("unc host unreachable; deferring remaining dates to next pass",
+					"source", string(e.Source.ID()), "host", h, "date", key.Date.String())
+				continue
+			}
 		}
 		res := e.collectOne(ctx, key)
 		if res != nil {

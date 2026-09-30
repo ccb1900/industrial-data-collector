@@ -18,6 +18,7 @@ import (
 
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
+	"gocordis-csv-collector/internal/hostgate"
 )
 
 // Source is one local or UNC file source. UNC and local are treated as the
@@ -35,6 +36,7 @@ import (
 type Source struct {
 	SourceID      model.SourceID
 	root          string
+	rawRoot       string // 归一化前的配置根（UNC 形状识别用）
 	Pattern       string
 	ContentDetect bool
 	Encoding      string
@@ -86,6 +88,7 @@ func nativeSep(p string) string {
 // 时不存在数据竞争。
 func (s *Source) normalize() {
 	s.normOnce.Do(func() {
+		s.rawRoot = s.root // 原始形态留底：宿主机健康闸按配置写的 UNC 形状识别
 		s.root = nativeSep(s.root)
 		s.Pattern = nativeSep(s.Pattern)
 		s.DateDirLayout = nativeSep(s.DateDirLayout)
@@ -115,6 +118,13 @@ func (s *Source) ID() model.SourceID {
 
 // Root returns the configured source root (ordinary path value; UNC included),
 // normalized to the host separator style.
+// RawRoot 返回配置原样的根路径（未做分隔符归一化）——宿主机健康闸
+// 按它识别 UNC 宿主。不存在 UNC 形状时与 Root 等价。
+func (s *Source) RawRoot() string {
+	s.normalize()
+	return s.rawRoot
+}
+
 func (s *Source) Root() string {
 	s.normalize()
 	return s.root
@@ -126,11 +136,31 @@ func (s *Source) now() time.Time {
 	return time.Now()
 }
 
+// checkHostGate 对 UNC 形状的路径先探宿主可达性：不可达立即返回
+// ErrUnavailable（可重试失败，语义与 SMB 超时一致），不撞 21s 的系统
+// 级超时。本地路径 HostOf 为空直接放行。
+// checkHostGate 对 UNC 形状的配置根先探宿主可达性：不可达立即返回
+// ErrUnavailable（可重试失败，语义与 SMB 超时一致），不撞 21s 的系统
+// 级超时。按 rawRoot（配置原样）识别——normalize 在 mac/Linux 上会把
+// UNC 改写成 unix 路径，归一化后的形状认不出宿主。本地路径放行。
+func checkHostGate(rawRoot string) error {
+	if h := hostgate.HostOf(rawRoot); h != "" && !hostgate.Reachable(context.Background(), h) {
+		return errs.Sourcef(errs.ErrUnavailable, "unc host %q unreachable (probed tcp/445)", h)
+	}
+	return nil
+}
+
 func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s.normalize()
+	// 宿主机健康闸：UNC 宿主不可达时立即失败（2s 探测 + TTL 缓存），
+	// 不让 os.Stat 在 Windows SMB 上等 ~21s——同宿主其余源走缓存秒过。
+	// 必须在分发之前：三种发现形态（flat/文件名日期/目录走查）都要覆盖。
+	if err := checkHostGate(s.rawRoot); err != nil {
+		return nil, err
+	}
 	if s.Flat {
 		return s.listFlat(ctx)
 	}
