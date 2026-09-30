@@ -762,7 +762,6 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 //
 // 注册表的 (file_key) 唯一索引是最后防线：万一发号被并发击穿，这里报错
 // 而不是让两个文件共用一个键（那会让数据行静默挂到别的文件上）。
-// fileKeyMu 保留给 sqlite 的单连接同句多语句语义之外的进程内串行。
 //
 // 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
 // 会在跨实例场景下读到过期键。

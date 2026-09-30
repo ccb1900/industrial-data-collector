@@ -215,8 +215,8 @@ func TestAutoColumnsGrowsAcrossInstances(t *testing.T) {
 	w := func(tw *TableStorage, src, name string, header, fields []string) {
 		t.Helper()
 		err := tw.Write(ctx, model.Batch{
-			Key: model.CollectionKey{SourceID: model.SourceID(src), Date: date},
-			File: model.FileIdentity{SourceID: model.SourceID(src), Path: "/" + name, Name: name, Hash: name},
+			Key:    model.CollectionKey{SourceID: model.SourceID(src), Date: date},
+			File:   model.FileIdentity{SourceID: model.SourceID(src), Path: "/" + name, Name: name, Hash: name},
 			Header: header, Records: []model.Record{{RowNumber: 1, Fields: fields}},
 		})
 		if err != nil {
