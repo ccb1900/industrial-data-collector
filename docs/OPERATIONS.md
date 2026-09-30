@@ -192,6 +192,48 @@ Recovery is planned at every trigger, in the collector application layer
 只写"按语法分支 + fail-fast"。本文里的 uuid 对照数字来自一次性测量（跑完即删，仓库内无
 基准代码），需要新数字须重建测量。
 
+## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
+
+现象：注册表（现场即 `laser_files`）每文件的 `records` 列一直是 0，而同一条数据在
+file-state 与控制台的"记录数"里是对的。用真实代码路径复现（一次性测试，跑完即删）：
+
+```
+file_key 骨架：数据表实际行数=5  注册表 records=0  注册表行数=1
+legacy   骨架：数据表实际行数=5  注册表 records=0  注册表行数=1
+```
+
+原因（三条都已核实，非推测）：
+
+1. **写入时就是字面 0**：legacy 骨架的注册表 INSERT 把 `records` 实参写成 `0`
+   （`Write` 内，table.go:820 附近）；`file_key` 骨架把它嵌进 SQL 字符串
+   （`resolveFileKey`，table.go:759 的 `", 0,"`）。两条路径都只 INSERT、从不更新。
+2. **全仓没有第二处更新它**：对 `app/` + `components/` grep `UPDATE`，命中注册表的只有
+   `resolveFileKey` 里那条 `SET file_key = …` 补键语句；不存在 `SET records`。
+3. **存储层根本拿不到总数**：`model.Storage` 接口只有 `Write(batch)` 与 `Close()`
+   （app/model/model.go:241-244），**没有"文件收尾"钩子**；真正的总数走另一条不相通的
+   路——`app/collector/executor.go:465` 的 `State.MarkFileCompleted(ctx, key, file, fr.Records)`
+   落到 file-state JSON 与读模型。结论：该列自注册表引入（3ef1a7c）起就依赖一个不存在
+   的回调，**与 `file_key` 无关，不是它的回归**。
+
+测试脚手架提醒（避免误判）：`app/storage/filekey_test.go` 的 `writeBatch` 每个批次都从
+`RowNumber = 1` 重新编号，跨批写会撞 `ON CONFLICT DO NOTHING` 而静默丢行；真实执行器的
+行号来自 parser（`app/parser/parser.go:191`），整文件连续、无此问题。用它做跨批断言前
+先看清这一点。
+
+待拍板方案：
+
+1. **收尾回填（推荐，唯一语义正确的写法）**：`model` 增可选接口
+   （如 `MarkFileTotal(ctx, key, file, records int64) error`），executor 在
+   `MarkFileCompleted` 成功后类型断言调用一次；`TableStorage` 实现为**绝对值覆写**的
+   方言中性 `UPDATE … SET records = ? WHERE <三元组>`（走 `placeholders()`，两骨架共用
+   一条语句）。代价：每文件一次往返，不是每批。重放/重采集天然正确。须补回归测试：
+   写 5 行 + 收尾 → `records = 5`；整文件重采一遍仍是 5。
+2. **每批覆写、不加接口**：存储层自维护 per-file 累计。**语义错**——进程重启后只重采
+   剩余批次，累计值小于真实行数并把好值覆小；要准只能每批回查 `COUNT(*)`，代价随表增长。
+3. **不写、改读侧派生**：文档标注该列未维护（或直接去掉该列），需要每文件行数时用
+   `SELECT … COUNT(*) … GROUP BY`（现场 `laser_files` 仅 8.45 MB / 20118 行，可接受）。
+   改动最小，但恒 0 的列留在表里就是误导源——本次正是这样被发现。
+
 ## Unreliable remote database
 
 - **Idempotent writes**: the storage row key is
