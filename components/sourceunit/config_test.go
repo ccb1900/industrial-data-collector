@@ -82,9 +82,14 @@ func TestBuildStorageFileKey(t *testing.T) {
 	if _, _, _, err := buildStorage(bad); err == nil || !strings.Contains(err.Error(), "requires file_table") {
 		t.Fatalf("err = %v, want the file_table requirement", err)
 	}
-	// 非 sqlite 方言拒绝。
+	// 发号改为五方言同构的计数器行后，非 sqlite 方言被接受（曾有的
+	// sqlite-only 闸门随 MAX+1 发号一起退役）。
 	mssql := map[string]any{"storage": "sqlserver", "dsn": "x", "table": "t", "file_table": "f", "columns": cols, "file_key": true}
-	if _, _, _, err := buildStorage(mssql); err == nil || !strings.Contains(err.Error(), "sqlite") {
-		t.Fatalf("err = %v, want the sqlite-only restriction", err)
+	_, _, tableCfg, err := buildStorage(mssql)
+	if err != nil {
+		t.Fatalf("sqlserver file_key: %v", err)
+	}
+	if tableCfg == nil || !tableCfg.FileKey || tableCfg.Dialect != "sqlserver" {
+		t.Fatalf("sqlserver FileKey not propagated: %+v", tableCfg)
 	}
 }

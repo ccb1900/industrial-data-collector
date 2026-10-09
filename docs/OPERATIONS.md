@@ -99,7 +99,7 @@ Recovery is planned at every trigger, in the collector application layer
 | 骨架 | 数据表主键 | 每行键开销 | 适用 |
 |---|---|---|---|
 | legacy（默认，历史库即此形状） | `(source_id, collection_date, file_id, row_number)` | `file_id` 是 `source\|完整路径\|size\|modtime` 的 77 字节串，逐行存一遍，复合主键的 `sqlite_autoindex_*` 里再存一遍 | 需要跨库通用（含 Oracle / SQL Server） |
-| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`MAX(file_key)+1` + 唯一索引） | **仅 sqlite**：实际串行只来自单库单连接（`openTuned` 的 `MaxOpenConns(1)`），进程级 `fileKeyMu` 经核查在 commit 前就释放、对提交窗口无效；发号方式与方言缺陷的评审见下文小节 |
+| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`<file_table>_file_key_seq` 单行计数器，同事务 `UPDATE next=next+1` + 回读，行锁即互斥） | 五方言同构（`Validate()` 已放开）；**实测仅 sqlite**，其余按语法分支 + fail-fast。发号方式与方言缺陷的评审与实施见下文小节 |
 
 现场实测（`collect2.db`，4.83 GiB，`freelist_count = 0`）：数据表 3306.9 MB +
 `sqlite_autoindex_*` 1639.6 MB（**33.1%**），其中 `laser_aaa` 单表 325 B/行里有
@@ -192,6 +192,28 @@ Recovery is planned at every trigger, in the collector application layer
 只写"按语法分支 + fail-fast"。本文里的 uuid 对照数字来自一次性测量（跑完即删，仓库内无
 基准代码），需要新数字须重建测量。
 
+**2026-09-30 实施：方案 1（计数器行）落地，四处方言缺陷连带修复。**
+
+- 发号改为 `<file_table>_file_key_seq` 单行计数器表：同事务 `UPDATE next=next+1`
+  + `SELECT next` 回读，五方言同一条 SQL；UPDATE 行锁即发号互斥，MAX+1 的
+  读-改-写竞争不复存在。计数器行缺失时以注册表 `MAX(file_key)` 为基线初始化
+  （存量迁移库补键场景）。进程级 `fileKeyMu` **已删除**——它对本该保护的提交
+  窗口无效（在 `resolveFileKey` 返回时就释放），互斥现在交给引擎的行锁。
+- 四处缺陷逐项：①lookup/UPDATE/INSERT 全部经 `placeholders()`（各方言占位符
+  正确）；②`INSERT…SELECT MAX+1` 已随发号改造消失（新文件走计数器 + 普通
+  INSERT，空注册表不再有 0 行问题）；③唯一索引按方言分支——sqlite/postgres
+  `IF NOT EXISTS`、oracle 匿名块捕 ORA-955、sqlserver 查 sys.indexes、mysql
+  直接 CREATE（重复即报错，语义等价）；④注册表 INSERT 的 mysql 分支改
+  `INSERT IGNORE`，oracle/sqlserver 保持 MERGE（并发登记同文件幂等，命中后
+  读回既有键）。
+- **④ 只修了一半（合并时按代码核实）**：改动落在 `file_key` 路径的
+  `resolveFileKey`；legacy 骨架的注册表写入（`Write` 里 `FileTable != "" &&
+  !FileKey && batch.Sequence == 1` 分支）仍对非 oracle/sqlserver 一律用
+  `ON CONFLICT … DO NOTHING`，MySQL 依旧语法错误。现网 1119 个源默认走
+  legacy 骨架，所以这条不是死代码上的瑕疵。
+- `Validate()` 的 sqlite-only 闸门与相关断言退役；`file_key` 现在声明支持五
+  方言（验证边界不变：实测仅 sqlite，其余按语法分支 + fail-fast）。
+
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
 现象：注册表（现场即 `laser_files`）每文件的 `records` 列一直是 0，而同一条数据在
@@ -202,13 +224,13 @@ file_key 骨架：数据表实际行数=5  注册表 records=0  注册表行数=
 legacy   骨架：数据表实际行数=5  注册表 records=0  注册表行数=1
 ```
 
-原因（三条都已核实，非推测）：
+原因（三条都已核实，非推测；发号改造合并后重新核过，结论不变）：
 
 1. **写入时就是字面 0**：legacy 骨架的注册表 INSERT 把 `records` 实参写成 `0`
-   （`Write` 内，table.go:820 附近）；`file_key` 骨架把它嵌进 SQL 字符串
-   （`resolveFileKey`，table.go:759 的 `", 0,"`）。两条路径都只 INSERT、从不更新。
-2. **全仓没有第二处更新它**：对 `app/` + `components/` grep `UPDATE`，命中注册表的只有
-   `resolveFileKey` 里那条 `SET file_key = …` 补键语句；不存在 `SET records`。
+   （`Write` 内，table.go:915 附近）；`file_key` 骨架在三条方言分支里各传
+   `int64(0)`（`resolveFileKey`）。两条路径都只 INSERT、从不更新。
+2. **没有第三处更新它**：注册表现今被 UPDATE 两处——`resolveFileKey` 的补键
+   `SET file_key = ?` 与计数器表的 `SET next = next + 1`——都不碰 `records`。
 3. **存储层根本拿不到总数**：`model.Storage` 接口只有 `Write(batch)` 与 `Close()`
    （app/model/model.go:241-244），**没有"文件收尾"钩子**；真正的总数走另一条不相通的
    路——`app/collector/executor.go:465` 的 `State.MarkFileCompleted(ctx, key, file, fr.Records)`
