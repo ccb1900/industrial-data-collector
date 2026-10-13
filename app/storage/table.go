@@ -67,20 +67,14 @@ type TableConfig struct {
 	ExtraRows bool            // store unmapped CSV fields into row_values TEXT
 	Exposer   bool            // expose the RowsQuery capability for consoles
 	Lazy      bool            // defer connection to first use
-	// FileKey 用整型外键替代逐行的 file_id 文本：数据表主键变成
-	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配。
-	// 需要 FileTable（注册表从可选变为必需）。仅支持 sqlite：分配走
-	// "同事务 MAX+1 + 唯一索引"，依赖 openTuned 给单库只开一条连接
-	// （写事务互斥）；网络库要换成数据库侧序列后另行放开。
 	// AutoColumns 自动字段映射：Columns 未声明时，按解码表头建列（全部
 	// TEXT，列名即表头文本；重名表头第 k(k>=2) 次出现加后缀 __k），后续
 	// 文件出现新表头字段时增量 ALTER 补列。声明了 Columns 时本开关无效。
 	AutoColumns bool
 	// FileKey 用整型外键替代逐行的 file_id 文本：数据表主键变成
-	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配。
-	// 需要 FileTable（注册表从可选变为必需）。仅支持 sqlite：分配走
-	// "同事务 MAX+1 + 唯一索引"，依赖 openTuned 给单库只开一条连接
-	// （写事务互斥）；网络库要换成数据库侧序列后另行放开。
+	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配
+	// （<file_table>_file_key_seq 计数器行，同事务 UPDATE+SELECT，五方言
+	// 同构）。需要 FileTable（注册表从可选变为必需）。
 	FileKey bool
 }
 
@@ -418,6 +412,18 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			"file_id VARCHAR2(255) NOT NULL",
 			"row_number NUMBER(19) NOT NULL",
 		}
+	case mssql:
+		// SQL Server 的键列必须定宽有界：聚集索引键上限实测 900 字节，超了
+		// 到 INSERT 才报 1946，而 dt["text"] 的 NVARCHAR(4000) 直接进主键
+		// 必然踩线。file_id 要装得下完整文件身份（含长 UNC 路径），取 512，
+		// 相应把主键声明为非聚集（实测最坏 1291 字节可过）。
+		cols = []string{
+			"source_id NVARCHAR(128) NOT NULL",
+			"collection_date DATE NOT NULL",
+			"file_id NVARCHAR(512) NOT NULL",
+			"row_number BIGINT NOT NULL",
+		}
+		pk = "PRIMARY KEY NONCLUSTERED (source_id, collection_date, file_id, row_number)"
 	default:
 		cols = []string{
 			"source_id " + dt["text"] + " NOT NULL",
@@ -485,9 +491,10 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 				fileDDL = ""
 			}
 		} else if mssql {
-			// 同 oracle：无 IF NOT EXISTS，查 sys.objects。
+			// 同 oracle：无 IF NOT EXISTS，查 sys.objects。键列宽度与非聚集
+			// 主键的取舍同数据表（见上方 ensureSchema 的 mssql 分支）。
 			if !t.tableExists(ctx, t.cfg.FileTable) {
-				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id NVARCHAR(255) NOT NULL, collection_date DATE NOT NULL, file_id NVARCHAR(255) NOT NULL, path NVARCHAR(1000), name NVARCHAR(255), records BIGINT, header NVARCHAR(4000), collected_at DATETIME2, PRIMARY KEY (source_id, collection_date, file_id))", ft)
+				fileDDL = fmt.Sprintf("CREATE TABLE %s (source_id NVARCHAR(128) NOT NULL, collection_date DATE NOT NULL, file_id NVARCHAR(512) NOT NULL, path NVARCHAR(1000), name NVARCHAR(255), records BIGINT, header NVARCHAR(4000), collected_at DATETIME2, PRIMARY KEY NONCLUSTERED (source_id, collection_date, file_id))", ft)
 			} else {
 				fileDDL = ""
 			}
@@ -524,7 +531,8 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			uqDDL := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (file_key)", uq, ft)
 			switch t.cfg.Dialect {
 			case "oracle":
-				uqDDL = fmt.Sprintf("BEGIN EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX %s ON %s (file_key)'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END", uq, ft)
+				// PL/SQL 匿名块必须以 END; 收尾，缺分号会在解析期报 PLS-00103。
+				uqDDL = fmt.Sprintf("BEGIN EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX %s ON %s (file_key)'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;", uq, ft)
 			case "sqlserver":
 				uqDDL = fmt.Sprintf("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = '%s' AND object_id = OBJECT_ID('%s')) CREATE UNIQUE INDEX %s ON %s (file_key)",
 					t.cfg.FileTable+"_file_key_uq", t.cfg.FileTable, uq, ft)
@@ -544,6 +552,12 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 					}
 				}
 			} else if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (name %s NOT NULL, next %s NOT NULL, %s)", seq, dt["text"], dt["bigint"], pkConstraint(t.cfg.Dialect, "name"))); err != nil {
+				return err
+			}
+			// 计数器行在这里就播好：播种是唯一有并发撞键可能的动作（MERGE 的
+			// WHEN NOT MATCHED 是快照判定，两家同时插仍会 2627），放在事务外
+			// 才能"插失败→回查确认"而不牵连写事务。
+			if err := t.ensureFileKeyCounter(ctx); err != nil {
 				return err
 			}
 		}
@@ -626,9 +640,24 @@ func (t *TableStorage) existingColumns(ctx context.Context, table string) ([]str
 			out = append(out, name)
 		}
 		err = rows.Err()
-	default: // postgres / mysql: information_schema
+	default: // mysql: information_schema（占位符 ?）
 		rows, e := t.db.QueryContext(ctx,
 			"SELECT column_name FROM information_schema.columns WHERE table_name = ?", table)
+		if e != nil {
+			return nil, e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if e := rows.Scan(&name); e != nil {
+				return nil, e
+			}
+			out = append(out, name)
+		}
+		err = rows.Err()
+	case "postgres": // information_schema（占位符 $1）
+		rows, e := t.db.QueryContext(ctx,
+			"SELECT column_name FROM information_schema.columns WHERE table_name = $1", table)
 		if e != nil {
 			return nil, e
 		}
@@ -793,36 +822,24 @@ func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch mod
 		if err != nil {
 			return 0, err
 		}
-		// 新文件首次登记。ON CONFLICT 分支按方言：mysql 是 INSERT IGNORE
-		// （既有缺陷在数据行路径已分开关照，注册表路径同规则）；oracle/
-		// sqlserver 保持 MERGE（并发触发同文件时幂等）。
+		// 新文件首次登记：语句按方言选"命中三元组就不插"的写法
+		// （见 insertIfMissingStmt）。
 		cols := []string{"file_key", "source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
 		conflict := "source_id, collection_date, file_id"
-		var insert string
-		switch t.cfg.Dialect {
-		case "mysql":
-			insert = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", ft, strings.Join(cols, ", "), placeholders(t.cfg.Dialect, 1, len(cols)))
-		case "oracle", "sqlserver":
-			insert = mergeUpsert(t.cfg.Dialect, t.cfg.FileTable, cols, conflict)
-			// mergeUpsert 的参数序从 1 开始：file_key 是第一列，恰与键值在前一致。
-			args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
-				batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
-			if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
-				return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
-			}
-			// MERGE 命中既有行（并发登记同一文件）：读回那一行的键。
-			if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
-				return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
-			}
-			return found.Int64, nil
-		default:
-			insert = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
-				ft, strings.Join(cols, ", "), placeholders(t.cfg.Dialect, 1, len(cols)), conflict)
-		}
+		insert := insertIfMissingStmt(t.cfg.Dialect, t.cfg.FileTable, cols, conflict)
+		// 参数序从 1 开始：file_key 是第一列，与键值在前一致。
 		args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
 			batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
 		if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
 			return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
+		}
+		if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
+			// MERGE 命中既有行（并发登记同一文件）：读回那一行的键，
+			// 而不是本次为竞争者多发的键。
+			if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
+				return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
+			}
+			return found.Int64, nil
 		}
 		return key, nil
 	default:
@@ -831,41 +848,135 @@ func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch mod
 }
 
 // nextFileKey 从计数器表发下一个键：同事务 UPDATE+SELECT，五方言同构。
-// 计数器行缺失（首用/手工建库）时以注册表现有最大键为基线初始化。
+// UPDATE 的行锁就是发号互斥——读回的值在锁释放前不会被别人改。
+// 计数器行正常情况下已由 ensureFileKeyCounter 在 schema 阶段播好；这里
+// 只在行缺失（手工建库、计数器被删）时兜底播种。
 func (t *TableStorage) nextFileKey(ctx context.Context, tx *sql.Tx, seq string) (int64, error) {
 	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
 	name := t.cfg.FileTable
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf("UPDATE %s SET next = next + 1 WHERE name = %s", seq, p(1, 1)), name); err != nil {
-		return 0, errs.ClassifyStorageError("file key advance "+name, err)
-	}
-	var next sql.NullInt64
-	err := tx.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT next FROM %s WHERE name = %s", seq, p(1, 1)), name).Scan(&next)
-	switch {
-	case err == nil && next.Valid:
-		return next.Int64, nil
-	case err == nil:
-		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key counter %q holds NULL", name)
-	case errors.Is(err, sql.ErrNoRows):
-		// 基线：注册表里已有的最大键（存量迁移库），没有则 0。
-		var base sql.NullInt64
-		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
+	advance := func() (int64, bool, error) {
+		res, err := tx.ExecContext(ctx,
+			fmt.Sprintf("UPDATE %s SET next = next + 1 WHERE name = %s", seq, p(1, 1)), name)
+		if err != nil {
+			return 0, false, errs.ClassifyStorageError("file key advance "+name, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, false, errs.ClassifyStorageError("file key advance "+name, err)
+		}
+		if n == 0 {
+			return 0, false, nil // 计数器行还没有
+		}
+		var next sql.NullInt64
 		if err := tx.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT MAX(file_key) FROM %s", ft)).Scan(&base); err != nil {
-			return 0, errs.ClassifyStorageError("file key baseline "+name, err)
+			fmt.Sprintf("SELECT next FROM %s WHERE name = %s", seq, p(1, 1)), name).Scan(&next); err != nil {
+			return 0, false, errs.ClassifyStorageError("file key read "+name, err)
 		}
-		start := int64(1)
-		if base.Valid {
-			start = base.Int64 + 1
+		if !next.Valid {
+			return 0, false, errs.Sourcef(errs.ErrStoragePermanent, "file key counter %q holds NULL", name)
 		}
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf("INSERT INTO %s (name, next) VALUES (%s, %s)", seq, p(1, 1), p(2, 1)), name, start); err != nil {
-			return 0, errs.ClassifyStorageError("file key counter init "+name, err)
+		return next.Int64, true, nil
+	}
+	key, ok, err := advance()
+	if err != nil || ok {
+		return key, err
+	}
+	if err := t.seedFileKeyCounter(ctx, tx, name); err != nil {
+		return 0, err
+	}
+	key, ok, err = advance()
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key counter row for %q missing after seeding", name)
+	}
+	return key, nil
+}
+
+// seedFileKeyCounter 幂等地写入计数器行。基线 = 注册表已有最大键（next 的
+// 语义是"上一个已发出的键"，空注册表为 0，因此首个键是 1）。事务内的这一
+// 路径只是兜底（手工建库、计数器行被删）；常规播种在 schema 阶段完成，
+// 见 ensureFileKeyCounter。
+func (t *TableStorage) seedFileKeyCounter(ctx context.Context, tx *sql.Tx, name string) error {
+	base, err := t.fileKeyBaseline(ctx, tx.QueryRowContext(ctx, "SELECT MAX(file_key) FROM "+
+		quoteIdent(t.cfg.Dialect, t.cfg.FileTable)))
+	if err != nil {
+		return err
+	}
+	cols := []string{"name", "next"}
+	rawSeq := t.cfg.FileTable + "_file_key_seq"
+	if _, err := tx.ExecContext(ctx, seedCounterStmt(t.cfg.Dialect, rawSeq, cols), name, base); err != nil {
+		return errs.ClassifyStorageError("file key counter seed "+name, err)
+	}
+	return nil
+}
+
+// ensureFileKeyCounter 在 schema 阶段、写事务之外把计数器行播好。播种是发号
+// 路径上唯一有并发撞键可能的动作（MERGE 的 WHEN NOT MATCHED 是快照判定，两家
+// 同时插仍会 2627），放在事务外才能"插失败→回查确认"而不牵连写事务——
+// sqlite 的单连接（openTuned 里 SetMaxOpenConns(1)）也要求这件事不能在事务
+// 持有的同时再发语句。
+func (t *TableStorage) ensureFileKeyCounter(ctx context.Context) error {
+	name := t.cfg.FileTable
+	seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
+	probe := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE name = %s", seq, placeholders(t.cfg.Dialect, 1, 1))
+	var cnt int
+	if err := t.db.QueryRowContext(ctx, probe, name).Scan(&cnt); err != nil {
+		return errs.ClassifyStorageError("file key counter probe "+name, err)
+	}
+	if cnt > 0 {
+		return nil
+	}
+	base, err := t.fileKeyBaseline(ctx, t.db.QueryRowContext(ctx,
+		"SELECT MAX(file_key) FROM "+quoteIdent(t.cfg.Dialect, t.cfg.FileTable)))
+	if err != nil {
+		return err
+	}
+	seed := seedCounterStmt(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq", []string{"name", "next"})
+	if _, err := t.db.ExecContext(ctx, seed, name, base); err != nil {
+		// 并发实例抢先播种：回查确认存在即算成功。
+		if err2 := t.db.QueryRowContext(ctx, probe, name).Scan(&cnt); err2 == nil && cnt > 0 {
+			return nil
 		}
-		return start, nil
+		return errs.ClassifyStorageError("file key counter seed "+name, err)
+	}
+	return nil
+}
+
+// fileKeyBaseline 取注册表当前最大键作为计数器基线；row 为
+// SELECT MAX(file_key) 的单行查询（NULL/空表 → 0）。
+func (t *TableStorage) fileKeyBaseline(ctx context.Context, row *sql.Row) (int64, error) {
+	var base sql.NullInt64
+	if err := row.Scan(&base); err != nil {
+		return 0, errs.ClassifyStorageError("file key baseline", err)
+	}
+	if !base.Valid {
+		return 0, nil
+	}
+	return base.Int64, nil
+}
+
+// seedCounterStmt 生成"计数器行不存在才插"的语句（两列：name、next）。
+func seedCounterStmt(dialect, rawTable string, cols []string) string {
+	return insertIfMissingStmt(dialect, rawTable, cols, "name")
+}
+
+// insertIfMissingStmt 生成"命中冲突键就不插"的语句。各家写法互斥：
+// oracle/sqlserver 只能 MERGE，mysql 无 ON CONFLICT（用 INSERT IGNORE），
+// sqlite/postgres 用 ON CONFLICT DO NOTHING。没有哪一家的写法能通吃，
+// 所以这一处按方言分支，写错的代价是"整条写入路径报语法错"。
+func insertIfMissingStmt(dialect, rawTable string, cols []string, conflict string) string {
+	q := quoteIdent(dialect, rawTable)
+	switch dialect {
+	case "oracle", "sqlserver":
+		return mergeUpsert(dialect, rawTable, cols, conflict)
+	case "mysql":
+		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)",
+			q, strings.Join(cols, ", "), placeholders(dialect, 1, len(cols)))
 	default:
-		return 0, errs.ClassifyStorageError("file key read "+name, err)
+		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
+			q, strings.Join(cols, ", "), placeholders(dialect, 1, len(cols)), conflict)
 	}
 }
 
@@ -900,16 +1011,8 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	// 模式下这一步改由 resolveFileKey 逐批负责（批批要有键，注册表行缺则补）。
 	if t.cfg.FileTable != "" && !t.cfg.FileKey && batch.Sequence == 1 {
 		header := strings.Join(batch.Header, ",")
-		ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 		fCols := []string{"source_id", "collection_date", "file_id", "path", "name", "records", "header", "collected_at"}
-		var fStmt string
-		if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
-			fStmt = mergeUpsert(t.cfg.Dialect, t.cfg.FileTable, fCols, "source_id, collection_date, file_id")
-		} else {
-			fStmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id) DO NOTHING",
-				ft, strings.Join(fCols, ", "), placeholders(t.cfg.Dialect, 1, len(fCols)))
-		}
-		stmt := fStmt
+		stmt := insertIfMissingStmt(t.cfg.Dialect, t.cfg.FileTable, fCols, "source_id, collection_date, file_id")
 		if _, err := tx.ExecContext(ctx, stmt,
 			string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
 			batch.File.Path, batch.File.Name, 0, header, batch.CreatedAt); err != nil {
@@ -1056,27 +1159,9 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		return "d." + q
 	}
 	// sourceID/date 留空表示该维度不过滤：控制台的跨批次查询依赖这一点。
-	where := []string{}
-	args := []any{}
-	if sourceID != "" {
-		where = append(where, qual("source_id")+" = ?")
-		args = append(args, sourceID)
-	}
-	if date != "" {
-		where = append(where, qual("collection_date")+" = ?")
-		args = append(args, date)
-	}
-	filterCols := make([]string, 0, len(filters))
-	for c := range filters {
-		filterCols = append(filterCols, c)
-	}
-	sort.Strings(filterCols)
-	for _, c := range filterCols {
-		if !declared[strings.ToLower(c)] {
-			return page, errs.Sourcef(errs.ErrInvalidConfig, "filter column %q is not a declared column", c)
-		}
-		where = append(where, qual(c)+" = ?")
-		args = append(args, filters[c])
+	where, args, err := readFilterClauses(t.cfg.Dialect, qual, t.dateFilterBind, sourceID, date, filters, declared)
+	if err != nil {
+		return page, err
 	}
 	w := ""
 	if len(where) > 0 {
@@ -1142,6 +1227,37 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 		return page, errs.ClassifyStorageError("iterate rows", err)
 	}
 	return page, nil
+}
+
+// readFilterClauses 组装读侧的过滤条件。占位符必须逐方言生成：写死 ? 在
+// sqlserver（@pN）与 oracle（:N）上不是合法绑定，实测 mssql 报
+// "Incorrect syntax near '?'"。序号随 args 长度递增，五方言共用一条规则。
+func readFilterClauses(dialect string, qual func(string) string, dateBind func(string) any,
+	sourceID, date string, filters map[string]string, declared map[string]bool) ([]string, []any, error) {
+	where := []string{}
+	args := []any{}
+	bind := func() string { return placeholders(dialect, len(args)+1, 1) }
+	if sourceID != "" {
+		where = append(where, qual("source_id")+" = "+bind())
+		args = append(args, sourceID)
+	}
+	if date != "" {
+		where = append(where, qual("collection_date")+" = "+bind())
+		args = append(args, dateBind(date))
+	}
+	filterCols := make([]string, 0, len(filters))
+	for c := range filters {
+		filterCols = append(filterCols, c)
+	}
+	sort.Strings(filterCols)
+	for _, c := range filterCols {
+		if !declared[strings.ToLower(c)] {
+			return nil, nil, errs.Sourcef(errs.ErrInvalidConfig, "filter column %q is not a declared column", c)
+		}
+		where = append(where, qual(c)+" = "+bind())
+		args = append(args, filters[c])
+	}
+	return where, args, nil
 }
 
 // Stats implements the storage insight view: connectivity plus per-table row
@@ -1224,12 +1340,30 @@ func (t *TableStorage) dateBind(d model.CollectionDate) any {
 	return d.String()
 }
 
-// mergeUpsert 生成 Oracle / SQL Server 的 MERGE 幂等写入。两家的差异
-// 只在 FROM DUAL（oracle 必需）与无 FROM（sqlserver 禁止）。
+// dateFilterBind 是读侧的日期过滤值：与 dateBind 同规则，否则写入用
+// time.Time、过滤用字符串，oracle 的 DATE 列两边比不上。
+func (t *TableStorage) dateFilterBind(s string) any {
+	if t.cfg.Dialect != "oracle" {
+		return s
+	}
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte(s)); err != nil {
+		return s // 非 ISO 日期：原样交给数据库，失败即报错，不做静默猜测
+	}
+	return d.Time()
+}
+
+// mergeUpsert 生成 Oracle / SQL Server 的 MERGE 幂等写入。三家差异都在
+// 这里收口：绑定符（oracle :N / sqlserver @pN）、FROM DUAL（oracle 必需、
+// sqlserver 禁止）、语句终止符（T-SQL 的 MERGE 必须以分号结束）。
 func mergeUpsert(dialect, table string, cols []string, conflict string) string {
 	dual := ""
 	if dialect == "oracle" {
 		dual = " FROM DUAL"
+	}
+	semi := ""
+	if dialect == "sqlserver" {
+		semi = ";"
 	}
 	var selected, insertCols, insertVals, on []string
 	keySet := map[string]bool{}
@@ -1238,14 +1372,14 @@ func mergeUpsert(dialect, table string, cols []string, conflict string) string {
 	}
 	for i, c := range cols {
 		alias := fmt.Sprintf("c%d", i)
-		selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, alias))
+		selected = append(selected, fmt.Sprintf("%s AS %s", placeholders(dialect, i+1, 1), alias))
 		insertCols = append(insertCols, c)
 		insertVals = append(insertVals, "src."+alias)
 		if keySet[strings.ToLower(strings.Trim(c, `"`))] {
 			on = append(on, fmt.Sprintf("dst.%s = src.%s", c, alias))
 		}
 	}
-	return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s%s) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+	return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s%s) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)%s",
 		quoteIdent(dialect, table), strings.Join(selected, ", "), dual,
-		strings.Join(on, " AND "), strings.Join(insertCols, ", "), strings.Join(insertVals, ", "))
+		strings.Join(on, " AND "), strings.Join(insertCols, ", "), strings.Join(insertVals, ", "), semi)
 }

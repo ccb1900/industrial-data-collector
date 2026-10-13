@@ -57,11 +57,12 @@ func buildMultiRow(dialect, table string, cols []string, conflict string, n int)
 			q, strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "), conflict)
 	case "sqlserver":
 		// MERGE ... USING (VALUES (...),(...)) src (c0,c1,...)：多行 MERGE。
+		// T-SQL 的 MERGE 必须以分号结束（否则 10713）。
 		aliases := make([]string, 0, len(cols))
 		for i := range cols {
 			aliases = append(aliases, srcAlias(i))
 		}
-		return fmt.Sprintf("MERGE INTO %s dst USING (VALUES %s) src (%s) ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
+		return fmt.Sprintf("MERGE INTO %s dst USING (VALUES %s) src (%s) ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s);",
 			q, strings.Join(valueRows(dialect, cols, n), ", "),
 			strings.Join(aliases, ", "),
 			strings.Join(onClause(cols, conflict), " AND "),

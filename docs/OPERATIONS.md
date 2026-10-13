@@ -99,7 +99,7 @@ Recovery is planned at every trigger, in the collector application layer
 | 骨架 | 数据表主键 | 每行键开销 | 适用 |
 |---|---|---|---|
 | legacy（默认，历史库即此形状） | `(source_id, collection_date, file_id, row_number)` | `file_id` 是 `source\|完整路径\|size\|modtime` 的 77 字节串，逐行存一遍，复合主键的 `sqlite_autoindex_*` 里再存一遍 | 需要跨库通用（含 Oracle / SQL Server） |
-| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`<file_table>_file_key_seq` 单行计数器，同事务 `UPDATE next=next+1` + 回读，行锁即互斥） | 五方言同构（`Validate()` 已放开）；**实测仅 sqlite**，其余按语法分支 + fail-fast。发号方式与方言缺陷的评审与实施见下文小节 |
+| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`<file_table>_file_key_seq` 单行计数器，同事务 `UPDATE next=next+1` + 回读，行锁即互斥） | 五方言同构（`Validate()` 已放开）；**实测 sqlite 与 sqlserver**（SQL Server 2019 CU32，见下文小节），oracle / mysql / postgres 仍为语法分支 + fail-fast |
 
 现场实测（`collect2.db`，4.83 GiB，`freelist_count = 0`）：数据表 3306.9 MB +
 `sqlite_autoindex_*` 1639.6 MB（**33.1%**），其中 `laser_aaa` 单表 325 B/行里有
@@ -214,6 +214,43 @@ Recovery is planned at every trigger, in the collector application layer
 - `Validate()` 的 sqlite-only 闸门与相关断言退役；`file_key` 现在声明支持五
   方言（验证边界不变：实测仅 sqlite，其余按语法分支 + fail-fast）。
 
+### SQL Server 实测（2026-10-13，SQL Server 2019 CU32）
+
+连真库把 sqlserver 方言分支逐条跑过（`app/storage/sqlserver_real_test.go`，
+8 个用例：连接、`file_key` 骨架、legacy 骨架 + 注册表、20×20 并发发号、分页、
+长路径文件身份、类型列、通用 JSON sink）。上一小节列的四处缺陷与"待拍板"结论
+在此得到证实或推翻，另外查出三处只有真库才能暴露的问题：
+
+| # | 现象（真实报错） | 处理 |
+|---|---|---|
+| 1 | 占位符写成冒号绑定 → `Incorrect syntax near ':'`（102） | `mergeUpsert` 改用 `placeholders()`，sqlserver 出 `@pN`；oracle 仍 `:n` + `FROM DUAL` |
+| 2 | `MERGE` 不带尾分号 → `A MERGE statement must be terminated by a semi-colon (;)`（10713） | `mergeUpsert` 与 `buildMultiRow` 对 sqlserver 追加 `;`（只此方言） |
+| 3 | 读路径 `QueryRows` 的 WHERE 用字面 `?` → `Incorrect syntax near '?'`（102） | 抽出 `readFilterClauses`，按方言出占位符；日期绑定与写路径 `dateBind` 对齐（`dateFilterBind`） |
+| 4 | 主键用 `NVARCHAR(4000)` 的 `file_id`：建表**能过**，长文件身份到 INSERT 才炸 → `Creating index ... key length ... exceeds the maximum allowed length of 900 bytes`（1946） | 键列收窄为 `source_id NVARCHAR(128)` / `collection_date DATE` / `file_id NVARCHAR(512)`，主键声明 `PRIMARY KEY NONCLUSTERED`。实测：同一条 1291 字节的键，聚集主键 INSERT 报 1946，非聚集可过 |
+| 5 | 计数器行在写事务内播种，20 路并发首发 → `Violation of PRIMARY KEY constraint`（2627） | 播种移到 schema 阶段、事务外（`ensureFileKeyCounter`）：插失败先回查，存在即算成功；事务内那条只作手工建库的兜底 |
+| 6 | 通用 JSON sink（`SQLStore`）与 `existingColumns` 里也有硬编码 `?` / 冒号 | 一并改走 `placeholders()`；`SQLStore` 的 oracle/sqlserver 分支复用 `mergeUpsert` |
+
+计数器语义同时统一：`next` = **上一个已发出的键**，播种基线 = 注册表
+`MAX(file_key)`（空注册表为 0），因此首个键恒为 1，不会再出现旧写法
+`MAX+1` 播种后再 `+1` 造成跳号。
+
+复跑方式（凭据只走环境变量，不写进任何仓库文件；测试用表名 `zrt_*`，
+用完即删）：
+
+```bash
+REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=disable' \
+  go test -count=1 -run TestRealMSSQL ./app/storage/
+```
+
+未设该变量时这批用例 skip，CI/离线不受影响。
+
+**验证边界（更新）**：sqlserver 与 sqlite 为**实测**；oracle / mysql / postgres
+仍是语法分支 + fail-fast，没有实例可跑就不写"已验证"。legacy 骨架注册表写入
+的 MySQL 分支（上小节记为"④ 只修了一半"）现与 `file_key` 路径共用
+`insertIfMissingStmt`，mysql 出 `INSERT IGNORE`、sqlite/postgres 出
+`ON CONFLICT DO NOTHING`、oracle/sqlserver 出 `MERGE`——但这只是分支正确，
+mysql / postgres 仍未经真库验证。
+
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
 现象：注册表（现场即 `laser_files`）每文件的 `records` 列一直是 0，而同一条数据在
@@ -307,4 +344,6 @@ legacy   骨架：数据表实际行数=5  注册表 records=0  注册表行数=
 ```bash
 go test ./tests/ -run TestOperations   # missed-day catch-up, content detect, outage replay
 go test ./...                          # full suite
+# 方言实测边界：sqlite 常态跑，sqlserver 需真库（见上文「SQL Server 实测」小节的复跑方式）
+REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@<host>:1433?database=<db>&encrypt=disable' go test -count=1 -run TestRealMSSQL ./app/storage/
 ```

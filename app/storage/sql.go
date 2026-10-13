@@ -195,7 +195,9 @@ func (s *SQLStore) ensureSchema(ctx context.Context) error {
 	case "sqlite":
 		stmt = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (source_id TEXT NOT NULL, collection_date TEXT NOT NULL, file_id TEXT NOT NULL, row_number INTEGER NOT NULL, row_values TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT, PRIMARY KEY (source_id, collection_date, file_id, row_number))", t)
 	case "sqlserver":
-		stmt = fmt.Sprintf("IF OBJECT_ID(N'%s', N'U') IS NULL CREATE TABLE %s (source_id NVARCHAR(255) NOT NULL, collection_date NVARCHAR(32) NOT NULL, file_id NVARCHAR(1024) NOT NULL, row_number BIGINT NOT NULL, row_values NVARCHAR(MAX) NOT NULL, payload NVARCHAR(MAX) NOT NULL, created_at DATETIME2, PRIMARY KEY (source_id, collection_date, file_id, row_number))", s.table, t)
+		// 键列定宽有界 + 非聚集主键：聚集索引键上限实测 900 字节，
+		// file_id 1024 字符的旧声明要等到 INSERT 才报 1946。
+		stmt = fmt.Sprintf("IF OBJECT_ID(N'%s', N'U') IS NULL CREATE TABLE %s (source_id NVARCHAR(128) NOT NULL, collection_date NVARCHAR(32) NOT NULL, file_id NVARCHAR(512) NOT NULL, row_number BIGINT NOT NULL, row_values NVARCHAR(MAX) NOT NULL, payload NVARCHAR(MAX) NOT NULL, created_at DATETIME2, PRIMARY KEY NONCLUSTERED (source_id, collection_date, file_id, row_number))", s.table, t)
 	default:
 		return fmt.Errorf("%w: unsupported sql dialect %q", errs.ErrInvalidConfig, s.dialect)
 	}
@@ -216,23 +218,9 @@ func (s *SQLStore) upsertSQL(argCount int) (string, error) {
 	case "postgres", "sqlite":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
 	case "oracle", "sqlserver":
-		dual := ""
-		if s.dialect == "oracle" {
-			dual = " FROM DUAL"
-		}
-		columns := []string{"source_id", "collection_date", "file_id", "row_number", "row_values", "payload", "created_at"}
-		var selected, icols, ivals, on []string
-		for i, col := range columns {
-			selected = append(selected, fmt.Sprintf(":%d AS %s", i+1, col))
-			icols = append(icols, col)
-			ivals = append(ivals, "src."+col)
-			if i < 4 { // 前四列 = 主键
-				on = append(on, fmt.Sprintf("dst.%s = src.%s", col, col))
-			}
-		}
-		return fmt.Sprintf("MERGE INTO %s dst USING (SELECT %s%s) src ON (%s) WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)",
-			t, strings.Join(selected, ", "), dual, strings.Join(on, " AND "),
-			strings.Join(icols, ", "), strings.Join(ivals, ", ")), nil
+		// 与类型化 sink 共用同一份 MERGE 生成：绑定符、FROM DUAL、T-SQL
+		// 的分号终止符都在 mergeUpsert 里收口，这里不再手写一份。
+		return mergeUpsert(s.dialect, s.table, cols, "source_id, collection_date, file_id, row_number"), nil
 	default:
 		return "", fmt.Errorf("%w: unsupported sql dialect %q", errs.ErrInvalidConfig, s.dialect)
 	}
