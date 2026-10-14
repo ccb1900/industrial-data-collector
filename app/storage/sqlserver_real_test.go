@@ -353,3 +353,61 @@ func TestRealMSSQLGenericStore(t *testing.T) {
 		t.Errorf("rows = %d, want 3 (replay must not duplicate)", n)
 	}
 }
+
+// 生产宽格式 × 大批次：20 声明列 + file_key + row_number = 22 个绑定参数/行，
+// 一次 Write 2000 行。这是现场 laser3-aaa 全队失败的最小复现——chunkRowsFor
+// 的 sqlserver 分支曾写死 500 行，一条请求 11000 参数直接撞 8003（服务端
+// 单请求参数上限，实测 2098 通过 / 2100 拒绝），任何 >95 行的文件永久失败。
+func TestRealMSSQLWideFormatBatch(t *testing.T) {
+	f := newMSSQLFix(t)
+	const width, rows = 20, 2000
+	header := make([]string, width)
+	columns := make([]ColumnMapping, width)
+	for i := range header {
+		header[i] = fmt.Sprintf("c%02d", i)
+		columns[i] = ColumnMapping{From: SourceCSV, Name: header[i], Column: header[i], Type: "text"}
+	}
+	cfg := f.cfg(true)
+	cfg.Columns = columns
+	s := openReal(t, cfg)
+	ctx := context.Background()
+
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-14")); err != nil {
+		t.Fatal(err)
+	}
+	recs := make([]model.Record, 0, rows)
+	for i := 0; i < rows; i++ {
+		fields := make([]string, width)
+		for j := range fields {
+			fields[j] = fmt.Sprintf("r%d-%d", i, j)
+		}
+		recs = append(recs, model.Record{RowNumber: int64(i + 1), Fields: fields})
+	}
+	batch := model.Batch{
+		Key:      model.CollectionKey{SourceID: model.SourceID("wide"), Date: d},
+		File:     model.FileIdentity{SourceID: model.SourceID("wide"), Path: "/logs/aaa_260914.log", Name: "aaa_260914.log", Hash: "aaa_260914.log"},
+		Header:   header,
+		Sequence: 1,
+		Records:  recs,
+	}
+	started := time.Now()
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("wide batch write (%d rows x %d params): %v", rows, width+2, err)
+	}
+	t.Logf("%d rows x %d cols written in %s (chunk=%d rows)", rows, width, time.Since(started).Round(time.Millisecond), chunkRowsFor("sqlserver", width+2))
+
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("wide batch replay: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != rows {
+		t.Errorf("wide rows = %d, want %d (replay must not duplicate)", got, rows)
+	}
+	var sum int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent("sqlserver", f.table)+" WHERE [c19] = @p1", "r1999-19").Scan(&sum); err != nil {
+		t.Fatalf("last cell readback: %v", err)
+	}
+	if sum != 1 {
+		t.Errorf("last row cell c19 rows = %d, want 1", sum)
+	}
+}

@@ -164,3 +164,34 @@ func TestSeedCounterStmtShape(t *testing.T) {
 		t.Error("mysql seed must be INSERT IGNORE")
 	}
 }
+
+// 单语句参数预算：chunkRowsFor 返回的行数乘以每行参数数（声明列 + 标识列）
+// 必须留在服务端的绑定参数上限内。SQL Server 的上限是实测值——2098 通过、
+// 2100 报 8003（Prepare+Exec 与直接 Exec 同限），这一条正是现场宽格式全队
+// 失败的原因：分支里曾写死 500 行，20 列格式一语句 11000 参数。
+// oracle 没有实测过的参数上限数字，只断言行数被保守封顶。
+func TestChunkRowsForParamBudget(t *testing.T) {
+	ceilings := map[string]int{
+		"sqlserver": 2099,  // 实测
+		"sqlite":    32766, // SQLITE_MAX_VARIABLE_NUMBER（3.32+ 默认）
+		"postgres":  65535, // 协议绑定参数上限
+		"mysql":     65535, // 预处理语句占位符上限
+	}
+	widths := []int{1, 2, 3, 5, 13, 22, 27, 47, 60, 200, 300}
+	for dialect, ceiling := range ceilings {
+		for _, cols := range widths {
+			rows := chunkRowsFor(dialect, cols)
+			if params := rows * cols; params > ceiling {
+				t.Errorf("%s cols=%d rows=%d -> %d params > ceiling %d", dialect, cols, rows, params, ceiling)
+			}
+		}
+	}
+	for _, cols := range widths {
+		if rows := chunkRowsFor("oracle", cols); rows > 200 {
+			t.Errorf("oracle cols=%d rows=%d must stay at the conservative MERGE cap", cols, rows)
+		}
+	}
+	if got := chunkRowsFor("sqlserver", 22); got != 90 {
+		t.Errorf("sqlserver 22-col chunk = %d rows, want 90 (1980 params)", got)
+	}
+}

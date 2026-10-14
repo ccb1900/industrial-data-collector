@@ -26,7 +26,11 @@ func chunkRowsFor(dialect string, colCount int) int {
 	case "oracle":
 		n = 200 // MERGE ... UNION ALL 的语句文本随行数线性膨胀，保守取值
 	case "sqlserver":
-		n = 500
+		// 实测（2019 CU32）：一条请求的绑定参数总数上限是硬限制——2098 通过、
+		// 2100 报 8003，Prepare+Exec 与直接 Exec 同限。参数数 = 行数 × 列数，
+		// 所以行数必须按列宽反算（20 列的生产格式只能 90 行），给固定行数
+		// 会让每个超过阈值的文件永久失败。
+		n = 2000 / colCount
 	case "sqlite":
 		n = 30000 / colCount // SQLITE_MAX_VARIABLE_NUMBER（3.32+ 默认 32766）
 	case "postgres", "postgresql":

@@ -217,9 +217,9 @@ Recovery is planned at every trigger, in the collector application layer
 ### SQL Server 实测（2026-10-13，SQL Server 2019 CU32）
 
 连真库把 sqlserver 方言分支逐条跑过（`app/storage/sqlserver_real_test.go`，
-8 个用例：连接、`file_key` 骨架、legacy 骨架 + 注册表、20×20 并发发号、分页、
-长路径文件身份、类型列、通用 JSON sink）。上一小节列的四处缺陷与"待拍板"结论
-在此得到证实或推翻，另外查出三处只有真库才能暴露的问题：
+9 个用例：连接、`file_key` 骨架、legacy 骨架 + 注册表、20×20 并发发号、分页、
+长路径文件身份、类型列、通用 JSON sink、宽格式大批次）。上一小节列的四处缺陷与"待拍板"结论
+在此得到证实或推翻，另外查出四处只有真库才能暴露的问题：
 
 | # | 现象（真实报错） | 处理 |
 |---|---|---|
@@ -229,6 +229,15 @@ Recovery is planned at every trigger, in the collector application layer
 | 4 | 主键用 `NVARCHAR(4000)` 的 `file_id`：建表**能过**，长文件身份到 INSERT 才炸 → `Creating index ... key length ... exceeds the maximum allowed length of 900 bytes`（1946） | 键列收窄为 `source_id NVARCHAR(128)` / `collection_date DATE` / `file_id NVARCHAR(512)`，主键声明 `PRIMARY KEY NONCLUSTERED`。实测：同一条 1291 字节的键，聚集主键 INSERT 报 1946，非聚集可过 |
 | 5 | 计数器行在写事务内播种，20 路并发首发 → `Violation of PRIMARY KEY constraint`（2627） | 播种移到 schema 阶段、事务外（`ensureFileKeyCounter`）：插失败先回查，存在即算成功；事务内那条只作手工建库的兜底 |
 | 6 | 通用 JSON sink（`SQLStore`）与 `existingColumns` 里也有硬编码 `?` / 冒号 | 一并改走 `placeholders()`；`SQLStore` 的 oracle/sqlserver 分支复用 `mergeUpsert` |
+| 7 | 现场首夜全量失败：宽格式一批写不进表，`The incoming request has too many parameters. The server supports a maximum of 2100 parameters.`（8003），分类落 `storage permanent error` | `chunkRowsFor` 的 sqlserver 分支原先给**固定 500 行**、不看列宽；参数数 = 行数 × 每行参数数，实测服务端硬限 2098 可过 / 2100 被拒（`Prepare+Exec` 与直接 `Exec` 同限）。改为按列宽反算（预算取 2000）：20 声明列 + `file_key` + `row_number` = 22 参数/行 → 每语句 90 行 |
+
+现场失败面（`configs/laser_prod_mssql.toml` 的 23 个格式，旧逻辑下"首个失败行数"
+= 单文件行数超过它即整文件失败）：`twin_scale_dsp`(70 列) 30 行、`pwrmulti` 43 行、
+`sinsyuku` 47 行、`pwr` 66 行、`sin_statis` 73 行、`aaa` 96 行、`m307` 140 行、
+`alm_log` 300 行——23 个格式全在门槛内，日常日志行数一多必然命中。
+回归：`TestRealMSSQLWideFormatBatch`（真库，20 列 × 2000 行一次写入 + 重放幂等，
+在修复前会原样复现 8003）与离线 `TestChunkRowsForParamBudget`
+（各方言 行数 × 列数 不越自家上限）。
 
 计数器语义同时统一：`next` = **上一个已发出的键**，播种基线 = 注册表
 `MAX(file_key)`（空注册表为 0），因此首个键恒为 1，不会再出现旧写法
