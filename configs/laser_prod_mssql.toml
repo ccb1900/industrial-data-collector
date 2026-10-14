@@ -1,0 +1,1266 @@
+# ========================================================================
+# 激光加工机本机日志采集 — 0923 拓扑 / SQL Server 落库版
+#
+# 与 laser_prod_0923.toml 完全同拓扑、同格式清单、同机台、同调度，唯一
+#       区别是落库目标：sink 换成真 SQL Server（driver = "sqlserver"），
+#       并启用 file_key 骨架。格式清单、列映射、编码规则一律未动——
+#       sink 与语义解耦，换库不需要碰这 1119 个源实例。
+#
+# 拓扑（对照 2026-09-28 机型文件清单表）：
+#       sanling3 = 37 台 × 16 格式，sanling5 = 2 台 × 22 格式，
+#       sanling6 = 21 台 × 23 格式 —— 共 60 机台 = 1119 个源实例。
+# 目录形状：\\<机台IP>\log\YYYYMM\<前缀>_YYMMDD.log —— 月份目录 +
+#       两位年份文件名内嵌日期；GB18030 编码，CRLF 行尾，首行表头。
+# 全部格式显式声明 columns（公共 15 个取三组表头并集；跨组前缀取现场
+#       样例表头并集，见下文注释）——自动映射已全部退役，仅留功能未用。
+# 调度：全部机台引用 nightly（每天 09:01），-once/常驻均可。
+#
+# ---- SQL Server 侧的三件事（投放前必读）----
+# 1. 密码不进仓库：下面 dsn 里的 <密码> 是占位符，在部署机上填真值。
+#    配置解析不支持环境变量，也没有别处的凭据来源，只能填在这一行。
+#    密码含 @ : / 等字符时必须 URL 编码（@ → %40，: → %3A），否则
+#    go-mssqldb 会把它们当 URL 分隔符解析，报的错还指向"连不上主机"。
+# 2. encrypt=disable 是内网直连的写法：目标机没配服务端证书就保留它，
+#    否则登录会因 TLS 校验失败。走公网或跨信任域请删掉该参数并配证书。
+# 3. file_key = true 只在**新库**上开：数据表主键是 (file_key, row_number)，
+#    表里不再有 file_id 列，按文件查询要 JOIN 注册表 laser_files（见
+#    docs/OPERATIONS.md「存储骨架与体积」）。换骨架不是原地改：旧表带
+#    file_id 而无 file_key 时，进程启动即报 legacy backbone 而不是写坏数据。
+#    收益实测：同形状数据体积省 59.1%（legacy 骨架里 file_id 那 77 字节串
+#    每行存两遍）。SQL Server 侧的发号、键列宽度、非聚集主键均已连真库
+#    （SQL Server 2019 CU32）实测，复跑方式见 docs/OPERATIONS.md 同名小节。
+#
+# 建表由进程自动完成（ensureSchema：数据表、注册表、file_key 列 + 唯一
+#       索引 + 计数器表），只需要目标库存在、账号有建表权限。
+# 声明列全部是 text → NVARCHAR(4000)。最宽表 laser_twin_scale_dsp 有 70 列，
+#       真库实测（同本仓契约测试）给出两条边界：
+#       · 整行宽度不是约束。SQL Server 的 8060 字节聚集行上限会自动把可变长
+#         列溢出到 ROW_DATA 页，70 列 × 1000 字符（整行 7 万字符）仍写入成功。
+#       · 单元格是约束。单列超过 4000 字符报 2628 截断，错误里带表名列名，
+#         按 permanent 分类——即整批失败、不会静默截半。现场日志字段长度在
+#         几十字节量级（最长表头 955 字符，落注册表也远未到线）。
+#
+# ⚠ 两处机台 IP 疑点（沿用 0923，按原样保留，投放前请核对现场）：
+#   - 41# 指向 192.168.1.41 —— 邻居 40#/42# 是 .140/.142，疑为 .141 笔误
+#   - 81# 与 1# 同指 192.168.1.101 —— 同机双号会重复采同一批文件
+#
+# 跨平台书写：\ 与 / 都按分隔符统一（Windows 全 \，mac/Linux 全 /）。
+# 相对路径锚定：相对本配置文件所在目录解析，与启动方式无关。
+# ========================================================================
+
+bundles = ["collector-core", "collector-console"]
+
+[defaults]
+state_dir = "../state"
+date_policy = "yesterday"
+catchup_days = 31
+batch_size = 1000
+# file_stable_window_seconds 保持 0：采的是"昨天"的已完成日志，无读到
+# 半截文件的风险；若改 today 策略必须配 >0。
+
+# ---- 并发（本次新特性）----
+# 千级源实例 + UNC 列目录是网络等待型瓶颈：源间并发让各机台的扫描
+# 等待互相重叠。1119 源 ÷ 16 并行 ≈ 70 批，每批亚秒级 → 整轮分钟级。
+# 上限受采集机网卡/会话数约束，勿超 32；非 sqlite 驱动的连接池上限在
+# 代码里固定为 32（app/storage/dbpool.go 的 sharedPoolMaxOpen），与本值
+# 相匹配——把它调大不会换来更多并发会话，只会在库侧排队。
+max_parallel_sources = 16
+files_per_source = 1       # 每源每天 1 个文件，文件级并发无收益
+
+# ---- 备份（严格语义：备份失败 = 采集失败，下轮重试）----
+backup_dir = "../backup"   # 副本：<backup_dir>/<机台-格式>/<业务日>/<文件>
+                           # 60 台 × 23 格式 × N 天，注意磁盘容量规划
+backup_keep_days = 90
+
+# 中心库：SQL Server（go-mssqldb 驱动）。URL 格式
+# sqlserver://user:pass@host:port?database=name
+[[sinks]]
+name = "plant-mssql"
+driver = "sqlserver"
+dsn = "sqlserver://sa:<密码>@<数据库主机>:1433?database=laser&encrypt=disable"
+file_table = "laser_files"
+file_key = true
+lazy_connect = true
+
+# 回退/联调桩：把上面 sink 的 driver/dsn 换成本地 sqlite 即可，格式清单
+#       一行都不用动（sink 名字保持 plant-mssql，所有格式引用它）。
+#       注意 file_key 与 legacy 骨架不能混用同一张表——换骨架就是换库。
+#[[sinks]]
+#name = "plant-mssql"
+#driver = "sqlite"
+#dsn = "../state/collect_mssql_stub.db"
+#file_table = "laser_files"
+#file_key = true
+#lazy_connect = true
+
+[[machines]]
+no = "50#"
+path = "\\\\192.168.1.150\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "33#"
+path = "\\\\192.168.1.133\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "32#"
+path = "\\\\192.168.1.132\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "40#"
+path = "\\\\192.168.1.140\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "42#"
+path = "\\\\192.168.1.142\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "41#"
+# ⚠ 疑笔误：邻居 40#/42# 是 .140/.142，此处 .41 大概应为 .141。
+#    按原样保留，投放前核对现场再改。
+path = "\\\\192.168.1.41\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "34#"
+path = "\\\\192.168.1.134\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "81#"
+# ⚠ 与 1# 同指 .101：两台机（或双号）会各采一份相同文件，
+#    同一批行以不同 machine_no 落库两次。确认现场是否应改 IP。
+path = "\\\\192.168.1.101\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "37#"
+path = "\\\\192.168.1.137\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "44#"
+path = "\\\\192.168.1.144\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "36#"
+path = "\\\\192.168.1.136\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "43#"
+path = "\\\\192.168.1.143\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "31#"
+path = "\\\\192.168.1.131\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "39#"
+path = "\\\\192.168.1.139\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "38#"
+path = "\\\\192.168.1.138\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "55#"
+path = "\\\\192.168.1.155\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "52#"
+path = "\\\\192.168.1.152\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "45#"
+path = "\\\\192.168.1.145\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "12#"
+path = "\\\\192.168.1.112\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "10#"
+path = "\\\\192.168.1.110\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "9#"
+path = "\\\\192.168.1.109\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "13#"
+path = "\\\\192.168.1.113\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "51#"
+path = "\\\\192.168.1.151\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "48#"
+path = "\\\\192.168.1.148\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "47#"
+path = "\\\\192.168.1.147\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "54#"
+path = "\\\\192.168.1.154\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "46#"
+path = "\\\\192.168.1.146\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "53#"
+path = "\\\\192.168.1.153\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "6#"
+path = "\\\\192.168.1.106\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "7#"
+path = "\\\\192.168.1.107\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "8#"
+path = "\\\\192.168.1.108\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "3#"
+path = "\\\\192.168.1.103\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "4#"
+path = "\\\\192.168.1.104\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "1#"
+path = "\\\\192.168.1.101\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "5#"
+path = "\\\\192.168.1.105\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "2#"
+path = "\\\\192.168.1.102\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "11#"
+path = "\\\\192.168.1.111\\log\\YYYYMM"
+group = "sanling3"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "56#"
+path = "\\\\192.168.1.252\\log\\YYYYMM"
+group = "sanling5"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "57#"
+path = "\\\\192.168.1.162\\log\\YYYYMM"
+group = "sanling5"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "72#"
+path = "\\\\192.168.1.72\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "78#"
+path = "\\\\192.168.1.212\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "80#"
+path = "\\\\192.168.1.100\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "79#"
+path = "\\\\192.168.1.126\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "75#"
+path = "\\\\192.168.1.75\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "73#"
+path = "\\\\192.168.1.73\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "74#"
+path = "\\\\192.168.1.74\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "76#"
+path = "\\\\192.168.1.176\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "58#"
+path = "\\\\192.168.1.158\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "16#"
+path = "\\\\192.168.1.119\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "20#"
+path = "\\\\192.168.1.124\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "17#"
+path = "\\\\192.168.1.117\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "21#"
+path = "\\\\192.168.1.121\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "14#"
+path = "\\\\192.168.1.114\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "15#"
+path = "\\\\192.168.1.115\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "18#"
+path = "\\\\192.168.1.118\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "19#"
+path = "\\\\192.168.1.120\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "24#"
+path = "\\\\192.168.1.125\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "77#"
+path = "\\\\192.168.1.177\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "65#"
+path = "\\\\192.168.1.65\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[machines]]
+no = "59#"
+path = "\\\\192.168.1.157\\log\\YYYYMM"
+group = "sanling6"
+schedule = "nightly"
+since = "2026-09-01"
+
+[[schedules]]
+name = "nightly"
+cron = "01 9 * * *"        # 每天 09:01（分 时 日 月 周）
+# 原 nightly2 与 nightly 同表达式且无机台引用，已删——如日后需要
+# 双班错峰（如 "31 21 * * *"）再恢复此名字并在机台行引用。
+
+# sanling3 = III 代机 16 格式（清单表 2026-09-28 裁决：公共 15 个 +
+#   pwrmulti；不含 energy_measure/galv_mask_measure/glv_cnd_send/
+#   pc_direct/proc_state/sensor——那些是 V/6 代专属）。
+# columns 取三组表头并集，异名同义列映射到同一库列。
+[[format_groups]]
+name = "sanling3"
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis"]
+# sanling5 = V 代机 22 格式 = sanling3 全集 + 六个跨组前缀
+#   （energy_measure/galv_mask_measure/glv_cnd_send/pc_direct/proc_state/
+#   sensor），无 twin_scale_dsp。
+[[format_groups]]
+name = "sanling5"
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor"]
+# sanling6 = 6 代机 23 格式 = sanling5 全集 + twin_scale_dsp。
+[[format_groups]]
+name = "sanling6"
+formats = ["aaa", "aaa_gosa", "alm_log", "cnd_selct", "length", "m307", "m370", "m377", "mainte1", "mask_gosa", "pwr", "pwrmulti", "sin_statis", "sinsyuku", "table", "zaxis", "energy_measure", "galv_mask_measure", "glv_cnd_send", "pc_direct", "proc_state", "sensor", "twin_scale_dsp"]
+
+[[formats]]
+name = "aaa"
+match = "aaa_YYMMDD.log"
+table = "laser_aaa"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "识别结果 X", column = "result_x", type = "text" },
+  { name = "识别结果 Y", column = "result_y", type = "text" },
+  { name = "工件坐标 X", column = "workpiece_x", type = "text" },
+  { name = "工件坐标 Y", column = "workpiece_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "主程序的序列编号", column = "main_prog_seq", type = "text" },
+  { name = "主程序的程序块编号", column = "main_prog_block", type = "text" },
+  { name = "子程序的程序编号", column = "sub_prog_no", type = "text" },
+  { name = "子程序的序列编号", column = "sub_prog_seq", type = "text" },
+  { name = "子程序的程序块编号", column = "sub_prog_block", type = "text" },
+  { name = "机械坐标 X", column = "machine_x", type = "text" },
+  { name = "机械坐标 Y", column = "machine_y", type = "text" },
+  { name = "尺寸", column = "size", type = "text" },
+  { name = "Score", column = "score", type = "text" },
+  { name = "相关比率", column = "corr_ratio", type = "text" },
+  { name = "Lack Rate", column = "lack_rate", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "aaa_gosa"
+match = "aaaGosa_YYMMDD.log"
+table = "laser_aaa_gosa"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "最大误差 R", column = "max_err_r", type = "text" },
+  { name = "最大误差 X", column = "max_err_x", type = "text" },
+  { name = "最大误差 Y", column = "max_err_y", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "alm_log"
+match = "Almlog_YYMMDD.log"
+table = "laser_alm_log"
+sink = "plant-mssql"
+columns = [
+  { name = "DATE", column = "biz_date", type = "text" },
+  { name = "TIME", column = "biz_time", type = "text" },
+  { name = "CAPTION", column = "caption", type = "text" },
+  { name = "ALARM", column = "alarm", type = "text" },
+  { name = "PRG.", column = "prg", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "cnd_selct"
+match = "cndselct_YYMMDD.log"
+table = "laser_cnd_selct"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "脉宽", column = "pulse_width", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+  { name = "速度", column = "speed", type = "text" },
+  { name = "脉冲数", column = "pulse_count", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "B/C", column = "b_c", type = "text" },
+  { name = "G", column = "g", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "容许范围", column = "tolerance", type = "text" },
+  { name = "光路类型NO.", column = "optical_path_no", type = "text" },
+  { name = "笔记", column = "note", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "length"
+match = "length_YYMMDD.log"
+table = "laser_length"
+sink = "plant-mssql"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "补偿点数", column = "comp_points", type = "text" },
+  { name = "长度(#15)", column = "length_15", type = "text" },
+  { name = "长度(#16)", column = "length_16", type = "text" },
+  { name = "长度(#17)", column = "length_17", type = "text" },
+  { name = "长度(#18)", column = "length_18", type = "text" },
+  { name = "长度(#19)", column = "length_19", type = "text" },
+  { name = "长度(#20)", column = "length_20", type = "text" },
+  { name = "错误内容", column = "error_msg", type = "text" },
+  { name = "长度最大误差", column = "length_max_err", type = "text" },
+  { name = "伸缩率最小值", column = "stretch_rate_min", type = "text" },
+  { name = "伸缩率最大值", column = "stretch_rate_max", type = "text" },
+  { name = "区块编号", column = "block_no", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "m307"
+match = "m307data_YYMMDD.log"
+table = "laser_m307"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "测量输出", column = "measured_out", type = "text" },
+  { name = "检验输出", column = "check_out", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "m370"
+match = "m370data_YYMMDD.log"
+table = "laser_m370"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "摄像头类型", column = "camera_type", type = "text" },
+  { name = "偏置 X", column = "offset_x", type = "text" },
+  { name = "偏置 Y", column = "offset_y", type = "text" },
+  { name = "偏置 Z", column = "offset_z", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "m377"
+match = "M377data_YYMMDD.log"
+table = "laser_m377"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "stageNo.", column = "stage_no", type = "text" },
+  { name = "maskNo.", column = "mask_no", type = "text" },
+  { name = "R-Xerr", column = "r_xerr", type = "text" },
+  { name = "R-Yerr", column = "r_yerr", type = "text" },
+  { name = "R-circulity", column = "r_circularity", type = "text" },
+  { name = "L-Xerr", column = "l_xerr", type = "text" },
+  { name = "L-Yerr", column = "l_yerr", type = "text" },
+  { name = "L-circulity", column = "l_circularity", type = "text" },
+  { name = "light A-R", column = "light_a_r", type = "text" },
+  { name = "light B-R", column = "light_b_r", type = "text" },
+  { name = "light A-L", column = "light_a_l", type = "text" },
+  { name = "light B-L", column = "light_b_l", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "mainte1"
+match = "mainte1_YYMMDD.log"
+table = "laser_mainte1"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "清除项目", column = "clear_item", type = "text" },
+  { name = "清除次数", column = "clear_count", type = "text" },
+  { name = "Sum Mark", column = "sum_mark", type = "text" },
+  { name = "Mainte Mode", column = "mainte_mode", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "mask_gosa"
+match = "maskGosa_YYMMDD.log"
+table = "laser_mask_gosa"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "最大误差 R", column = "max_err_r", type = "text" },
+  { name = "最大误差 X", column = "max_err_x", type = "text" },
+  { name = "最大误差 Y", column = "max_err_y", type = "text" },
+  { name = "光罩No.", column = "mask_no", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "pwr"
+match = "pwrdata_YYMMDD.log"
+table = "laser_pwr"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+  { name = "测量能量", column = "measured_energy", type = "text" },
+  { name = "容许范围", column = "tolerance", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "上限频率", column = "freq_limit", type = "text" },
+  { name = "shot群数", column = "shot_group", type = "text" },
+  { name = "显示测量频率", column = "display_freq", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+  { name = "光路类型NO.", column = "optical_path_no", type = "text" },
+  { name = "Retry No.", column = "retry_no", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "sin_statis"
+match = "Sinstatis_YYMMDD.log"
+table = "laser_sin_statis"
+sink = "plant-mssql"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "管理No.", column = "manage_no", type = "text" },
+  { name = "伸缩最大(X)", column = "stretch_max_x", type = "text" },
+  { name = "伸缩最小(X)", column = "stretch_min_x", type = "text" },
+  { name = "伸缩平均(X)", column = "stretch_avg_x", type = "text" },
+  { name = "伸缩标准偏差(X)", column = "stretch_std_x", type = "text" },
+  { name = "伸缩最大(Y)", column = "stretch_max_y", type = "text" },
+  { name = "伸缩最小(Y)", column = "stretch_min_y", type = "text" },
+  { name = "伸缩平均(Y)", column = "stretch_avg_y", type = "text" },
+  { name = "伸缩标准偏差(Y)", column = "stretch_std_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "偏置最大(X)", column = "offset_max_x", type = "text" },
+  { name = "偏置最小(X)", column = "offset_min_x", type = "text" },
+  { name = "偏置平均(X)", column = "offset_avg_x", type = "text" },
+  { name = "偏置标准偏差(X)", column = "offset_std_x", type = "text" },
+  { name = "偏置最大(Y)", column = "offset_max_y", type = "text" },
+  { name = "偏置最小(Y)", column = "offset_min_y", type = "text" },
+  { name = "偏置平均(Y)", column = "offset_avg_y", type = "text" },
+  { name = "偏置标准偏差(Y)", column = "offset_std_y", type = "text" },
+  { name = "θ最大", column = "theta_max", type = "text" },
+  { name = "θ最小", column = "theta_min", type = "text" },
+  { name = "θ平均", column = "theta_avg", type = "text" },
+  { name = "θ标准偏差", column = "theta_std", type = "text" },
+  { name = "加工张数", column = "sheet_count", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "sinsyuku"
+match = "sinsyuku_YYMMDD.log"
+table = "laser_sinsyuku"
+sink = "plant-mssql"
+columns = [
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "管理No.", column = "manage_no", type = "text" },
+  { name = "序列号", column = "serial_no", type = "text" },
+  { name = "伸缩率 X", column = "stretch_rate_x", type = "text" },
+  { name = "伸缩率 Y", column = "stretch_rate_y", type = "text" },
+  { name = "主程序的程序编号", column = "main_prog_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "状态", column = "status", type = "text" },
+  { name = "错误内容", column = "error_msg", type = "text" },
+  { name = "偏置X", column = "offset_x", type = "text" },
+  { name = "偏置Y", column = "offset_y", type = "text" },
+  { name = "θ", column = "theta", type = "text" },
+  # 真实表头里"状态"出现两次（第 10 位与第 15 位）：第二次用
+  # occurrence=1 单独落列，否则该位数值被静默丢弃。
+  { name = "状态", column = "status2", type = "text", occurrence = 1 },
+  { name = "<manual work comp>", column = "manual_work_comp", type = "text" },
+  { name = "<OFFSET PROC. X>", column = "offset_proc_x", type = "text" },
+  { name = "<OFFSET PROC. Y>", column = "offset_proc_y", type = "text" },
+  { name = "再开始状态", column = "restart_status", type = "text" },
+  { name = "停止程序块", column = "stop_block", type = "text" },
+  { name = "结束程序块", column = "end_block", type = "text" },
+  { name = "区块编号", column = "block_no", type = "text" },
+  { name = "手动模式", column = "manual_mode", type = "text" },
+  { name = "工件补偿类型", column = "work_comp_type", type = "text" },
+  { name = "P1X", column = "p1x", type = "text" },
+  { name = "P1Y", column = "p1y", type = "text" },
+  { name = "P2X", column = "p2x", type = "text" },
+  { name = "P2Y", column = "p2y", type = "text" },
+  { name = "P3X", column = "p3x", type = "text" },
+  { name = "P3Y", column = "p3y", type = "text" },
+  { name = "P4X", column = "p4x", type = "text" },
+  { name = "P4Y", column = "p4y", type = "text" },
+  { name = "P5X", column = "p5x", type = "text" },
+  { name = "P5Y", column = "p5y", type = "text" },
+  { name = "伸缩率/设定率 X", column = "stretch_set_rate_x", type = "text" },
+  { name = "伸缩率/设定率 Y", column = "stretch_set_rate_y", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+  { name = "RateP1-P2", column = "rate_p1_p2", type = "text" },
+  { name = "RateP3-P4", column = "rate_p3_p4", type = "text" },
+  { name = "RateP2-P3", column = "rate_p2_p3", type = "text" },
+  { name = "RateP1-P4", column = "rate_p1_p4", type = "text" },
+  { name = "RateP1-P3", column = "rate_p1_p3", type = "text" },
+  { name = "RateP2-P4", column = "rate_p2_p4", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "table"
+match = "table_YYMMDD.log"
+table = "laser_table"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "RZ(mm)", column = "rz_mm", type = "text" },
+  { name = "RX(mm)", column = "rx_mm", type = "text" },
+  { name = "RY(mm)", column = "ry_mm", type = "text" },
+  { name = "LZ(mm)", column = "lz_mm", type = "text" },
+  { name = "LX(mm)", column = "lx_mm", type = "text" },
+  { name = "LY(mm)", column = "ly_mm", type = "text" },
+  { name = "RZ-ave", column = "rz_ave", type = "text" },
+  { name = "LZ-ave", column = "lz_ave", type = "text" },
+  { name = "RZ-range", column = "rz_range", type = "text" },
+  { name = "LZ-range", column = "lz_range", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "RZax(mm)", column = "rzax_mm", type = "text" },
+  { name = "LZax(mm)", column = "lzax_mm", type = "text" },
+  { name = "BASEwk(mm)", column = "base_wk_mm", type = "text" },
+  { name = "REFwk(%)", column = "ref_wk_pct", type = "text" },
+  { name = "RZwk(mm)", column = "rz_wk_mm", type = "text" },
+  { name = "LZwk(mm)", column = "lz_wk_mm", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "zaxis"
+match = "Zaxis_YYMMDD.log"
+table = "laser_zaxis"
+sink = "plant-mssql"
+# 每个文件列独立映射一个库列，不做同义合并（异名同义也分列）
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "ZR轴", column = "zr_axis", type = "text" },
+  { name = "ZL轴", column = "zl_axis", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "计划开始", column = "plan_begin", type = "text" },
+  { name = "计划状态", column = "plan_status", type = "text" },
+  { name = "LdDir", column = "ld_dir", type = "text" },
+  { name = "搬入方向", column = "loadin_dir", type = "text" },
+  { name = "SCH SHEET", column = "sch_sheet", type = "text" },
+  { name = "PRO SHEET", column = "pro_sheet", type = "text" },
+  { name = "UNPRO SHEET", column = "unpro_sheet", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+# ---- 跨组前缀：columns 按现场样例（\\10.40.26.102\采集测试\collectorv20260921\example
+#      三代目录）表头并集显式声明；同名列以 occurrence 分别落列（本批样例无重名）。 ----
+
+[[formats]]
+name = "energy_measure"
+match = "EnergyMeasure_YYMMDD.log"
+table = "laser_energy_measure"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "基准能量(mJ)", column = "base_energy_mj", type = "text" },
+  { name = "容许范围(%)", column = "tolerance_pct", type = "text" },
+  { name = "ZL测量能量(mJ)", column = "zl_measured_energy_mj", type = "text" },
+  { name = "ZR测量能量(mJ)", column = "zr_measured_energy_mj", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "galv_mask_measure"
+match = "GalvMaskMeasure_YYMMDD.log"
+table = "laser_galv_mask_measure"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "光罩编号", column = "mask_no", type = "text" },
+  { name = "模式", column = "mode", type = "text" },
+  { name = "许容?(mm)", column = "tol_mm", type = "text" },
+  { name = "ZL最大误差 R", column = "zl_max_err_r", type = "text" },
+  { name = "ZL最大误差 X", column = "zl_max_err_x", type = "text" },
+  { name = "ZL最大误差 Y", column = "zl_max_err_y", type = "text" },
+  { name = "ZR最大误差 R", column = "zr_max_err_r", type = "text" },
+  { name = "ZR最大误差 X", column = "zr_max_err_x", type = "text" },
+  { name = "ZR最大误差 Y", column = "zr_max_err_y", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+# glv_cnd_send 现场有两种表头：11 列与 17 列（后者多
+# Warning,Err,RefR,RefL,GainNo,R8163）——并集声明，短表头文件的缺位列为 NULL。
+[[formats]]
+name = "glv_cnd_send"
+match = "GlvCndSend_YYMMDD.log"
+table = "laser_glv_cnd_send"
+sink = "plant-mssql"
+columns = [
+  { name = "DATE", column = "biz_date", type = "text" },
+  { name = "TIME", column = "biz_time", type = "text" },
+  { name = "No.", column = "no", type = "text" },
+  { name = "R8162", column = "r8162", type = "text" },
+  { name = "R8145", column = "r8145", type = "text" },
+  { name = "R8144", column = "r8144", type = "text" },
+  { name = "R8146", column = "r8146", type = "text" },
+  { name = "R8147", column = "r8147", type = "text" },
+  { name = "R8159", column = "r8159", type = "text" },
+  { name = "R8156", column = "r8156", type = "text" },
+  { name = "R8148", column = "r8148", type = "text" },
+  { name = "Warning", column = "warning", type = "text" },
+  { name = "Err", column = "err", type = "text" },
+  { name = "RefR", column = "ref_r", type = "text" },
+  { name = "RefL", column = "ref_l", type = "text" },
+  { name = "GainNo", column = "gain_no", type = "text" },
+  { name = "R8163", column = "r8163", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "pc_direct"
+match = "PcDirect_YYMMDD.log" # 现场真实前缀是 PcDirect（清单表写成了 ProcDirect）
+table = "laser_pc_direct"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+  { name = "尺寸", column = "size", type = "text" },
+  { name = "搜索方法", column = "search_method", type = "text" },
+  { name = "结果概要", column = "result_summary", type = "text" },
+  { name = "结果详细", column = "result_detail", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "proc_state"
+match = "ProcState_YYMMDD.log"
+table = "laser_proc_state"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "PRG. FILENAME", column = "prg_filename", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "START.TIME", column = "start_time", type = "text" },
+  { name = "END.TIME", column = "end_time", type = "text" },
+  { name = "PROC.TIME", column = "proc_time", type = "text" },
+  { name = "END.BLOCK", column = "end_block", type = "text" },
+  { name = "VIA.HOLE", column = "via_hole", type = "text" },
+  { name = "UTILITY.HOLE", column = "utility_hole", type = "text" },
+  { name = "PROC.HOLE.R", column = "proc_hole_r", type = "text" },
+  { name = "PROC.HOLE.L", column = "proc_hole_l", type = "text" },
+  { name = "TOTAL.PROC.HOLE.R", column = "total_proc_hole_r", type = "text" },
+  { name = "TOTAL.PROC.HOLE.L", column = "total_proc_hole_l", type = "text" },
+  { name = "TOTAL.SHOT", column = "total_shot", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "sensor"
+match = "sensor_YYMMDD.log"
+table = "laser_sensor"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Dust Air", column = "dust_air", type = "text" },
+  { name = "Table Air", column = "table_air", type = "text" },
+  { name = "PRG.", column = "prg", type = "text" },
+  { name = "Block No.", column = "block_no", type = "text" },
+  { name = "R stage f-theta Temp", column = "r_stage_ftheta_temp", type = "text" },
+  { name = "L stage f-theta Temp", column = "l_stage_ftheta_temp", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+[[formats]]
+name = "twin_scale_dsp"
+match = "TwinScaleDsp_YYMMDD.log"
+table = "laser_twin_scale_dsp"
+sink = "plant-mssql"
+columns = [
+  { name = "Date", column = "Date", type = "text" },
+  { name = "Time", column = "Time", type = "text" },
+  { name = "YawingAngleX", column = "YawingAngleX", type = "text" },
+  { name = "YawingAngleY", column = "YawingAngleY", type = "text" },
+  { name = "YawingOffsetXm", column = "YawingOffsetXm", type = "text" },
+  { name = "YawingOffsetXs", column = "YawingOffsetXs", type = "text" },
+  { name = "YawingOffsetYm", column = "YawingOffsetYm", type = "text" },
+  { name = "YawingOffsetYs", column = "YawingOffsetYs", type = "text" },
+  { name = "PitchOrgIndexXm", column = "PitchOrgIndexXm", type = "text" },
+  { name = "PitchOrgIndexXs", column = "PitchOrgIndexXs", type = "text" },
+  { name = "PitchOrgIndexYm", column = "PitchOrgIndexYm", type = "text" },
+  { name = "PitchOrgIndexYs", column = "PitchOrgIndexYs", type = "text" },
+  { name = "PitchMaxIndexXm", column = "PitchMaxIndexXm", type = "text" },
+  { name = "PitchMaxIndexXs", column = "PitchMaxIndexXs", type = "text" },
+  { name = "PitchMaxIndexYm", column = "PitchMaxIndexYm", type = "text" },
+  { name = "PitchMaxIndexYs", column = "PitchMaxIndexYs", type = "text" },
+  { name = "PitchMinIndexXm", column = "PitchMinIndexXm", type = "text" },
+  { name = "PitchMinIndexXs", column = "PitchMinIndexXs", type = "text" },
+  { name = "PitchMinIndexYm", column = "PitchMinIndexYm", type = "text" },
+  { name = "PitchMinIndexYs", column = "PitchMinIndexYs", type = "text" },
+  { name = "PitchScaleXm", column = "PitchScaleXm", type = "text" },
+  { name = "PitchScaleXs", column = "PitchScaleXs", type = "text" },
+  { name = "PitchScaleYm", column = "PitchScaleYm", type = "text" },
+  { name = "PitchScaleYs", column = "PitchScaleYs", type = "text" },
+  { name = "PitchSpaceXm", column = "PitchSpaceXm", type = "text" },
+  { name = "PitchSpaceXs", column = "PitchSpaceXs", type = "text" },
+  { name = "PitchSpaceYm", column = "PitchSpaceYm", type = "text" },
+  { name = "PitchSpaceYs", column = "PitchSpaceYs", type = "text" },
+  { name = "PicthIndex0Xm", column = "PicthIndex0Xm", type = "text" },
+  { name = "PicthIndex0Xs", column = "PicthIndex0Xs", type = "text" },
+  { name = "PicthIndex0Ym", column = "PicthIndex0Ym", type = "text" },
+  { name = "PicthIndex0Ys", column = "PicthIndex0Ys", type = "text" },
+  { name = "PicthIndexXm", column = "PicthIndexXm", type = "text" },
+  { name = "PicthIndexXs", column = "PicthIndexXs", type = "text" },
+  { name = "PicthIndexYm", column = "PicthIndexYm", type = "text" },
+  { name = "PicthIndexYs", column = "PicthIndexYs", type = "text" },
+  { name = "LinearScaleValXm", column = "LinearScaleValXm", type = "text" },
+  { name = "LinearScaleValXs", column = "LinearScaleValXs", type = "text" },
+  { name = "LinearScaleValYm", column = "LinearScaleValYm", type = "text" },
+  { name = "LinearScaleValYs", column = "LinearScaleValYs", type = "text" },
+  { name = "LinearScalePulsUMXm", column = "LinearScalePulsUMXm", type = "text" },
+  { name = "LinearScalePulsUMXs", column = "LinearScalePulsUMXs", type = "text" },
+  { name = "LinearScalePulsUMYm", column = "LinearScalePulsUMYm", type = "text" },
+  { name = "LinearScalePulsUMYs", column = "LinearScalePulsUMYs", type = "text" },
+  { name = "EncPosXm", column = "EncPosXm", type = "text" },
+  { name = "EncPosXs", column = "EncPosXs", type = "text" },
+  { name = "EncPosYm", column = "EncPosYm", type = "text" },
+  { name = "EncPosYs", column = "EncPosYs", type = "text" },
+  { name = "MachinePosXm", column = "MachinePosXm", type = "text" },
+  { name = "MachinePosXs", column = "MachinePosXs", type = "text" },
+  { name = "MachinePosYm", column = "MachinePosYm", type = "text" },
+  { name = "MachinePosYs", column = "MachinePosYs", type = "text" },
+  { name = "LinearOrgVaXm", column = "LinearOrgVaXm", type = "text" },
+  { name = "LinearOrgVaXs", column = "LinearOrgVaXs", type = "text" },
+  { name = "LinearOrgVaYm", column = "LinearOrgVaYm", type = "text" },
+  { name = "LinearOrgVaYs", column = "LinearOrgVaYs", type = "text" },
+  { name = "RealValXm", column = "RealValXm", type = "text" },
+  { name = "RealValXs", column = "RealValXs", type = "text" },
+  { name = "RealValYm", column = "RealValYm", type = "text" },
+  { name = "RealValYs", column = "RealValYs", type = "text" },
+  { name = "EncPosBkXm", column = "EncPosBkXm", type = "text" },
+  { name = "EncPosBkXs", column = "EncPosBkXs", type = "text" },
+  { name = "EncPosBkYm", column = "EncPosBkYm", type = "text" },
+  { name = "EncPosBkYs", column = "EncPosBkYs", type = "text" },
+  { name = "TableCenterX", column = "TableCenterX", type = "text" },
+  { name = "TableCenterY", column = "TableCenterY", type = "text" },
+  { name = "TableCenterEncPosX", column = "TableCenterEncPosX", type = "text" },
+  { name = "TableCenterEncPosY", column = "TableCenterEncPosY", type = "text" },
+  { name = "Scalewx", column = "Scalewx", type = "text" },
+  { name = "Scalewy", column = "Scalewy", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true
+
+# pwrmulti：现场样例在 example/3（pwrmulti_260618，49 列）与 example/6
+# （pwrmulti_260831，50 列）顶层（不在月份目录）。六代比三代多两列：
+# 下标 44 的"光路类型NO."（三代该位为空表头）与末列"加工程序"。
+# 取两代并集显式声明；空表头占位（下标 0 起：28/30/32，三代另含 44）不建列。
+[[formats]]
+name = "pwrmulti"
+match = "pwrmulti_YYMMDD.log"
+table = "laser_pwrmulti"
+sink = "plant-mssql"
+columns = [
+  { name = "日期", column = "biz_date", type = "text" },
+  { name = "时间", column = "biz_time", type = "text" },
+  { name = "Stage", column = "stage", type = "text" },
+  { name = "条件编号", column = "cond_no", type = "text" },
+  { name = "输出功率", column = "output_power", type = "text" },
+  { name = "频率", column = "frequency", type = "text" },
+  { name = "ON时间", column = "on_time", type = "text" },
+  { name = "基准能量", column = "base_energy", type = "text" },
+  { name = "容许范围%", column = "tolerance_pct", type = "text" },
+  { name = "测量范围%", column = "measured_range_pct", type = "text" },
+  { name = "判断", column = "judgement", type = "text" },
+  { name = "测量能量1", column = "measured_energy_1", type = "text" },
+  { name = "测量能量2", column = "measured_energy_2", type = "text" },
+  { name = "测量能量3", column = "measured_energy_3", type = "text" },
+  { name = "测量能量4", column = "measured_energy_4", type = "text" },
+  { name = "测量能量5", column = "measured_energy_5", type = "text" },
+  { name = "测量能量6", column = "measured_energy_6", type = "text" },
+  { name = "测量能量7", column = "measured_energy_7", type = "text" },
+  { name = "测量能量8", column = "measured_energy_8", type = "text" },
+  { name = "测量能量9", column = "measured_energy_9", type = "text" },
+  { name = "测量能量10", column = "measured_energy_10", type = "text" },
+  { name = "测量能量11", column = "measured_energy_11", type = "text" },
+  { name = "测量能量12", column = "measured_energy_12", type = "text" },
+  { name = "测量能量13", column = "measured_energy_13", type = "text" },
+  { name = "测量能量14", column = "measured_energy_14", type = "text" },
+  { name = "测量能量15", column = "measured_energy_15", type = "text" },
+  { name = "测量能量16", column = "measured_energy_16", type = "text" },
+  { name = "测量能量17", column = "measured_energy_17", type = "text" },
+  { name = "准直NO.", column = "collimator_no", type = "text" },
+  { name = "基准倍率", column = "base_rate", type = "text" },
+  { name = "当前倍率", column = "cur_rate", type = "text" },
+  { name = "光罩编号", column = "mask_no2", type = "text" },
+  { name = "增益", column = "gain", type = "text" },
+  { name = "偏置", column = "bias", type = "text" },
+  { name = "光束ON时间", column = "beam_on_time", type = "text" },
+  { name = "鼓风机ON时间", column = "blower_on_time", type = "text" },
+  { name = "准备ON时间", column = "ready_on_time", type = "text" },
+  { name = "测量频率", column = "measured_freq", type = "text" },
+  { name = "上限频率", column = "freq_limit", type = "text" },
+  { name = "shot群数", column = "shot_group", type = "text" },
+  { name = "显示测量频率", column = "display_freq", type = "text" },
+  { name = "光路类型NO.", column = "optical_path_no", type = "text" },
+  { name = "条件文件", column = "cond_file", type = "text" },
+  { name = "脉级", column = "pulse_class", type = "text" },
+  { name = "Retry No.", column = "retry_no", type = "text" },
+  { name = "PRG START TIME", column = "prg_start_time", type = "text" },
+  { name = "加工程序", column = "prog_path", type = "text" },
+]
+[formats.parser]
+encoding = "gb18030"
+header = true
+allow_ragged = true

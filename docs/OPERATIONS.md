@@ -244,6 +244,32 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
 
 未设该变量时这批用例 skip，CI/离线不受影响。
 
+**现网配置 ↔ 真库契约**：`configs/laser_prod_mssql.toml` 是与
+`laser_prod_0923.toml` 同拓扑（60 机台 / 23 格式 / 1119 源实例）的 SQL Server
+落库版，`sink = "plant-oracle"` 全部换成 `plant-mssql`（`driver = "sqlserver"`、
+`file_key = true`）。`tests/mssql_prod_config_test.go` 读这份配置，把 23 张
+数据表连同**一个共享注册表**在真库上建出来并写入重放——实测 **23 张表 / 436 个
+声明列 / 23 行注册表 / 23 个互不相同的 file_key，最长表头 955 字符**；列数逐表
+与 `sys.columns` 核对，骨架必须是 `(file_key, row_number)` 而非 `file_id`。
+形状检查（配置可解析、可校验、dsn 保留 `<密码>` 占位符、格式组引用的格式都存在）
+不需要数据库，永远跑。
+
+同批测量给出的两条容量边界（此前凭 SQL Server 通用规则推断，结论**错了**，
+以实测为准）：
+
+- **整行宽度不是约束**：70 列表（`laser_twin_scale_dsp`）× 每列 1000 字符
+  （整行 7 万字符）写入成功。8060 字节的聚集行上限由引擎把可变长列溢出到
+  ROW_DATA 页处理，不会让 INSERT 失败。
+- **单元格是约束**：`text` 映射 NVARCHAR(4000)，4000 字符可写、4001 字符报
+  2628 截断（错误信息含表名与列名，按 permanent 分类，整批失败不静默截半）。
+
+复跑：
+
+```bash
+REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=disable' \
+  go test -count=1 -run TestProdMSSQLConfig ./tests/
+```
+
 **验证边界（更新）**：sqlserver 与 sqlite 为**实测**；oracle / mysql / postgres
 仍是语法分支 + fail-fast，没有实例可跑就不写"已验证"。legacy 骨架注册表写入
 的 MySQL 分支（上小节记为"④ 只修了一半"）现与 `file_key` 路径共用
