@@ -131,16 +131,17 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 		lazy := configutil.OptionalBool(cc, "lazy_connect", false)
 		if len(columns) > 0 {
 			cfg := storage.TableConfig{
-				Driver:    driver,
-				DSN:       dsn,
-				Dialect:   dialect,
-				Table:     table,
-				FileTable: configutil.OptionalString(cc, "file_table", ""),
-				Columns:   columns,
-				ExtraRows: configutil.OptionalBool(cc, "extra_rows", false),
-				FileKey:   configutil.OptionalBool(cc, "file_key", false),
-				Exposer:   configutil.OptionalBool(cc, "expose_console", false),
-				Lazy:      lazy,
+				Driver:      driver,
+				DSN:         dsn,
+				Dialect:     dialect,
+				Table:       table,
+				FileTable:   configutil.OptionalString(cc, "file_table", ""),
+				Columns:     columns,
+				ExtraRows:   configutil.OptionalBool(cc, "extra_rows", false),
+				FileKey:     configutil.OptionalBool(cc, "file_key", false),
+				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
+				Lazy:        lazy,
+				HeaderCheck: configutil.OptionalString(cc, "header_check", ""),
 			}
 			if err := cfg.Validate(); err != nil {
 				return nil, err
@@ -158,7 +159,7 @@ func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
 }
 
 // parseColumns decodes the declarative column mapping. Column entries carry
-// from (csv|metadata), name, column, type, required, occurrence.
+// from (csv|metadata), name, column, type, required, occurrence, optional.
 func parseColumns(raw any) ([]storage.ColumnMapping, error) {
 	if raw == nil {
 		return nil, nil
@@ -181,6 +182,7 @@ func parseColumns(raw any) ([]storage.ColumnMapping, error) {
 			Type:       configutil.OptionalString(cc, "type", "text"),
 			Required:   configutil.OptionalBool(cc, "required", false),
 			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
+			Optional:   configutil.OptionalBool(cc, "optional", false),
 		}
 		out = append(out, col)
 	}

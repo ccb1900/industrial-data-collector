@@ -188,6 +188,32 @@ Parser settings are declared inline on the format / source unit
   In fleet deployments the storage keys are inlined into each source unit
   from the referenced sink (`driver` is the sink's `driver`).
 
+### Declared columns and the header check
+
+A typed table sink maps CSV header fields to real columns through `columns`
+entry tables: `from` (`csv` | `metadata`), `name` (the header field, matched
+verbatim), `column`, `type`, `required`, `occurrence` (which appearance of a
+repeated header name), and `optional`.
+
+`header_check` (source unit / format level, default `strict`) decides what
+happens when the decoded header and the declaration disagree. The two
+directions are not symmetric:
+
+- A header field with no declaration is data being dropped, so in `strict`
+  the whole file fails before any database round trip. The file is not marked
+  complete, so it re-queues inside `catchup_days` and lands on its own once
+  the declaration is fixed. `header_check = "warn"` logs instead of blocking;
+  `extra_rows = true` never blocks (the raw row is already captured in
+  `row_values`), and neither does `auto_columns = true`, whose contract is
+  header-driven column growth.
+- A declared column the header does not carry stores an empty value and warns
+  once per `(table, column)`; `optional = true` silences even the warning
+  (used for per-generation format variants declared as a union). `optional`
+  and `required` contradict each other and are rejected by validation.
+
+See [`docs/OPERATIONS.md`](OPERATIONS.md) for the field case that motivated
+this contract (undeclared `aaa` fields silently losing three columns).
+
 ## State
 
 - `type`: `memory-state` or `file-state`.

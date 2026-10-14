@@ -94,6 +94,7 @@ func TestAutoColumnsDuplicateSuffixCollision(t *testing.T) {
 }
 
 // 声明式 occurrence：同一表头名的不同出现可分别落列。
+// 表头里的 x 也必须声明——header_check 默认 strict，未声明字段判整文件失败。
 func TestDeclaredColumnsOccurrenceSplit(t *testing.T) {
 	ctx := context.Background()
 	tw, err := OpenTable(ctx, TableConfig{
@@ -102,6 +103,7 @@ func TestDeclaredColumnsOccurrenceSplit(t *testing.T) {
 		Columns: []ColumnMapping{
 			{Name: "v", Column: "v1", Type: "text", Occurrence: 0},
 			{Name: "v", Column: "v2", Type: "text", Occurrence: 1},
+			{Name: "x", Column: "vx", Type: "text"},
 		},
 	})
 	if err != nil {

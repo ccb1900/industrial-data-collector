@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,8 +212,9 @@ func TestTableStorageTypeFailureEntersLedger(t *testing.T) {
 	}
 }
 
-// TestTableStorageAddColumnEvolution proves additive schema evolution: a
-// re-reconcile with a new declared column adds it to the existing table.
+// TestTableStorageAddColumnEvolution 证明两件事：表头里有未声明字段时整个文件
+// 被阻断（一条不写、不登记完成）；声明补齐后同一日期重排即自动补采，并把新列
+// 增量加到既有表上。
 func TestTableStorageAddColumnEvolution(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "machine001")
@@ -226,14 +228,20 @@ func TestTableStorageAddColumnEvolution(t *testing.T) {
 	h := newApp(t)
 	defer h.Close(context.Background())
 	active(ctx, t, h, mustParse(t, tableDocument(root, dbPath, false)))
-	trigger(ctx, t, h, "2026-09-07")
+	// humidity 没有声明：默认 strict 判该文件失败，且不落半截。
+	first := triggerReq(ctx, h, model.CollectionRequested{
+		Reason: "manual", Date: ptrD(cfgDate(t, "2026-09-07")),
+	})
+	if first == nil || !strings.Contains(first.Error(), "undeclared header field") {
+		t.Fatalf("first pass should fail the header check, got %v", first)
+	}
 
-	// Extend the config with the humidity column and re-reconcile.
+	// 补上 humidity 声明并重排同一日期：文件重采成功，schema 增量加列。
 	active(ctx, t, h, mustParse(t, tableDocument(root, dbPath, true)))
-	// 惰性连接下 schema 在首个批次落库时演进：次日新文件触发写入与演进。
 	if err := writeDay(root, "2026-09-08", "h.csv", "ts,temperature,humidity\n2026-09-08T01:00:00Z,42.5,55\n"); err != nil {
 		t.Fatal(err)
 	}
+	trigger(ctx, t, h, "2026-09-07")
 	trigger(ctx, t, h, "2026-09-08")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -271,6 +279,15 @@ func TestTableStorageAddColumnEvolution(t *testing.T) {
 		}
 		r2.Close()
 		t.Fatalf("humidity column missing; table columns = %v", dbg)
+	}
+	// 被阻断的 09-07 文件必须随重排补采回来：两天各 1 行，不多不少
+	//（多了说明阻断时落了半截，少了说明失败文件没有重新排队）。
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM readings`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("rows after replay = %d, want 2 (blocked file must re-queue and land whole)", n)
 	}
 }
 

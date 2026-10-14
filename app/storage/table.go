@@ -54,6 +54,10 @@ type ColumnMapping struct {
 	Type       string       `toml:"type"`       // text|int|bigint|float|bool|timestamp|date
 	Required   bool         `toml:"required"`   // missing value fails the file
 	Occurrence int          `toml:"occurrence"` // csv 源：取表头名的第 N 次出现（0 起）；重名表头用它区分
+	// Optional 豁免表头校验：声明了本列但文件表头里没有它时不再告警。
+	// 用于同一格式存在代际差异（如三代 49 列、六代 50 列的并集声明）。
+	// 缺列只是取空值，本身不阻断；与 Required 互斥（必填列不许豁免）。
+	Optional bool `toml:"optional"`
 }
 
 // TableConfig configures the typed relational sink.
@@ -76,6 +80,11 @@ type TableConfig struct {
 	// （<file_table>_file_key_seq 计数器行，同事务 UPDATE+SELECT，五方言
 	// 同构）。需要 FileTable（注册表从可选变为必需）。
 	FileKey bool
+	// HeaderCheck 表头与声明列的失配处置："strict"（默认，Validate 补齐）
+	// = 表头有、声明没有的字段判整个文件失败；"warn" = 只告警不阻断。
+	// 方向只有这一个：声明有、表头没有的列取空值，恒为告警（列级 optional
+	// 可豁免），不参与本开关。见 headerCheck。
+	HeaderCheck string
 }
 
 func (c *TableConfig) Validate() error {
@@ -90,6 +99,14 @@ func (c *TableConfig) Validate() error {
 	}
 	if c.Table == "" {
 		c.Table = "records"
+	}
+	c.HeaderCheck = strings.ToLower(strings.TrimSpace(c.HeaderCheck))
+	switch c.HeaderCheck {
+	case "":
+		c.HeaderCheck = "strict"
+	case "strict", "warn":
+	default:
+		return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: header_check must be strict or warn, got %q", c.Table, c.HeaderCheck)
 	}
 	if !tableNamePattern.MatchString(c.Table) {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage table %q is not a simple identifier", c.Table)
@@ -123,6 +140,9 @@ func (c *TableConfig) Validate() error {
 		}
 		if col.Occurrence < 0 {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: occurrence must be >= 0", col.Column)
+		}
+		if col.Optional && col.Required {
+			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: optional and required contradict (required already fails the file when the header lacks it)", col.Column)
 		}
 		if col.From == SourceMetadata && col.Occurrence != 0 {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: occurrence applies to csv sources only", col.Column)
@@ -980,8 +1000,98 @@ func insertIfMissingStmt(dialect, rawTable string, cols []string, conflict strin
 	}
 }
 
+// headerCheck 把解码表头与声明列双向比对，计数单位是"表头名的出现次数"：
+// 同一 name 声明 k 次（重名表头用 occurrence 区分）才允许它在表头出现 k 次。
+// 取值口径与 mapRow 一致——两边都用表头/声明的原文，不做 TrimSpace，所以带
+// 空格的表头确实取不到值，这里就如实报失配。
+//
+// 两个方向的代价不同，处置也不同：
+//   - 表头有、声明没有：这些字段的值正在被丢弃。默认（header_check =
+//     "strict"）判整个文件失败，且在任何 DB 往返之前失败——文件不落半截、
+//     不登记完成，采集按 catchup_days 重排，声明补齐后自动补采。写成
+//     "warn" 只告警。auto_columns 的契约本就是"按表头增量建列"，extra_rows
+//     开着的格式未声明字段已整行进 row_values：这两种形态值不丢，恒只告警。
+//   - 声明有、表头没有：没有数据可丢（取空值），恒为告警；同一格式存在代际
+//     差异时用列级 optional 豁免。
+func (t *TableStorage) headerCheck(batch model.Batch) error {
+	if len(t.cfg.Columns) == 0 || len(batch.Header) == 0 {
+		return nil
+	}
+	declared := map[string]int{}
+	for _, c := range t.cfg.Columns {
+		if c.From == SourceMetadata {
+			continue
+		}
+		declared[c.Name]++
+	}
+	seen := map[string]int{}
+	var order []string
+	for _, h := range batch.Header {
+		if strings.TrimSpace(h) == "" {
+			continue // 空表头不可声明，跳过（与 deriveColumns 一致）
+		}
+		if seen[h] == 0 {
+			order = append(order, h)
+		}
+		seen[h]++
+	}
+	var extras []string
+	for _, name := range order {
+		if seen[name] > declared[name] {
+			extras = append(extras, name)
+		}
+	}
+	blocking := t.cfg.HeaderCheck == "strict" && !t.cfg.AutoColumns && !t.cfg.ExtraRows
+	if len(extras) > 0 {
+		for _, name := range extras {
+			if t.warnOnce("extra", name) {
+				slog.Warn("header field is not declared, its value is dropped",
+					"table", t.cfg.Table, "file", batch.File.Name, "header_field", name,
+					"blocked", blocking)
+			}
+		}
+		if blocking {
+			return errs.Sourcef(errs.ErrStoragePermanent,
+				"header check: file %q has %d undeclared header field(s) for table %q (%s); their values would be lost — declare them, or set header_check = \"warn\" / extra_rows = true",
+				batch.File.Name, len(extras), t.cfg.Table, strings.Join(extras, ", "))
+		}
+	}
+	for i := range t.cfg.Columns {
+		c := &t.cfg.Columns[i]
+		if c.From == SourceMetadata || c.Optional {
+			continue
+		}
+		if seen[c.Name] > c.Occurrence {
+			continue
+		}
+		if t.warnOnce("missing", c.Column) {
+			slog.Warn("declared column has no matching header field, value stored empty",
+				"table", t.cfg.Table, "file", batch.File.Name,
+				"column", c.Column, "header_field", c.Name)
+		}
+	}
+	return nil
+}
+
+// warnOnce 同一 (方向, 字段) 只记一条：长跑进程按文件刷屏没有信息量。
+// 写路径按源串行，无需加锁（与 driftWarned 的既有约定一致）。
+func (t *TableStorage) warnOnce(kind, key string) bool {
+	if t.driftWarned == nil {
+		t.driftWarned = map[string]bool{}
+	}
+	full := kind + "\x00" + key
+	if t.driftWarned[full] {
+		return false
+	}
+	t.driftWarned[full] = true
+	return true
+}
+
 // Write implements model.Storage.
 func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
+	if err := t.headerCheck(batch); err != nil {
+		return err
+	}
 	if len(batch.Records) == 0 {
 		return nil
 	}
@@ -1033,36 +1143,10 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if t.cfg.FileKey {
 		cols = []string{"file_key", "row_number"}
 	}
-	declared := map[string]int{} // csv 源列名 -> 声明的出现次数
+	// 表头与声明列的双向比对已在 Write 入口做过（headerCheck）：未声明的表头
+	// 字段默认阻断，auto_columns / extra_rows 形态下降级为告警。
 	for _, c := range t.effectiveColumns() {
 		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
-		if c.From != SourceMetadata {
-			declared[c.Name]++
-		}
-	}
-	if t.cfg.AutoColumns && len(t.cfg.Columns) > 0 {
-		// 声明式 columns 与 auto_columns 并存时声明优先：表头里未声明的
-		// 字段无法落列，必须告警而不是静默丢弃。纯自动映射已由增量加列
-		// 覆盖，不会再出现漂移。
-		seen := map[string]int{}
-		for _, h := range batch.Header {
-			name := strings.TrimSpace(h)
-			if name == "" {
-				continue
-			}
-			seen[name]++
-			if seen[name] > declared[name] {
-				if t.driftWarned == nil {
-					t.driftWarned = map[string]bool{}
-				}
-				if !t.driftWarned[name] {
-					t.driftWarned[name] = true
-					slog.Warn("auto-mapped source grew a new header column after first batch; value ignored (declare columns or re-create table)",
-						"table", t.cfg.Table, "column", name)
-				}
-				declared[name] = seen[name] // 同名只告警一次
-			}
-		}
 	}
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values")

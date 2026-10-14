@@ -672,15 +672,16 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 				return nil, nil, nil, cerr
 			}
 			tableCfg := &storage.TableConfig{
-				Driver:    driver,
-				DSN:       configutil.OptionalString(cc, "dsn", ""),
-				Dialect:   dialect,
-				Table:     configutil.OptionalString(cc, "table", "records"),
-				FileTable: configutil.OptionalString(cc, "file_table", ""),
-				Columns:   columns,
-				ExtraRows: configutil.OptionalBool(cc, "extra_rows", false),
-				FileKey:   configutil.OptionalBool(cc, "file_key", false),
-				Exposer:   configutil.OptionalBool(cc, "expose_console", false),
+				Driver:      driver,
+				DSN:         configutil.OptionalString(cc, "dsn", ""),
+				Dialect:     dialect,
+				Table:       configutil.OptionalString(cc, "table", "records"),
+				FileTable:   configutil.OptionalString(cc, "file_table", ""),
+				Columns:     columns,
+				ExtraRows:   configutil.OptionalBool(cc, "extra_rows", false),
+				FileKey:     configutil.OptionalBool(cc, "file_key", false),
+				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
+				HeaderCheck: configutil.OptionalString(cc, "header_check", ""),
 			}
 			if err := tableCfg.Validate(); err != nil {
 				return nil, nil, nil, err
@@ -722,6 +723,7 @@ func parseTableColumns(raw any) ([]storage.ColumnMapping, error) {
 			Type:       configutil.OptionalString(cc, "type", "text"),
 			Required:   configutil.OptionalBool(cc, "required", false),
 			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
+			Optional:   configutil.OptionalBool(cc, "optional", false),
 		})
 	}
 	return out, nil

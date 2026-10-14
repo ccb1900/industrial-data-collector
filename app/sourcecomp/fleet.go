@@ -46,6 +46,11 @@ type SinkDef struct {
 	// 骨架一经建表即固定，所以它是"新库/迁移后"才允许的开关。
 	FileKey     *bool
 	LazyConnect *bool
+	// HeaderCheck（strict|warn）与 ExtraRows 是表头校验的两个开关。写在
+	// sink 上对全部引用格式生效，格式级同名键覆盖它（Extra 透传在最后）。
+	// 不接进 SinkDef 的 sink 级键会被静默丢弃，所以新增开关必须在这里登记。
+	HeaderCheck string
+	ExtraRows   *bool
 }
 
 // FormatDef is the complete semantic contract of one data file family:
@@ -307,6 +312,12 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if sinkByName[f.Sink].LazyConnect != nil {
 				cfg["lazy_connect"] = *sinkByName[f.Sink].LazyConnect
 			}
+			if v := sinkByName[f.Sink].HeaderCheck; v != "" {
+				cfg["header_check"] = v
+			}
+			if sinkByName[f.Sink].ExtraRows != nil {
+				cfg["extra_rows"] = *sinkByName[f.Sink].ExtraRows
+			}
 			if ov := sinkByName[f.Sink].DriverOverride; ov != "" {
 				cfg["driver"] = ov
 			}
@@ -502,6 +513,10 @@ func parseSinks(raw any) ([]SinkDef, error) {
 		}
 		if v, ok := m["file_key"].(bool); ok {
 			sk.FileKey = &v
+		}
+		sk.HeaderCheck, _ = m["header_check"].(string)
+		if v, ok := m["extra_rows"].(bool); ok {
+			sk.ExtraRows = &v
 		}
 		if sk.Name == "" || sk.Driver == "" {
 			return nil, fmt.Errorf("sinks #%d: name/driver are required", i)

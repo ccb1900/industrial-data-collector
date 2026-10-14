@@ -286,6 +286,44 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
 `ON CONFLICT DO NOTHING`、oracle/sqlserver 出 `MERGE`——但这只是分支正确，
 mysql / postgres 仍未经真库验证。
 
+## 表头与声明列的匹配校验（`header_check`）
+
+契约变化：声明式 `columns` 的格式，**表头里有未声明的字段不再静默丢弃，而是判整个
+文件失败**。以前是静默丢，一次都不提示。
+
+为什么必须阻断而不是只提示：文件一旦写成功就登记完成，**永远不会再被读**。放行的
+代价是丢失被固化——想找回那几列，只剩 `backup_dir` 里那份原始副本（采集成功才写，
+`backup_keep_days` 天内有效），而框架没有 from-backup 重放命令，得手改配置把机台
+路径指回备份目录另起源 id 重放。阻断则文件不登记完成，`ListIncomplete` 在
+`catchup_days` 窗口内自动重排，声明补齐后下一次采集自己把整文件补回来，零人工。
+这条链路有 e2e 用例锁住（`TestTableStorageAddColumnEvolution`：首批被阻断、补声明
+后同一日期重排补齐，行数 2 = 既没落半截也没漏）。
+
+| 失配方向 | 含义 | 处置 | 豁免 |
+|---|---|---|---|
+| 表头有、声明没有 | 这些字段的值正在被丢弃 | **阻断**：在任何 DB 往返之前失败，整文件一条不写 | `header_check = "warn"`；或该格式开 `extra_rows = true`（全行 JSON 已落 `row_values`，值不丢）；`auto_columns = true` 恒不阻断（其契约就是按表头增量建列） |
+| 声明有、表头没有 | 没有数据可丢，取空值 | 恒为告警，每个 `(表, 列)` 只记一次 | 列级 `optional = true` 连告警都不发 |
+
+判定口径与取值口径完全一致，所以不会有"校验说没事、值却取不到"的缝隙：两边都用
+表头/声明的**原文**（不做 TrimSpace，带空格的表头如实报失配）；计数单位是"表头名的
+出现次数"，同一 name 声明 k 次（重名表头用 `occurrence` 区分）才允许它在表头出现 k
+次；空表头字段跳过（不可声明）；无表头形态（`header = false`）整体跳过校验。
+`optional` 与 `required` 互斥，`Validate()` 直接拒（`required` 已经会在缺列时判失败）。
+
+现场案例（2026-10-14 核）：在用的激光配置 `aaa` 声明 17 列，仓库里的
+`configs/laser_prod_mssql.toml` 声明 20 列，多出「相关比率 / Lack Rate / 加工程序」，
+而 `atom_live_demo.dbo.laser_aaa` 实测就是 17 列——这 3 个字段一直在按旧契约被静默
+丢弃。**换成带本校验的 exe 后，`laser3/5/6-aaa` 会整文件失败**，这是设计意图（阻止
+继续丢数据），修法是给该格式补上三列声明。历史欠账另算：09-13 … 09-22 已按 17 列
+登记完成，本校验不会自动回头补，需要单独重采一次。
+
+`pwrmulti` 是缺列方向唯一的噪声源：三代 49 列、六代 50 列，声明取了两代并集，所以
+每个三代文件都"缺"两列。这类列标 `optional = true`。
+
+回归用例：`app/storage/headercheck_test.go`（阻断/放行/豁免/出现次数/原文口径/空表头
+/配置校验 9 例）、`tests/e2e_table_storage_test.go` 的补采链路、
+`autocolumns_test.go` 的 occurrence 拆分。
+
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
 现象：注册表（现场即 `laser_files`）每文件的 `records` 列一直是 0，而同一条数据在

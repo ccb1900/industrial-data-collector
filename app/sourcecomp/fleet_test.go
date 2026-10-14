@@ -281,3 +281,53 @@ func TestExpandFleetFileKeySink(t *testing.T) {
 		t.Fatalf("parseSinks dropped file_key: %#v", rows)
 	}
 }
+
+// sink 级的表头校验开关同样要下发（不接进 SinkDef 就会被静默丢弃），
+// 格式级同名键覆盖它（Extra 透传在最后）。
+func TestExpandFleetHeaderCheckSink(t *testing.T) {
+	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
+	on := true
+	sinks := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files",
+		HeaderCheck: "warn", ExtraRows: &on}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"aaa"}}}
+	machines := []MachineDef{{No: "A-01", IP: "10.0.0.1", Path: "logs-A01", Group: "g"}}
+	plain := []FormatDef{{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "t", Sink: "db"}}
+
+	out, _, err := expandFleet(d, sinks, plain, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["header_check"]; got != "warn" {
+		t.Fatalf("header_check = %#v, want warn", got)
+	}
+	if got := out[0].Config["extra_rows"]; got != true {
+		t.Fatalf("extra_rows = %#v, want true", got)
+	}
+	strict := []FormatDef{{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "t", Sink: "db",
+		Extra: map[string]any{"header_check": "strict"}}}
+	if out, _, err = expandFleet(d, sinks, strict, groups, machines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["header_check"]; got != "strict" {
+		t.Fatalf("format-level header_check must win, got %#v", got)
+	}
+	// 未声明的 sink 不得凭空多出这些键（golden 展开逐字节比对依赖此点）。
+	none := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files"}}
+	if out, _, err = expandFleet(d, none, plain, groups, machines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := out[0].Config["header_check"]; present {
+		t.Fatal("header_check must be omitted when undeclared")
+	}
+	if _, present := out[0].Config["extra_rows"]; present {
+		t.Fatal("extra_rows must be omitted when undeclared")
+	}
+	rows, err := parseSinks([]any{map[string]any{"name": "db", "driver": "sqlite", "dsn": "x",
+		"header_check": "warn", "extra_rows": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].HeaderCheck != "warn" || rows[0].ExtraRows == nil || !*rows[0].ExtraRows {
+		t.Fatalf("parseSinks dropped the header-check keys: %#v", rows)
+	}
+}
