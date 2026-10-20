@@ -331,3 +331,50 @@ func TestExpandFleetHeaderCheckSink(t *testing.T) {
 		t.Fatalf("parseSinks dropped the header-check keys: %#v", rows)
 	}
 }
+
+// file_key_node 是雪花发号的节点号：和 header_check 一样，sink 级键不进
+// SinkDef 白名单就会被静默丢弃，格式级同名键覆盖它（Extra 透传在最后）。
+func TestExpandFleetFileKeyNodeSink(t *testing.T) {
+	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
+	on := true
+	node := 7
+	sinks := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files", FileKey: &on, FileKeyNode: &node}}
+	formats := []FormatDef{{Name: "aaa", Match: "aaa_YYMMDD.log", Table: "t", Sink: "db"}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"aaa"}}}
+	machines := []MachineDef{{No: "A-01", IP: "10.0.0.1", Path: "logs-A01", Group: "g"}}
+
+	out, _, err := expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["file_key_node"]; got != 7 {
+		t.Fatalf("file_key_node = %#v, want 7", got)
+	}
+	formats[0].Extra = map[string]any{"file_key_node": 9}
+	if out, _, err = expandFleet(d, sinks, formats, groups, machines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["file_key_node"]; got != 9 {
+		t.Fatalf("format-level file_key_node must win, got %#v", got)
+	}
+	// 未声明的 sink 不得凭空多出这个键（golden 展开逐字节比对依赖此点）。
+	formats[0].Extra = nil
+	plain := []SinkDef{{Name: "db", Driver: "sqlite", DSN: "../state/c.db", FileTable: "files"}}
+	if out, _, err = expandFleet(d, plain, formats, groups, machines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := out[0].Config["file_key_node"]; present {
+		t.Fatal("file_key_node must be omitted when undeclared")
+	}
+	// TOML 侧整数解码成 int64，parseSinks 要认得；非整数要报错而不是吞掉。
+	rows, err := parseSinks([]any{map[string]any{"name": "db", "driver": "sqlite", "dsn": "x", "file_key_node": int64(3)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].FileKeyNode == nil || *rows[0].FileKeyNode != 3 {
+		t.Fatalf("parseSinks dropped file_key_node: %#v", rows)
+	}
+	if _, err := parseSinks([]any{map[string]any{"name": "db", "driver": "sqlite", "dsn": "x", "file_key_node": "三"}}); err == nil {
+		t.Fatal("non-integer file_key_node must be rejected")
+	}
+}

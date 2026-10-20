@@ -142,26 +142,27 @@ func TestDateFilterBindMatchesDateBind(t *testing.T) {
 	}
 }
 
-// 发号计数器行的播种语句：并发下"报错后吞掉"在 Postgres/Oracle 里会中止
-// 事务，所以各家都必须用自家的 insert-if-missing。
-func TestSeedCounterStmtShape(t *testing.T) {
-	cols := []string{"name", "next"}
-	ss := seedCounterStmt("sqlserver", "F_file_key_seq", cols)
+// 注册表登记用的 insert-if-missing：并发下"报错后吞掉"在 Postgres/Oracle
+// 里会中止事务，所以各家都必须用自家的写法。
+func TestInsertIfMissingStmtShape(t *testing.T) {
+	cols := []string{"file_key", "source_id", "collection_date", "file_id"}
+	conflict := "source_id, collection_date, file_id"
+	ss := insertIfMissingStmt("sqlserver", "F", cols, conflict)
 	if !strings.Contains(ss, "@p1") || !strings.HasSuffix(ss, ";") {
-		t.Errorf("sqlserver seed shape: %s", ss)
+		t.Errorf("sqlserver insert shape: %s", ss)
 	}
-	if !strings.Contains(ss, "ON (dst.name = src.c0)") {
-		t.Errorf("seed must conflict on name: %s", ss)
+	if !strings.Contains(ss, "ON (dst.source_id = src.c1 AND dst.collection_date = src.c2 AND dst.file_id = src.c3)") {
+		t.Errorf("insert must conflict on the file triple: %s", ss)
 	}
-	ora := seedCounterStmt("oracle", "F_file_key_seq", cols)
+	ora := insertIfMissingStmt("oracle", "F", cols, conflict)
 	if !strings.Contains(ora, ":1") || !strings.Contains(ora, "FROM DUAL") || strings.HasSuffix(ora, ";") {
-		t.Errorf("oracle seed shape: %s", ora)
+		t.Errorf("oracle insert shape: %s", ora)
 	}
-	if !strings.Contains(seedCounterStmt("sqlite", "F_file_key_seq", cols), "ON CONFLICT (name) DO NOTHING") {
-		t.Error("sqlite seed must be ON CONFLICT DO NOTHING")
+	if !strings.Contains(insertIfMissingStmt("sqlite", "F", cols, conflict), "ON CONFLICT (source_id, collection_date, file_id) DO NOTHING") {
+		t.Error("sqlite insert must be ON CONFLICT DO NOTHING")
 	}
-	if !strings.Contains(seedCounterStmt("mysql", "F_file_key_seq", cols), "INSERT IGNORE") {
-		t.Error("mysql seed must be INSERT IGNORE")
+	if !strings.Contains(insertIfMissingStmt("mysql", "F", cols, conflict), "INSERT IGNORE") {
+		t.Error("mysql insert must be INSERT IGNORE")
 	}
 }
 

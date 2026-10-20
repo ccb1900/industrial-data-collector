@@ -49,7 +49,7 @@ func newMSSQLFix(t *testing.T) mssqlFix {
 		defer db.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		for _, tbl := range []string{f.table, f.fileTable + "_file_key_seq", f.fileTable} {
+		for _, tbl := range []string{f.table, f.fileTable} {
 			if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteIdent("sqlserver", tbl)); err != nil {
 				t.Logf("cleanup drop %s: %v", tbl, err)
 			}

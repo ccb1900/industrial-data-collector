@@ -76,10 +76,14 @@ type TableConfig struct {
 	// 文件出现新表头字段时增量 ALTER 补列。声明了 Columns 时本开关无效。
 	AutoColumns bool
 	// FileKey 用整型外键替代逐行的 file_id 文本：数据表主键变成
-	// (file_key, row_number)，file_key 由文件注册表按文件一次性分配
-	// （<file_table>_file_key_seq 计数器行，同事务 UPDATE+SELECT，五方言
-	// 同构）。需要 FileTable（注册表从可选变为必需）。
+	// (file_key, row_number)，file_key 由进程内雪花发号器生成（见
+	// snowflake.go），注册表按键回查复用。需要 FileTable（注册表从可选
+	// 变为必需）。
 	FileKey bool
+	// FileKeyNode 固定雪花键的 16 位节点号（0–65535），缺省为每个进程
+	// 随机取一个。只在"要让键可复现"时才填（同一注册表的多个实例必须
+	// 填不同值，否则同毫秒撞键的概率从 1/65536 升到 1）。
+	FileKeyNode *int
 	// HeaderCheck 表头与声明列的失配处置："strict"（默认，Validate 补齐）
 	// = 表头有、声明没有的字段判整个文件失败；"warn" = 只告警不阻断。
 	// 方向只有这一个：声明有、表头没有的列取空值，恒为告警（列级 optional
@@ -115,10 +119,12 @@ func (c *TableConfig) Validate() error {
 		return errs.Sourcef(errs.ErrInvalidConfig, "table storage file_table %q is not a simple identifier", c.FileTable)
 	}
 	if c.FileKey {
-		// 注册表承担键分配，从可选变为必需。方言不再受限：发号是
-		// 五方言同构的计数器行（见 resolveFileKey）。
+		// 注册表是键的归属地（按键回查、唯一索引兜底），从可选变为必需。
 		if c.FileTable == "" {
 			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key mode requires file_table (the registry allocates the keys)", c.Table)
+		}
+		if c.FileKeyNode != nil && (*c.FileKeyNode < 0 || *c.FileKeyNode > flakeNodeMax) {
+			return errs.Sourcef(errs.ErrInvalidConfig, "table storage %q: file_key_node must be within 0..%d, got %d", c.Table, flakeNodeMax, *c.FileKeyNode)
 		}
 	}
 	if len(c.Columns) == 0 && !c.AutoColumns {
@@ -230,6 +236,9 @@ type TableStorage struct {
 	evoMu    sync.Mutex
 	// 声明式 columns + auto_columns 并存时声明优先，多余表头字段告警。
 	driftWarned map[string]bool // 写路径串行访问
+	// fileKeyGen 是雪花发号器，schema 阶段立好（initFileKeyGen）。
+	// 原子指针：多个源并发首写时先到先得，后到者复用同一实例。
+	fileKeyGen atomic.Pointer[fileKeyGen]
 }
 
 // effectiveColumns returns the column set in force: declared columns win;
@@ -524,9 +533,10 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 				return err
 			}
 		}
-		// file_key 模式的键位：注册表加一列整型键 + 唯一索引 + 发号计数器。
+		// file_key 模式的键位：注册表加一列整型键 + 唯一索引。
 		// 存量注册表走 ADD COLUMN（旧行键为 NULL，被引用时由 resolveFileKey
-		// 就地补键，补键后回写计数器基线）。
+		// 就地补一个雪花键）。旧的小键与新的大键共存：键只要求唯一，
+		// 不需要连续，所以换发号方案不是一次迁移。
 		if t.cfg.FileKey {
 			rcols, err := t.existingColumns(ctx, t.cfg.FileTable)
 			if err != nil {
@@ -562,32 +572,18 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			if err := t.execDDL(ctx, uqDDL); err != nil {
 				return err
 			}
-			// 发号计数器表：单行 (name, next)。五方言同构的 UPDATE+SELECT
-			// 发号，不依赖 identity/SEQUENCE/RETURNING 等方言对象。
-			seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
-			if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
-				if !t.tableExists(ctx, t.cfg.FileTable+"_file_key_seq") {
-					if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE %s (name %s NOT NULL, next %s NOT NULL, %s)", seq, dt["text"], dt["bigint"], pkConstraint(t.cfg.Dialect, "name"))); err != nil {
-						return err
-					}
-				}
-			} else if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (name %s NOT NULL, next %s NOT NULL, %s)", seq, dt["text"], dt["bigint"], pkConstraint(t.cfg.Dialect, "name"))); err != nil {
-				return err
-			}
-			// 计数器行在这里就播好：播种是唯一有并发撞键可能的动作（MERGE 的
-			// WHEN NOT MATCHED 是快照判定，两家同时插仍会 2627），放在事务外
-			// 才能"插失败→回查确认"而不牵连写事务。
-			if err := t.ensureFileKeyCounter(ctx); err != nil {
+			// 发号器在 schema 阶段立好：读一次 MAX(file_key) 作基线，
+			// 之后每批发号零往返。计数器表（<file_table>_file_key_seq）
+			// 已退役——旧方案在写事务里 UPDATE 同一行、X 锁持到整批改写
+			// 提交，并发全部排在热点行上（现场实测 15 会话 LCK_M_X 等
+			// 8–13 秒），见 snowflake 小节的注释与 docs/OPERATIONS.md。
+			// 存量库里这张表还在，只是不再被读写，可按需 DROP。
+			if err := t.initFileKeyGen(ctx); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// pkConstraint 按方言生成内联主键子句（表名/列名由调用方保证已引用）。
-func pkConstraint(dialect, col string) string {
-	return "PRIMARY KEY (" + quoteIdent(dialect, col) + ")"
 }
 
 // tableExists reports whether the table already exists (Oracle dialect).
@@ -804,41 +800,62 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 }
 
 // resolveFileKey 返回该文件在注册表里的整型键，注册表行缺失或键未分配时
-// 就地补齐。发号用计数器表（<file_table>_file_key_seq 单行 next）：同事务
-// 内 UPDATE next=next+1 再 SELECT 回读——五方言同一条 SQL，不依赖
-// identity/SEQUENCE/RETURNING 等方言对象；UPDATE 的行锁就是发号互斥，
-// MVCC 库下并发事务在 UPDATE 上串行化，MAX+1 的读-改-写竞争不复存在。
+// 就地补齐。键由进程内雪花发号器生成（snowflake.go），不查库、不锁行。
 //
-// 注册表的 (file_key) 唯一索引是最后防线：万一发号被并发击穿，这里报错
-// 而不是让两个文件共用一个键（那会让数据行静默挂到别的文件上）。
+// 这一步现在跑在写事务**之外**，是刻意的：登记一条注册表行只需一个语句，
+// 而数据行要写满整批（17 列格式 1000 行约 10 个 chunk、每 chunk 两次往返）。
+// 旧方案把发号的行锁一直持到整批改写提交，所有并发源排在同一个热点行上。
+// 代价是登记可能先于数据落库：写失败会留下一条 records=0 的注册行，重试
+// 时按键回查命中、复用同一个键。注册表只被 QueryRows 的 JOIN 读，完成与否
+// 由 file-state 判定，不参与去重，所以这条"提前登记"没有正确性影响。
+//
+// 注册表的 (file_key) 唯一索引是最后防线：万一两个活进程撞了键，这里报错
+// 而不是让两个文件共用一个键（那会让数据行静默挂到别的文件上）；报错的
+// 文件整批失败后重排重试，重试必然换一个新键，所以是自愈而非损坏。
 //
 // 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
 // 会在跨实例场景下读到过期键。
-func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch model.Batch) (int64, error) {
+func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (int64, error) {
 	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
-	seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
 	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
 	triple := []any{string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity()}
 	lookup := fmt.Sprintf("SELECT file_key FROM %s WHERE source_id = %s AND collection_date = %s AND file_id = %s", ft, p(1, 1), p(2, 1), p(3, 1))
+	// authoritative 回查注册表里那一行的键：并发登记同一文件时，胜出的是
+	// 先插进去的那个键，本次多发的号作废（雪花号作废只是留个空洞）。
+	// 五方言一律回查——旧版只在 oracle/sqlserver 回查，另三家的
+	// insert-if-missing 命中冲突时同样会读到竞争者的行，返回自己多发的键
+	// 就会把数据行挂到一个不存在的键上。
+	authoritative := func() (int64, error) {
+		var found sql.NullInt64
+		if err := t.db.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil {
+			return 0, errs.ClassifyStorageError("file key lookup "+batch.File.Name, err)
+		}
+		if !found.Valid {
+			return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
+		}
+		return found.Int64, nil
+	}
 	var found sql.NullInt64
-	switch err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); {
+	switch err := t.db.QueryRowContext(ctx, lookup, triple...).Scan(&found); {
 	case err == nil && found.Valid:
 		return found.Int64, nil
 	case err == nil:
-		// 注册表行早于 file_key 列（存量库迁移到这里）：就地补键。键值取
-		// 计数器发号（并回写计数器基线，使计数器 ≥ 既有最大键）。
-		key, err := t.nextFileKey(ctx, tx, seq)
+		// 注册表行早于 file_key 列（存量库迁移到这里）：就地补一个雪花键。
+		// 旧行的小计数器键与新大键共存无碍——键只要求唯一，不要求连续。
+		key, err := t.nextFileKey(ctx)
 		if err != nil {
 			return 0, err
 		}
-		backfill := fmt.Sprintf("UPDATE %s SET file_key = %s WHERE source_id = %s AND collection_date = %s AND file_id = %s",
+		backfill := fmt.Sprintf("UPDATE %s SET file_key = %s WHERE source_id = %s AND collection_date = %s AND file_id = %s AND file_key IS NULL",
 			ft, p(4, 1), p(5, 1), p(6, 1), p(7, 1))
-		if _, err := tx.ExecContext(ctx, backfill, key, triple[0], triple[1], triple[2]); err != nil {
+		if _, err := t.db.ExecContext(ctx, backfill, key, triple[0], triple[1], triple[2]); err != nil {
 			return 0, errs.ClassifyStorageError("file key backfill "+batch.File.Name, err)
 		}
-		return key, nil
+		// 两家同时补同一行：UPDATE 的 "AND file_key IS NULL" 让后到的空转，
+		// 所以返回行里的实际键，而不是本次可能白发的号。
+		return authoritative()
 	case errors.Is(err, sql.ErrNoRows):
-		key, err := t.nextFileKey(ctx, tx, seq)
+		key, err := t.nextFileKey(ctx)
 		if err != nil {
 			return 0, err
 		}
@@ -850,136 +867,13 @@ func (t *TableStorage) resolveFileKey(ctx context.Context, tx *sql.Tx, batch mod
 		// 参数序从 1 开始：file_key 是第一列，与键值在前一致。
 		args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
 			batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
-		if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
+		if _, err := t.db.ExecContext(ctx, insert, args...); err != nil {
 			return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
 		}
-		if t.cfg.Dialect == "oracle" || t.cfg.Dialect == "sqlserver" {
-			// MERGE 命中既有行（并发登记同一文件）：读回那一行的键，
-			// 而不是本次为竞争者多发的键。
-			if err := tx.QueryRowContext(ctx, lookup, triple...).Scan(&found); err != nil || !found.Valid {
-				return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key for %q unresolved", batch.File.Name)
-			}
-			return found.Int64, nil
-		}
-		return key, nil
+		return authoritative()
 	default:
 		return 0, errs.ClassifyStorageError("file lookup "+batch.File.Name, err)
 	}
-}
-
-// nextFileKey 从计数器表发下一个键：同事务 UPDATE+SELECT，五方言同构。
-// UPDATE 的行锁就是发号互斥——读回的值在锁释放前不会被别人改。
-// 计数器行正常情况下已由 ensureFileKeyCounter 在 schema 阶段播好；这里
-// 只在行缺失（手工建库、计数器被删）时兜底播种。
-func (t *TableStorage) nextFileKey(ctx context.Context, tx *sql.Tx, seq string) (int64, error) {
-	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
-	name := t.cfg.FileTable
-	advance := func() (int64, bool, error) {
-		res, err := tx.ExecContext(ctx,
-			fmt.Sprintf("UPDATE %s SET next = next + 1 WHERE name = %s", seq, p(1, 1)), name)
-		if err != nil {
-			return 0, false, errs.ClassifyStorageError("file key advance "+name, err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, false, errs.ClassifyStorageError("file key advance "+name, err)
-		}
-		if n == 0 {
-			return 0, false, nil // 计数器行还没有
-		}
-		var next sql.NullInt64
-		if err := tx.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT next FROM %s WHERE name = %s", seq, p(1, 1)), name).Scan(&next); err != nil {
-			return 0, false, errs.ClassifyStorageError("file key read "+name, err)
-		}
-		if !next.Valid {
-			return 0, false, errs.Sourcef(errs.ErrStoragePermanent, "file key counter %q holds NULL", name)
-		}
-		return next.Int64, true, nil
-	}
-	key, ok, err := advance()
-	if err != nil || ok {
-		return key, err
-	}
-	if err := t.seedFileKeyCounter(ctx, tx, name); err != nil {
-		return 0, err
-	}
-	key, ok, err = advance()
-	if err != nil {
-		return 0, err
-	}
-	if !ok {
-		return 0, errs.Sourcef(errs.ErrStoragePermanent, "file key counter row for %q missing after seeding", name)
-	}
-	return key, nil
-}
-
-// seedFileKeyCounter 幂等地写入计数器行。基线 = 注册表已有最大键（next 的
-// 语义是"上一个已发出的键"，空注册表为 0，因此首个键是 1）。事务内的这一
-// 路径只是兜底（手工建库、计数器行被删）；常规播种在 schema 阶段完成，
-// 见 ensureFileKeyCounter。
-func (t *TableStorage) seedFileKeyCounter(ctx context.Context, tx *sql.Tx, name string) error {
-	base, err := t.fileKeyBaseline(ctx, tx.QueryRowContext(ctx, "SELECT MAX(file_key) FROM "+
-		quoteIdent(t.cfg.Dialect, t.cfg.FileTable)))
-	if err != nil {
-		return err
-	}
-	cols := []string{"name", "next"}
-	rawSeq := t.cfg.FileTable + "_file_key_seq"
-	if _, err := tx.ExecContext(ctx, seedCounterStmt(t.cfg.Dialect, rawSeq, cols), name, base); err != nil {
-		return errs.ClassifyStorageError("file key counter seed "+name, err)
-	}
-	return nil
-}
-
-// ensureFileKeyCounter 在 schema 阶段、写事务之外把计数器行播好。播种是发号
-// 路径上唯一有并发撞键可能的动作（MERGE 的 WHEN NOT MATCHED 是快照判定，两家
-// 同时插仍会 2627），放在事务外才能"插失败→回查确认"而不牵连写事务——
-// sqlite 的单连接（openTuned 里 SetMaxOpenConns(1)）也要求这件事不能在事务
-// 持有的同时再发语句。
-func (t *TableStorage) ensureFileKeyCounter(ctx context.Context) error {
-	name := t.cfg.FileTable
-	seq := quoteIdent(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq")
-	probe := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE name = %s", seq, placeholders(t.cfg.Dialect, 1, 1))
-	var cnt int
-	if err := t.db.QueryRowContext(ctx, probe, name).Scan(&cnt); err != nil {
-		return errs.ClassifyStorageError("file key counter probe "+name, err)
-	}
-	if cnt > 0 {
-		return nil
-	}
-	base, err := t.fileKeyBaseline(ctx, t.db.QueryRowContext(ctx,
-		"SELECT MAX(file_key) FROM "+quoteIdent(t.cfg.Dialect, t.cfg.FileTable)))
-	if err != nil {
-		return err
-	}
-	seed := seedCounterStmt(t.cfg.Dialect, t.cfg.FileTable+"_file_key_seq", []string{"name", "next"})
-	if _, err := t.db.ExecContext(ctx, seed, name, base); err != nil {
-		// 并发实例抢先播种：回查确认存在即算成功。
-		if err2 := t.db.QueryRowContext(ctx, probe, name).Scan(&cnt); err2 == nil && cnt > 0 {
-			return nil
-		}
-		return errs.ClassifyStorageError("file key counter seed "+name, err)
-	}
-	return nil
-}
-
-// fileKeyBaseline 取注册表当前最大键作为计数器基线；row 为
-// SELECT MAX(file_key) 的单行查询（NULL/空表 → 0）。
-func (t *TableStorage) fileKeyBaseline(ctx context.Context, row *sql.Row) (int64, error) {
-	var base sql.NullInt64
-	if err := row.Scan(&base); err != nil {
-		return 0, errs.ClassifyStorageError("file key baseline", err)
-	}
-	if !base.Valid {
-		return 0, nil
-	}
-	return base.Int64, nil
-}
-
-// seedCounterStmt 生成"计数器行不存在才插"的语句（两列：name、next）。
-func seedCounterStmt(dialect, rawTable string, cols []string) string {
-	return insertIfMissingStmt(dialect, rawTable, cols, "name")
 }
 
 // insertIfMissingStmt 生成"命中冲突键就不插"的语句。各家写法互斥：
@@ -1111,6 +1005,18 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 			return err
 		}
 	}
+	// file_key 骨架：整批共用一个键，逐行不再重复 file_id 文本。
+	// 发号与登记在事务**之外**（resolveFileKey 自己管往返）：登记只有一条
+	// 语句，数据行才是整批改写，两者放进同一个事务会让发号/登记成为跨源
+	// 的串行点——现场 15 个会话 LCK_M_X 等同一个计数器行，等待 8–13 秒。
+	var fileKey int64
+	if t.cfg.FileKey {
+		fk, kerr := t.resolveFileKey(ctx, batch)
+		if kerr != nil {
+			return kerr
+		}
+		fileKey = fk
+	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
 		return errs.ClassifyStorageError("begin", err)
@@ -1130,15 +1036,6 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		}
 	}
 
-	// file_key 骨架：整批共用一个键，逐行不再重复 file_id 文本。
-	var fileKey int64
-	if t.cfg.FileKey {
-		fk, kerr := t.resolveFileKey(ctx, tx, batch)
-		if kerr != nil {
-			return kerr
-		}
-		fileKey = fk
-	}
 	cols := []string{"source_id", "collection_date", "file_id", "row_number"}
 	if t.cfg.FileKey {
 		cols = []string{"file_key", "row_number"}

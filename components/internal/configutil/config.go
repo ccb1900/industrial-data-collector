@@ -52,6 +52,16 @@ func OptionalInt(cc config.ComponentConfig, key string, def int) int {
 	return def
 }
 
+// OptionalIntPtr 返回可选整型的指针：键缺省为 nil。用于"未设置"与
+// "显式设为 0"必须区分的开关（如 file_key_node，0 是合法节点号）。
+func OptionalIntPtr(cc config.ComponentConfig, key string) *int {
+	if _, ok := cc.Config[key]; !ok {
+		return nil
+	}
+	n := OptionalInt(cc, key, 0)
+	return &n
+}
+
 func OptionalBool(cc config.ComponentConfig, key string, def bool) bool {
 	v, ok := cc.Config[key]
 	if !ok {

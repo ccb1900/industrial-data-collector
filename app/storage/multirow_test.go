@@ -102,14 +102,8 @@ func TestChunkRowsBounds(t *testing.T) {
 	}
 }
 
-// 发号计数器：同事务 UPDATE+SELECT 的五方言同构语句（构造断言）。
-func TestNextFileKeyStatements(t *testing.T) {
-	cfg := TableConfig{Dialect: "oracle", FileTable: "F"}
-	seq := quoteIdent(cfg.Dialect, cfg.FileTable+"_file_key_seq")
-	if seq != `"F_FILE_KEY_SEQ"` {
-		t.Fatalf("seq identifier: %s", seq)
-	}
-	// 各方言占位符形态齐全（resolveFileKey 全部经 placeholders()）。
+// 各方言占位符形态齐全（resolveFileKey 全部经 placeholders()）。
+func TestPlaceholderShapes(t *testing.T) {
 	for d, want := range map[string]string{
 		"sqlite": "?", "mysql": "?", "postgres": "$1", "oracle": ":1", "sqlserver": "@p1",
 	} {

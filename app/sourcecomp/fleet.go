@@ -42,9 +42,13 @@ type SinkDef struct {
 	DriverOverride string // 可选：实际 sql driver 注册名（如测试桩）
 	DSN            string
 	FileTable      string // 可选：该 sink 的文件登记表（跨格式共享）
-	// FileKey 用整型 file_key 替代逐行 file_id 文本作幂等骨架（仅 sqlite）。
+	// FileKey 用整型 file_key 替代逐行 file_id 文本作幂等骨架（全方言）。
 	// 骨架一经建表即固定，所以它是"新库/迁移后"才允许的开关。
-	FileKey     *bool
+	FileKey *bool
+	// FileKeyNode 固定雪花发号的 16 位节点号（0–65535）。缺省时每个进程
+	// 随机取一个；要从"大概率不撞"变成"确定不撞"，就在同一注册表下的
+	// 各实例上显式填不同值。
+	FileKeyNode *int
 	LazyConnect *bool
 	// HeaderCheck（strict|warn）与 ExtraRows 是表头校验的两个开关。写在
 	// sink 上对全部引用格式生效，格式级同名键覆盖它（Extra 透传在最后）。
@@ -309,6 +313,9 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if sinkByName[f.Sink].FileKey != nil {
 				cfg["file_key"] = *sinkByName[f.Sink].FileKey
 			}
+			if sinkByName[f.Sink].FileKeyNode != nil {
+				cfg["file_key_node"] = *sinkByName[f.Sink].FileKeyNode
+			}
 			if sinkByName[f.Sink].LazyConnect != nil {
 				cfg["lazy_connect"] = *sinkByName[f.Sink].LazyConnect
 			}
@@ -513,6 +520,20 @@ func parseSinks(raw any) ([]SinkDef, error) {
 		}
 		if v, ok := m["file_key"].(bool); ok {
 			sk.FileKey = &v
+		}
+		// TOML 整数解码成 int64；超出 0–65535 的范围留给 Validate 报错，
+		// 这里只负责搬运。
+		if v, ok := m["file_key_node"]; ok {
+			switch n := v.(type) {
+			case int64:
+				x := int(n)
+				sk.FileKeyNode = &x
+			case int:
+				x := n
+				sk.FileKeyNode = &x
+			default:
+				return nil, fmt.Errorf("sinks #%d: file_key_node must be an integer", i)
+			}
 		}
 		sk.HeaderCheck, _ = m["header_check"].(string)
 		if v, ok := m["extra_rows"].(bool); ok {

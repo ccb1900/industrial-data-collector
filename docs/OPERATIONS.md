@@ -99,7 +99,7 @@ Recovery is planned at every trigger, in the collector application layer
 | 骨架 | 数据表主键 | 每行键开销 | 适用 |
 |---|---|---|---|
 | legacy（默认，历史库即此形状） | `(source_id, collection_date, file_id, row_number)` | `file_id` 是 `source\|完整路径\|size\|modtime` 的 77 字节串，逐行存一遍，复合主键的 `sqlite_autoindex_*` 里再存一遍 | 需要跨库通用（含 Oracle / SQL Server） |
-| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由文件注册表按文件一次性分配（`<file_table>_file_key_seq` 单行计数器，同事务 `UPDATE next=next+1` + 回读，行锁即互斥） | 五方言同构（`Validate()` 已放开）；**实测 sqlite 与 sqlserver**（SQL Server 2019 CU32，见下文小节），oracle / mysql / postgres 仍为语法分支 + fail-fast |
+| `file_key = true` | `(file_key, row_number)` | 8 字节级整数；`file_key` 由进程内雪花发号器生成，注册表按键回查复用（见下文「发号定案」） | 五方言同构（`Validate()` 已放开）；**实测 sqlite 与 sqlserver**（SQL Server 2019 CU32，见下文小节），oracle / mysql / postgres 仍为语法分支 + fail-fast |
 
 现场实测（`collect2.db`，4.83 GiB，`freelist_count = 0`）：数据表 3306.9 MB +
 `sqlite_autoindex_*` 1639.6 MB（**33.1%**），其中 `laser_aaa` 单表 325 B/行里有
@@ -147,7 +147,8 @@ Recovery is planned at every trigger, in the collector application layer
 ### `file_key` 评审结论与未决项（2026-09-30，评审未改代码）
 
 提出 2ca8198 之后的一轮评审问题、已核实的答案，以及**尚未拍板的发号方案**。
-此轮只评估，`app/storage/table.go` 等一行未改。
+此轮只评估，`app/storage/table.go` 等一行未改。（本节保留为当时的评估记录：
+发号已于 2026-10-20 定案为进程内雪花，见下文「发号定案」。）
 
 | # | 问题 | 结论 |
 |---|---|---|
@@ -170,7 +171,8 @@ Recovery is planned at every trigger, in the collector application layer
 无 `.github/workflows`；`configs/laser_prod_0923.toml` 里名为 `plant-oracle` 的 sink 其
 `driver` 实为 `sqlite`，oracle / sqlserver 的 sink 都在注释里。
 
-待拍板的发号方案（未选定，任选其一后实施）：
+待拍板的发号方案（未选定，任选其一后实施）——**已于 2026-10-20 定案为
+雪花（第 3 条思路的整数版，见下文「发号定案」），下列方案不再执行**：
 
 1. **计数器行**（推荐）：`UPDATE <sink>_seq SET next = next + 1 WHERE name = ?` +
    同事务 `SELECT next`。五方言同一条 SQL，不需要 identity / AUTO_INCREMENT / SEQUENCE
@@ -323,6 +325,54 @@ mysql / postgres 仍未经真库验证。
 回归用例：`app/storage/headercheck_test.go`（阻断/放行/豁免/出现次数/原文口径/空表头
 /配置校验 9 例）、`tests/e2e_table_storage_test.go` 的补采链路、
 `autocolumns_test.go` 的 occurrence 拆分。
+
+### 发号定案：进程内雪花（2026-10-20，取代计数器行）
+
+上一轮的"待拍板"在这里定案，而且是被现场数据推着定的：计数器行方案在
+`atom_live` 上跑出了阻塞链。
+
+**现场证据**（`sys.dm_exec_requests` 快照，库 `atom_live`）：15 个会话同时
+`suspended` 在 `LCK_M_X`，等的是同一条
+`UPDATE [t_collector_laser_files_file_key_seq] SET next = next + 1 WHERE name = @p1`，
+`wait_time` 8314–12279 ms，头阻塞就是这条语句的持有者。原因在代码结构里：
+`Write` 先 `BeginTx`，发号 UPDATE 排在最前，X 锁一直持到 `Commit`，而
+`Commit` 在整批数据 MERGE 之后——17 列格式 1000 行一批约 10 个 chunk、每
+chunk 一次 Prepare + 一次 Exec，全是持锁期间的往返。于是
+`max_parallel_sources = 16` 在"每文件首批登记"这一刻串行成 1。这不是死锁
+（发号恒在事务最前，wait-for 图只有一个头），是排队。
+
+**定案**：键改由进程内雪花发号器生成（`app/storage/snowflake.go`），位布局
+41 位毫秒时间戳（纪元 2026-01-01，可用到 2095）| 16 位节点号 | 6 位序号，
+仍是 int64 / 各方言 BIGINT，列型、主键、以及已实测的体积结论（省 59.1%）
+都不变：
+
+- 零 DB 往返、零共享行：写路径不再有跨源串行点。
+- 节点号缺省每个进程随机取（crypto/rand），可用 `file_key_node` 固定；
+  同一注册表下的多个实例应显式填不同值。**不选 UUIDv7**：128 位，键列要从
+  BIGINT 换成 BINARY(16)/UNIQUEIDENTIFIER，主键宽度与体积收益全要重算，
+  而它比雪花多给的只有"不依赖节点号"——这里用唯一索引兜底更便宜。
+- 启动时读一次注册表 `MAX(file_key)` 的时间戳作基线：新进程发出的键恒大于
+  库里既有键，跨重启与时钟回拨都成立；旧计数器发的小键（1..N）解不出时间戳，
+  自然退回当前时间，**旧键与新键共存、无需迁移**。
+- 时钟回拨冻结时间戳、序号耗尽借未来 1ms，保证进程内严格递增。
+- 注册表的 `(file_key)` 唯一索引仍是最后防线：两个活进程撞键时整文件失败，
+  重试必然换新键（自愈），不会把数据挂到别的文件上。
+
+**连带的行为变化**：发号与注册表登记移出写事务（登记只有一条语句，数据行
+才是整批改写）。因此写失败可能留下一条 `records = 0` 的注册行；完成态由
+file-state 判定，注册表只被 `QueryRows` 的 JOIN 读，不参与去重——重试会按键
+回查复用同一个键。同时把"回查权威键"推广到五方言：旧版只在 oracle/sqlserver
+回查，另三家的 insert-if-missing 命中冲突时会返回自己多发的键，把数据行挂到
+未登记的键上（顺带修掉的潜在缺陷）。
+
+**退役**：`<file_table>_file_key_seq` 不再创建、不再读写；存量库里的那张表
+可以随时 `DROP TABLE`，不影响任何路径。`file_key_node` 是可选的 sink 键
+（0–65535，越界在 `Validate()` 报错），也可写在格式级覆盖 sink 级。
+
+**验证边界**：雪花发号、并发登记、旧键回填、计数器表退役由离线用例覆盖
+（`app/storage/snowflake_test.go`）；SQL Server 侧仍是"语法分支 + fail-fast"，
+本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计数器方案的真库发号用例
+（20×20 并发）随计数器表一并退役。
 
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
