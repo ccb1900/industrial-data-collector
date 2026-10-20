@@ -29,8 +29,10 @@ func ClassifyStorageError(op string, err error) error {
 		return Sourcef(ErrStorageConstraint, "%s: %w", op, err)
 	}
 	// SQLITE_BUSY/"database is locked" 与 busy timeout 是锁等待超时，
-	// 本质可重试——与 deadlock 同类，不能落兜底 permanent。
-	if containsAny(msg, "deadlock", "database is locked", "sqlite_busy", "busy timeout", "connection refused", "broken pipe", "lost connection", "too many connections") {
+	// 本质可重试——与 deadlock 同类，不能落兜底 permanent。SQL Server 的
+	// 1222（"Lock request time out period exceeded."）与 MySQL 的
+	// "Lock wait timeout exceeded" 同属这一类：行锁排队等超时，重排可过。
+	if containsAny(msg, "deadlock", "database is locked", "sqlite_busy", "busy timeout", "lock request time out", "lock wait timeout", "connection refused", "broken pipe", "lost connection", "too many connections") {
 		return Sourcef(ErrStorageTransient, "%s: %w", op, err)
 	}
 	return Sourcef(ErrStoragePermanent, "%s: %w", op, err)
