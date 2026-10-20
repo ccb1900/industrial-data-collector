@@ -165,9 +165,11 @@ identity, so a retry skips successfully completed files and only retries failed
 ones. The storage row key is `source_id + collection_date + file_id +
 row_number`, making repeated writes idempotent even when an entire collection
 must be retried. A sink may instead set `file_key = true`, which keys
-rows by `(file_key, row_number)` — a small integer allocated once per file from
-a counter row in the file registry (the allocation SQL is the same on all five
-dialects; exercised on sqlite only) — cutting the per-row repetition of the
-77-byte `file_id` (measured ~59% smaller on the production table shape). See
-存储骨架与体积 in `docs/OPERATIONS.md`.
+rows by `(file_key, row_number)` — an integer generated in-process by a
+Snowflake generator (one per format; node id random by default, pinnable with
+`file_key_node`) and registered once per file in the file registry — cutting
+the per-row repetition of the 77-byte `file_id` (measured ~59% smaller on the
+production table shape). The former counter-row allocator is retired; SQLite
+and SQL Server dialect branches are exercised. See 存储骨架与体积 in
+`docs/OPERATIONS.md`.
 # industrial-data-collector

@@ -144,8 +144,8 @@ func TestProdMSSQLConfigRealServer(t *testing.T) {
 	doc, _ := loadMSSQLDoc(t)
 	sink := doc.Sinks[0]
 
-	// 一个注册表 + 每格式一张数据表：与现网同形状（23 张表共用同一条发号
-	// 计数器），而不是每个格式各建一套。
+	// 一个注册表 + 每格式一张数据表：与现网同形状（23 张表共用一个注册表，
+	// 每个 format 各一个进程内雪花发号器），而不是每个格式各建一套。
 	stamp := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
 	registry := "zcfg_files_" + stamp
 	tableNames := make([]string, 0, len(doc.Formats))

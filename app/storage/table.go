@@ -6,8 +6,9 @@
 //     file_id is the full identity string, so it repeats ~77 bytes on every
 //     row — and repeats again inside the composite-PK autoindex.
 //   - file_key mode (`file_key = true`): the data table stores
-//     (file_key, row_number) where file_key is a small integer allocated once
-//     per file in the file registry table, which becomes load-bearing. The
+//     (file_key, row_number) where file_key is an integer generated in-process
+//     (Snowflake layout, see snowflake.go) and registered once per file in the
+//     file registry table, which becomes load-bearing. The
 //     per-row duplication of path/source/date disappears; measured on the
 //     production shape this cuts the database by roughly half.
 //
@@ -80,9 +81,12 @@ type TableConfig struct {
 	// snowflake.go），注册表按键回查复用。需要 FileTable（注册表从可选
 	// 变为必需）。
 	FileKey bool
-	// FileKeyNode 固定雪花键的 16 位节点号（0–65535），缺省为每个进程
-	// 随机取一个。只在"要让键可复现"时才填（同一注册表的多个实例必须
-	// 填不同值，否则同毫秒撞键的概率从 1/65536 升到 1）。
+	// FileKeyNode 固定雪花键的 16 位节点号（0–65535）。缺省时**每个
+	// TableStorage 实例**（当前每个 format 一个发号器，同一 sink 下 23 个
+	// format 就有 23 个）各自随机取一个，不是每个进程一个。sink 级配置会
+	// 原样下发给所有 format——共用一张注册表时不要把整条 sink 钉在同一个
+	// 节点号上，否则同毫秒撞键概率从 1/65536 升到 1；需要固定就用 format
+	// 级 Extra 给每个 format 不同值。只在"要让键可复现"时才填。
 	FileKeyNode *int
 	// HeaderCheck 表头与声明列的失配处置："strict"（默认，Validate 补齐）
 	// = 表头有、声明没有的字段判整个文件失败；"warn" = 只告警不阻断。
@@ -809,9 +813,20 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 // 时按键回查命中、复用同一个键。注册表只被 QueryRows 的 JOIN 读，完成与否
 // 由 file-state 判定，不参与去重，所以这条"提前登记"没有正确性影响。
 //
-// 注册表的 (file_key) 唯一索引是最后防线：万一两个活进程撞了键，这里报错
-// 而不是让两个文件共用一个键（那会让数据行静默挂到别的文件上）；报错的
-// 文件整批失败后重排重试，重试必然换一个新键，所以是自愈而非损坏。
+// 注册表的 (file_key) 唯一索引是最后防线：万一两个发号器同节点号同毫秒
+// 同序号，这里报错而不是让两个文件共用一个键。不同失败位置的重试语义不同，
+// 不要混为一谈：
+//   - 登记成功、数据写入失败（或进程崩溃）：注册行已在，重试按键回查命中，
+//     沿用原键；数据行按 (file_key, row_number) 幂等重写。
+//   - 登记撞三元组 (source_id, collection_date, file_id)：说明同一文件已被
+//     别的发号器（或并发的自己）先登记，重试回查命中，复用**胜出者的键**，
+//     本次多发的号作废。
+//   - 登记撞 (file_key) 唯一索引：说明两个不同文件拿到同一个键，本次无行可
+//     回查，整批按约束错误失败；重试会重新发号，这是**唯一**会换键的路径。
+//
+// 三条路径都不会把数据行挂到另一个文件上；撞键是自愈/可重试事件，不是损坏。
+// 若删掉这个唯一索引，INSERT 会静默成功，两个文件共用一个键，JOIN 立刻把
+// 两边的数据行叠在一起——所以它不能省。
 //
 // 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
 // 会在跨实例场景下读到过期键。
