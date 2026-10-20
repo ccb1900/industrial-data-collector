@@ -467,12 +467,15 @@ func TestFileKeyTripleConflictKeepsWinnerKey(t *testing.T) {
 	if after != winner {
 		t.Fatalf("triple conflict changed the winner key: %d -> %d", winner, after)
 	}
-	got, err := b.resolveFileKey(ctx, batch)
+	got, fresh, err := b.resolveFileKey(ctx, batch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != winner {
 		t.Fatalf("resolve after triple conflict = %d, want winner %d", got, winner)
+	}
+	if fresh {
+		t.Fatal("resolve of an already registered file must not report a fresh key")
 	}
 	var orphan int
 	if err := b.db.QueryRow("SELECT COUNT(*) FROM hc WHERE file_key = ?", keyB).Scan(&orphan); err != nil {

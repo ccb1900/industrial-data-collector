@@ -108,6 +108,42 @@ func TestFileKeyBackbone(t *testing.T) {
 	}
 }
 
+// TestFileKeyFreshFlag 只有"本次新登记、且回查到的就是自己新发的键"才算
+// fresh；已登记文件必须回到 false，重放才会继续走幂等路径。
+func TestFileKeyFreshFlag(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenTable(ctx, fileKeyCfg(filepath.Join(t.TempDir(), "fresh.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	batch := model.Batch{
+		Key:      model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+		File:     model.FileIdentity{SourceID: model.SourceID("gauge"), Path: "/logs/a.txt", Name: "a.txt", Hash: "a.txt"},
+		Header:   []string{"temperature", "tag"},
+		Sequence: 1,
+		Records:  []model.Record{{RowNumber: 1, Fields: []string{"1.0", "x"}}},
+	}
+	key, fresh, err := s.resolveFileKey(ctx, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Fatal("first resolve must report a freshly allocated key")
+	}
+	key2, fresh2, err := s.resolveFileKey(ctx, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh2 || key2 != key {
+		t.Fatalf("second resolve = (%d, fresh=%v), want (%d, false)", key2, fresh2, key)
+	}
+}
+
 // TestFileKeyPerFileKeysDistinct 两个文件各自一版键，且 JOIN 后归属正确。
 func TestFileKeyPerFileKeysDistinct(t *testing.T) {
 	ctx := context.Background()

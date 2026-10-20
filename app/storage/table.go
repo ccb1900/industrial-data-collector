@@ -839,7 +839,11 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 //
 // 每批一次查询，不缓存：批是千行级，一次往返相对千行写入可忽略，而缓存
 // 会在跨实例场景下读到过期键。
-func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (int64, error) {
+// resolveFileKey 返回 (键, fresh)。fresh 为真表示本调用刚为这个文件在
+// 注册表里立行、且拿到的就是自己新发的雪花键——数据表里不可能已有该键
+// 的行，写路径可以省掉 MERGE 的逐行探测，直接多行 INSERT。重放、并发
+// 登记输家、以及已有登记的文件一律 fresh=false，仍走原幂等语义。
+func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (int64, bool, error) {
 	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
 	triple := []any{string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity()}
@@ -862,26 +866,28 @@ func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (i
 	var found sql.NullInt64
 	switch err := t.db.QueryRowContext(ctx, lookup, triple...).Scan(&found); {
 	case err == nil && found.Valid:
-		return found.Int64, nil
+		return found.Int64, false, nil
 	case err == nil:
 		// 注册表行早于 file_key 列（存量库迁移到这里）：就地补一个雪花键。
 		// 旧行的小计数器键与新大键共存无碍——键只要求唯一，不要求连续。
 		key, err := t.nextFileKey(ctx)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		backfill := fmt.Sprintf("UPDATE %s SET file_key = %s WHERE source_id = %s AND collection_date = %s AND file_id = %s AND file_key IS NULL",
 			ft, p(4, 1), p(5, 1), p(6, 1), p(7, 1))
 		if _, err := t.db.ExecContext(ctx, backfill, key, triple[0], triple[1], triple[2]); err != nil {
-			return 0, errs.ClassifyStorageError("file key backfill "+batch.File.Name, err)
+			return 0, false, errs.ClassifyStorageError("file key backfill "+batch.File.Name, err)
 		}
 		// 两家同时补同一行：UPDATE 的 "AND file_key IS NULL" 让后到的空转，
-		// 所以返回行里的实际键，而不是本次可能白发的号。
-		return authoritative()
+		// 所以返回行里的实际键，而不是本次可能白发的号。只有实际键等于
+		// 本次新发的键，才说明这一行是本次立的。
+		got, err := authoritative()
+		return got, err == nil && got == key, err
 	case errors.Is(err, sql.ErrNoRows):
 		key, err := t.nextFileKey(ctx)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		// 新文件首次登记：语句按方言选"命中三元组就不插"的写法
 		// （见 insertIfMissingStmt）。
@@ -892,11 +898,14 @@ func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (i
 		args := []any{key, string(batch.Key.SourceID), t.dateBind(batch.Key.Date), batch.File.Identity(),
 			batch.File.Path, batch.File.Name, int64(0), strings.Join(batch.Header, ","), batch.CreatedAt}
 		if _, err := t.db.ExecContext(ctx, insert, args...); err != nil {
-			return 0, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
+			return 0, false, errs.ClassifyStorageError("file registry "+batch.File.Name, err)
 		}
-		return authoritative()
+		// 雪花键在本进程内唯一，注册表里读到它只可能是本次插入的那行；
+		// 读到别的键说明并发登记输给了先到者。
+		got, err := authoritative()
+		return got, err == nil && got == key, err
 	default:
-		return 0, errs.ClassifyStorageError("file lookup "+batch.File.Name, err)
+		return 0, false, errs.ClassifyStorageError("file lookup "+batch.File.Name, err)
 	}
 }
 
@@ -1034,12 +1043,18 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	// 语句，数据行才是整批改写，两者放进同一个事务会让发号/登记成为跨源
 	// 的串行点——现场 15 个会话 LCK_M_X 等同一个计数器行，等待 8–13 秒。
 	var fileKey int64
+	freshKey := false
 	if t.cfg.FileKey {
-		fk, kerr := t.resolveFileKey(ctx, batch)
+		fk, fresh, kerr := t.resolveFileKey(ctx, batch)
 		if kerr != nil {
 			return kerr
 		}
 		fileKey = fk
+		// 新发的键在数据表里绝无既有行：省掉 MERGE 的逐行探测。实测
+		// SQL Server 的 MERGE 即便走主键 seek 也会对探测行取 U 锁并持到
+		// 提交，1119 源整轮 U 锁等待 129.7s、行锁等待 87.6s，还引发死锁；
+		// 直插把这段完全去掉。其它方言未做同口径测量，保持原语义。
+		freshKey = fresh && t.cfg.Dialect == "sqlserver"
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1102,24 +1117,44 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		}
 		chunk := rowValues[start:end]
 		stmt := buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
-		insertStmt, err := tx.PrepareContext(ctx, stmt)
+		if freshKey {
+			stmt = buildPlainInsert(t.cfg.Dialect, t.cfg.Table, cols, len(chunk))
+		}
+		err := t.execChunk(ctx, tx, stmt, chunk, cols, batch)
+		// 直插撞唯一键只可能来自并发重复处理同一文件（同一键不会由两个
+		// 进程发出）。退回 MERGE 的幂等语义重放本 chunk，而不是把一个
+		// 正常重采集判成永久失败。
+		if err != nil && freshKey && errors.Is(err, errs.ErrStorageConstraint) {
+			stmt = buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
+			err = t.execChunk(ctx, tx, stmt, chunk, cols, batch)
+		}
 		if err != nil {
-			return errs.ClassifyStorageError("prepare insert", err)
-		}
-		args := make([]any, 0, len(chunk)*len(cols))
-		for _, v := range chunk {
-			args = append(args, v...)
-		}
-		if _, err := insertStmt.ExecContext(ctx, args...); err != nil {
-			insertStmt.Close()
-			return errs.ClassifyStorageError("write rows "+batch.File.Name, err)
-		}
-		if err := insertStmt.Close(); err != nil {
-			return errs.ClassifyStorageError("close insert", err)
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return errs.ClassifyStorageError("commit", err)
+	}
+	return nil
+}
+
+// execChunk 绑定并执行一条多行写入语句。每次 Prepare 只服务一个 chunk，
+// 参数个数按行优先展开（与 buildMultiRow 的占位符顺序一致）。
+func (t *TableStorage) execChunk(ctx context.Context, tx *sql.Tx, stmt string, chunk [][]any, cols []string, batch model.Batch) error {
+	insertStmt, err := tx.PrepareContext(ctx, stmt)
+	if err != nil {
+		return errs.ClassifyStorageError("prepare insert", err)
+	}
+	args := make([]any, 0, len(chunk)*len(cols))
+	for _, v := range chunk {
+		args = append(args, v...)
+	}
+	if _, err := insertStmt.ExecContext(ctx, args...); err != nil {
+		insertStmt.Close()
+		return errs.ClassifyStorageError("write rows "+batch.File.Name, err)
+	}
+	if err := insertStmt.Close(); err != nil {
+		return errs.ClassifyStorageError("close insert", err)
 	}
 	return nil
 }

@@ -145,6 +145,77 @@ func TestRealMSSQLFileKeyBackbone(t *testing.T) {
 	}
 }
 
+// TestRealMSSQLFreshKeyFastPath 新登记文件走无探测直插，重放仍必须幂等，
+// 且写完后回查不再报 fresh。
+func TestRealMSSQLFreshKeyFastPath(t *testing.T) {
+	f := newMSSQLFix(t)
+	s := openReal(t, f.cfg(true))
+	ctx := context.Background()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	batch := model.Batch{
+		Key:      model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+		File:     model.FileIdentity{SourceID: model.SourceID("gauge"), Path: `\\10.40.26.102\采集测试\a.csv`, Name: "a.csv", Hash: "a.csv"},
+		Header:   []string{"temperature", "tag"},
+		Sequence: 1,
+		Records: []model.Record{
+			{RowNumber: 1, Fields: []string{"1.0", "x"}},
+			{RowNumber: 2, Fields: []string{"2.0", "y"}},
+		},
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("fresh write: %v", err)
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("replay write: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != 2 {
+		t.Errorf("data rows = %d, want 2 (replay must not duplicate)", got)
+	}
+	key, fresh, err := s.resolveFileKey(ctx, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Errorf("resolve after write reported fresh key %d; an existing file must use the idempotent path", key)
+	}
+}
+
+// 直插撞唯一键后的回退前提：SQL Server 的唯一键错误不 doom 事务，同一事务
+// 里的 MERGE 还能继续执行并提交（XACT_ABORT 保持默认 OFF）。
+func TestRealMSSQLDuplicateThenMergeInTx(t *testing.T) {
+	f := newMSSQLFix(t)
+	s := openReal(t, f.cfg(true))
+	ctx := context.Background()
+	writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, "1.0")
+	var key int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT file_key FROM "+quoteIdent("sqlserver", f.fileTable)).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	cols := []string{"file_key", "row_number", "temperature", "tag"}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, buildPlainInsert("sqlserver", f.table, cols, 1), key, 1, "9.9", "dup"); err == nil {
+		t.Fatal("plain insert of an existing key must fail")
+	}
+	// 回退语句必须仍能在同一事务里执行；失败则说明唯一键错误已 doom 事务。
+	if _, err := tx.ExecContext(ctx, buildMultiRow("sqlserver", f.table, cols, "file_key, row_number", 1), key, 1, "9.9", "dup"); err != nil {
+		t.Fatalf("MERGE after duplicate error must still work in the same tx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit after fallback: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != 1 {
+		t.Errorf("rows = %d, want 1 (fallback must not duplicate)", got)
+	}
+}
+
 // legacy 骨架 + 注册表：走 mergeUpsert / buildMultiRow 的 sqlserver 分支。
 func TestRealMSSQLLegacyRegistry(t *testing.T) {
 	f := newMSSQLFix(t)
