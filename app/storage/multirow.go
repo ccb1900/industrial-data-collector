@@ -48,14 +48,6 @@ func chunkRowsFor(dialect string, colCount int) int {
 	return n
 }
 
-// buildPlainInsert 构造无冲突判定的多行 INSERT。只在 resolveFileKey 确认
-// 键是本次新发的（数据表里不可能已有该键的行）时使用；重放/已登记文件
-// 仍走 buildMultiRow 的幂等路径。
-func buildPlainInsert(dialect, table string, cols []string, n int) string {
-	return fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
-		quoteIdent(dialect, table), strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "))
-}
-
 // buildMultiRow 构造 n 行的写入语句。绑定参数行优先（row-major）顺序
 // 编号：第 i 行第 j 列的参数序号 = i*len(cols)+j+1。
 func buildMultiRow(dialect, table string, cols []string, conflict string, n int) string {

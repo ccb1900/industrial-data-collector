@@ -32,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	mssql "github.com/microsoft/go-mssqldb"
+
 	"dynamic-runtime/runtime"
 
 	"gocordis-csv-collector/app/errs"
@@ -1016,6 +1018,12 @@ func (t *TableStorage) warnOnce(kind, key string) bool {
 
 // Write implements model.Storage.
 func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
+	return t.write(ctx, batch, true)
+}
+
+// write 的 allowBulk 只服务内部回退：首次装载走 TDS 批量，撞唯一键时
+// （只可能来自并发重复处理同一文件）禁用批量，按幂等 MERGE 重放一次。
+func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowBulk bool) error {
 	if err := t.headerCheck(batch); err != nil {
 		return err
 	}
@@ -1043,18 +1051,17 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	// 语句，数据行才是整批改写，两者放进同一个事务会让发号/登记成为跨源
 	// 的串行点——现场 15 个会话 LCK_M_X 等同一个计数器行，等待 8–13 秒。
 	var fileKey int64
-	freshKey := false
+	bulkFresh := false
 	if t.cfg.FileKey {
 		fk, fresh, kerr := t.resolveFileKey(ctx, batch)
 		if kerr != nil {
 			return kerr
 		}
 		fileKey = fk
-		// 新发的键在数据表里绝无既有行：省掉 MERGE 的逐行探测。实测
-		// SQL Server 的 MERGE 即便走主键 seek 也会对探测行取 U 锁并持到
-		// 提交，1119 源整轮 U 锁等待 129.7s、行锁等待 87.6s，还引发死锁；
-		// 直插把这段完全去掉。其它方言未做同口径测量，保持原语义。
-		freshKey = fresh && t.cfg.Dialect == "sqlserver"
+		// 新发的键在数据表里绝无既有行。SQL Server 走 TDS 批量装载：
+		// 实测 1000 行 × 20 列 263ms→32ms、× 70 列 822ms→41ms，也不再
+		// 有 MERGE 逐行探测锁。其它方言未做同口径测量，保持原语义。
+		bulkFresh = fresh && allowBulk && t.cfg.Dialect == "sqlserver"
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1079,13 +1086,17 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	if t.cfg.FileKey {
 		cols = []string{"file_key", "row_number"}
 	}
+	// rawCols 供批量装载用：CopyIn 自己给对象名加引号，只接受裸列名。
+	rawCols := append([]string(nil), cols...)
 	// 表头与声明列的双向比对已在 Write 入口做过（headerCheck）：未声明的表头
 	// 字段默认阻断，auto_columns / extra_rows 形态下降级为告警。
 	for _, c := range t.effectiveColumns() {
 		cols = append(cols, quoteIdent(t.cfg.Dialect, c.Column))
+		rawCols = append(rawCols, c.Column)
 	}
 	if t.cfg.ExtraRows {
 		cols = append(cols, "row_values")
+		rawCols = append(rawCols, "row_values")
 	}
 	conflict := "source_id, collection_date, file_id, row_number"
 	if t.cfg.FileKey {
@@ -1106,34 +1117,60 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 		}
 		rowValues = append(rowValues, values)
 	}
-	// 多行写入：每 chunk 一次网络往返（逐行 ExecContext 在局域网
-	// Oracle 上是 1000 行 = 1000 次 RTT——切真库后的最大单项开销）。
-	// 幂等语义逐方言保留（见 buildMultiRow）。
-	n := chunkRowsFor(t.cfg.Dialect, len(cols))
-	for start := 0; start < len(rowValues); start += n {
-		end := start + n
-		if end > len(rowValues) {
-			end = len(rowValues)
+	if bulkFresh {
+		if berr := t.bulkInsert(ctx, tx, rawCols, rowValues, batch.File.Name); berr != nil {
+			// 回滚后禁用批量重来：注册行已落，resolve 必然非 fresh，走
+			// 幂等 MERGE。撞键只可能来自并发重复处理同一文件，不能让
+			// 一次正常重采集判成永久失败。
+			_ = tx.Rollback()
+			if errors.Is(berr, errs.ErrStorageConstraint) {
+				return t.write(ctx, batch, false)
+			}
+			return berr
 		}
-		chunk := rowValues[start:end]
-		stmt := buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
-		if freshKey {
-			stmt = buildPlainInsert(t.cfg.Dialect, t.cfg.Table, cols, len(chunk))
-		}
-		err := t.execChunk(ctx, tx, stmt, chunk, cols, batch)
-		// 直插撞唯一键只可能来自并发重复处理同一文件（同一键不会由两个
-		// 进程发出）。退回 MERGE 的幂等语义重放本 chunk，而不是把一个
-		// 正常重采集判成永久失败。
-		if err != nil && freshKey && errors.Is(err, errs.ErrStorageConstraint) {
-			stmt = buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
-			err = t.execChunk(ctx, tx, stmt, chunk, cols, batch)
-		}
-		if err != nil {
-			return err
+	} else {
+		// 多行写入：每 chunk 一次网络往返（逐行 ExecContext 在局域网
+		// Oracle 上是 1000 行 = 1000 次 RTT——切真库后的最大单项开销）。
+		// 幂等语义逐方言保留（见 buildMultiRow）。
+		n := chunkRowsFor(t.cfg.Dialect, len(cols))
+		for start := 0; start < len(rowValues); start += n {
+			end := start + n
+			if end > len(rowValues) {
+				end = len(rowValues)
+			}
+			chunk := rowValues[start:end]
+			stmt := buildMultiRow(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
+			if err := t.execChunk(ctx, tx, stmt, chunk, cols, batch); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return errs.ClassifyStorageError("commit", err)
+	}
+	return nil
+}
+
+// bulkInsert 用 TDS 批量装载写整批。只用于 SQL Server 的 fresh 键首写：
+// 新键在数据表里没有既有行，不需要逐行冲突探测。KeepNulls 保住 CSV 里的
+// 空值语义（目标列无默认值，但显式声明避免依赖默认行为）。
+func (t *TableStorage) bulkInsert(ctx context.Context, tx *sql.Tx, cols []string, rows [][]any, fileName string) error {
+	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(t.cfg.Table, mssql.BulkOptions{KeepNulls: true}, cols...))
+	if err != nil {
+		return errs.ClassifyStorageError("prepare bulk insert "+fileName, err)
+	}
+	for _, row := range rows {
+		if _, err := stmt.ExecContext(ctx, row...); err != nil {
+			stmt.Close()
+			return errs.ClassifyStorageError("write rows "+fileName, err)
+		}
+	}
+	if _, err := stmt.ExecContext(ctx); err != nil {
+		stmt.Close()
+		return errs.ClassifyStorageError("flush bulk insert "+fileName, err)
+	}
+	if err := stmt.Close(); err != nil {
+		return errs.ClassifyStorageError("close bulk insert "+fileName, err)
 	}
 	return nil
 }

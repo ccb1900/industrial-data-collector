@@ -469,6 +469,51 @@ file-state 判定，注册表只被 `QueryRows` 的 JOIN 读，不参与去重�
 fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计数器方案的
 真库发号用例（20×20 并发）随计数器表一并退役。
 
+## 写路径性能：1119 源整轮压测（2026-10-20）
+
+现网形状（60 机台 / 23 格式 / 1119 源 / 共享一个注册表 / `max_parallel_sources = 16`）
+在本地真库（SQL Server 2019 CU32，WSL 4 核）跑整轮：冷启动每源写 1 行，随后
+每源 1000 行、`batch_size = 1000`、16 并发，共 111.9 万行。基准在
+`tests/fleet_perf_test.go`，`REAL_FLEET_PERF=1` 才运行，用 `zperf_*` 临时表，
+跑完自删。
+
+关键发现是 SQL Server 的 `MERGE` 即便走主键 seek，也会对探测行取 U 锁并持有
+到提交：1119 源整轮出现 11 次死锁（1205）、丢失 1.1 万行，`LCK_M_U` 累计等待
+129.7s、数据表行锁等待 87.6s。因此 **新分配的雪花键首写不再做逐行冲突探测**：
+
+| 阶段 | 协议 | 1119 文件整轮 | 吞吐 | P50 / P95 / P99 | 失败 |
+|---|---|---|---|---|---|
+| 基线 | 每 chunk 多行 `MERGE` | 1m44.6s | 10.7 files/s | 1.258 / 2.999 / 5.684s | 11 次死锁 |
+| 直插 | 每 chunk 多行 `INSERT` | 1m47.1s | 10.4 files/s | 1.237 / 3.338 / 5.362s | 0（U 锁消失，CPU/日志成瓶颈） |
+| **批量装载** | **TDS `INSERT BULK`（CopyIn）** | **11.9s** | **94.1 files/s、9.4 万行/s** | **0.134 / 0.419 / 0.603s** | **0** |
+
+为什么新键可以省探测：`resolveFileKey` 返回的 `fresh` 只在本进程刚为这个文件
+建注册行、且读回的就是自己新发的雪花键时为真；此时数据表里不可能已有该键的
+行。重放、已登记文件、并发登记输家一律 `fresh = false`，继续走原 `MERGE` 幂等
+路径。批量装载只用于 SQL Server（其余方言未做同口径测量）：单流实测 1000 行
+× 20 列 `263ms → 32ms`、× 70 列 `822ms → 41ms`。若批量装载撞唯一键（只可能
+来自并发重复处理同一文件），整个事务回滚，并以幂等 `MERGE` 重放一次，不会把
+正常重采集判成永久失败。CSV 空列仍落 `NULL`（`KeepNulls`），真库用例
+`TestRealMSSQLBulkNulls` 钉住。
+
+并发拐点（同一基准，仅改并发）：8 路 61.7 files/s / P95 247ms，16 路
+94.1 files/s / P95 419ms，32 路 100.8 files/s / P95 1.07s 且内存授予等待
+（`RESOURCE_SEMAPHORE`）峰值 115。4 核本机上 **16 路是吞吐与尾延迟的平衡点**；
+更大的机器可再扫，但 32 路只多 7% 吞吐、尾延迟翻倍，不建议盲调高。
+
+测量边界：基准只写库，不读 SMB；文件路径是合成字符串（未模拟 60 个 UNC 主机）。
+路径长度对注册表的影响由 `TestRealMSSQLLongPathIdentity`（300+ 字符，两种骨架）
+单独覆盖。数字是 4 核 WSL 上的下限，生产服务器核数与磁盘更好时应更高。
+
+复跑（凭据只走环境变量；测试自建自删 `zperf_*`）：
+
+```bash
+REAL_FLEET_PERF=1 \
+REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=disable' \
+  go test -count=1 -v -timeout 30m -run TestFleetPerf1119 ./tests/
+# 可调：REAL_FLEET_FILES / REAL_FLEET_ROWS / REAL_FLEET_CONCURRENCY
+```
+
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
 现象：注册表（现场即 `laser_files`）每文件的 `records` 列一直是 0，而同一条数据在

@@ -183,39 +183,6 @@ func TestRealMSSQLFreshKeyFastPath(t *testing.T) {
 	}
 }
 
-// 直插撞唯一键后的回退前提：SQL Server 的唯一键错误不 doom 事务，同一事务
-// 里的 MERGE 还能继续执行并提交（XACT_ABORT 保持默认 OFF）。
-func TestRealMSSQLDuplicateThenMergeInTx(t *testing.T) {
-	f := newMSSQLFix(t)
-	s := openReal(t, f.cfg(true))
-	ctx := context.Background()
-	writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, "1.0")
-	var key int64
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT file_key FROM "+quoteIdent("sqlserver", f.fileTable)).Scan(&key); err != nil {
-		t.Fatal(err)
-	}
-	cols := []string{"file_key", "row_number", "temperature", "tag"}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, buildPlainInsert("sqlserver", f.table, cols, 1), key, 1, "9.9", "dup"); err == nil {
-		t.Fatal("plain insert of an existing key must fail")
-	}
-	// 回退语句必须仍能在同一事务里执行；失败则说明唯一键错误已 doom 事务。
-	if _, err := tx.ExecContext(ctx, buildMultiRow("sqlserver", f.table, cols, "file_key, row_number", 1), key, 1, "9.9", "dup"); err != nil {
-		t.Fatalf("MERGE after duplicate error must still work in the same tx: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit after fallback: %v", err)
-	}
-	if got := queryInt(t, s, countOf(f.table)); got != 1 {
-		t.Errorf("rows = %d, want 1 (fallback must not duplicate)", got)
-	}
-}
-
 // legacy 骨架 + 注册表：走 mergeUpsert / buildMultiRow 的 sqlserver 分支。
 func TestRealMSSQLLegacyRegistry(t *testing.T) {
 	f := newMSSQLFix(t)
@@ -481,5 +448,43 @@ func TestRealMSSQLWideFormatBatch(t *testing.T) {
 	}
 	if sum != 1 {
 		t.Errorf("last row cell c19 rows = %d, want 1", sum)
+	}
+}
+
+// CSV 空列在批量装载下必须仍是 NULL：KeepNulls 显式声明，避免目标列将来
+// 带默认值时被静默替换。重放走 MERGE，行数与空值都不变。
+func TestRealMSSQLBulkNulls(t *testing.T) {
+	f := newMSSQLFix(t)
+	cfg := f.cfg(true)
+	cfg.Columns = append(cfg.Columns, ColumnMapping{From: SourceCSV, Name: "extra", Column: "extra", Type: "int"})
+	s := openReal(t, cfg)
+	ctx := context.Background()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	batch := model.Batch{
+		Key:    model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+		File:   model.FileIdentity{SourceID: model.SourceID("gauge"), Path: "/logs/n.csv", Name: "n.csv", Hash: "nh"},
+		Header: []string{"temperature", "tag", "extra"},
+		Records: []model.Record{
+			{RowNumber: 1, Fields: []string{"1.5", "a", ""}},
+			{RowNumber: 2, Fields: []string{"2.5", "b", "7"}},
+		},
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("bulk write with empty field: %v", err)
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != 2 {
+		t.Fatalf("rows = %d, want 2", got)
+	}
+	if got := queryInt(t, s, "SELECT COUNT(*) FROM "+quoteIdent("sqlserver", f.table)+" WHERE [extra] IS NULL"); got != 1 {
+		t.Errorf("NULL extra rows = %d, want 1 (empty CSV cell must stay NULL)", got)
+	}
+	if got := queryInt(t, s, "SELECT COUNT(*) FROM "+quoteIdent("sqlserver", f.table)+" WHERE [extra] = 7"); got != 1 {
+		t.Errorf("extra=7 rows = %d, want 1", got)
 	}
 }
