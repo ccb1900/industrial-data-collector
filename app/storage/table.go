@@ -1153,9 +1153,11 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowBulk b
 
 // bulkInsert 用 TDS 批量装载写整批。只用于 SQL Server 的 fresh 键首写：
 // 新键在数据表里没有既有行，不需要逐行冲突探测。KeepNulls 保住 CSV 里的
-// 空值语义（目标列无默认值，但显式声明避免依赖默认行为）。
+// 空值语义（目标列无默认值，但显式声明避免依赖默认行为）。RowsPerBatch
+// 给优化器准确基数：不传时 16 并发整轮内存授予等待峰值 40 路，传了即消失。
 func (t *TableStorage) bulkInsert(ctx context.Context, tx *sql.Tx, cols []string, rows [][]any, fileName string) error {
-	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(t.cfg.Table, mssql.BulkOptions{KeepNulls: true}, cols...))
+	opts := mssql.BulkOptions{KeepNulls: true, RowsPerBatch: len(rows)}
+	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(t.cfg.Table, opts, cols...))
 	if err != nil {
 		return errs.ClassifyStorageError("prepare bulk insert "+fileName, err)
 	}
