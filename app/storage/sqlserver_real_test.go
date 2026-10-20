@@ -488,3 +488,63 @@ func TestRealMSSQLBulkNulls(t *testing.T) {
 		t.Errorf("extra=7 rows = %d, want 1", got)
 	}
 }
+
+// 批量装载中途被服务端拒绝时，事务必须整体回滚：数据表零残留，文件不
+// 会被调用方标记完成；修正后重试（走 MERGE）必须补齐全量且不重复。
+// 这是"丢数据不能忍"的硬断言：任何半截写入都算失败。
+func TestRealMSSQLBulkAtomicity(t *testing.T) {
+	f := newMSSQLFix(t)
+	s := openReal(t, f.cfg(true))
+	ctx := context.Background()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	const rows = 100
+	recs := make([]model.Record, 0, rows)
+	for i := 0; i < rows; i++ {
+		tag := fmt.Sprintf("t%d", i)
+		if i == 49 {
+			tag = strings.Repeat("x", 4001) // NVARCHAR(4000) 截断，服务端 2628
+		}
+		recs = append(recs, model.Record{RowNumber: int64(i + 1), Fields: []string{"1.5", tag}})
+	}
+	batch := model.Batch{
+		Key:      model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+		File:     model.FileIdentity{SourceID: model.SourceID("gauge"), Path: "/logs/atomic.csv", Name: "atomic.csv", Hash: "atomic.csv"},
+		Header:   []string{"temperature", "tag"},
+		Sequence: 1,
+		Records:  recs,
+	}
+	if err := s.Write(ctx, batch); err == nil {
+		t.Fatal("bulk write with a 4001-char cell must fail")
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != 0 {
+		t.Fatalf("after failed bulk, data rows = %d, want 0 (no partial write)", got)
+	}
+	var key int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT file_key FROM "+quoteIdent("sqlserver", f.fileTable)+" WHERE name = N'atomic.csv'").Scan(&key); err != nil {
+		t.Fatalf("registry row must survive the failed data write: %v", err)
+	}
+	if key <= 0 {
+		t.Fatalf("registry key = %d, want positive", key)
+	}
+
+	batch.Records[49].Fields[1] = "fixed"
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("retry after fixing the row: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != rows {
+		t.Fatalf("after retry rows = %d, want %d", got, rows)
+	}
+	if got := queryInt(t, s, "SELECT COUNT(*) FROM "+quoteIdent("sqlserver", f.table)+" WHERE [tag] = N'fixed'"); got != 1 {
+		t.Errorf("fixed row count = %d, want 1", got)
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("replay after retry: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != rows {
+		t.Fatalf("replay rows = %d, want %d", got, rows)
+	}
+}

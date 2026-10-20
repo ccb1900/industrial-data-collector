@@ -509,3 +509,51 @@ func TestExecutorBackupFailureFailsFile(t *testing.T) {
 		t.Fatalf("ledger = %#v, want a.csv backup failure", failures)
 	}
 }
+
+// 写库在文件中途失败：已提交的前置批次是合法的部分数据，但文件不能被
+// 标记完成；下一轮从头重读，已写批次幂等跳过、剩余批次补齐，总行数不丢
+// 不重。这是"丢数据不能忍"在调度层的断言。
+func TestCollectorMidFileWriteFailureRetriesWithoutLoss(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n2,b\n3,c\n4,d\n5,e\n")
+	st := state.NewMemory()
+	// 第一批 2 行落库，第二批注入失败（模拟远程库中途断开）。
+	mem := storage.NewMemory(storage.MemoryOptions{FailAfterBatches: 1})
+	e := newExecutor(t, root, st, mem)
+	if _, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "pass1", Date: ptr(date(t, "2026-09-06"))}); err == nil {
+		t.Fatal("mid-file storage failure must fail the run")
+	}
+	if got := mem.Total(); got != 2 {
+		t.Fatalf("rows after partial write = %d, want 2 (only the first batch)", got)
+	}
+	failures, err := st.ListFileFailures(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].File.Name != "a.csv" {
+		t.Fatalf("failure ledger = %#v, want a.csv", failures)
+	}
+
+	// 库恢复：从头重读，前 2 行幂等跳过，后 3 行补齐。
+	mem2 := storage.NewMemory(storage.MemoryOptions{})
+	e2 := newExecutor(t, root, st, mem2)
+	if _, err := e2.Handle(context.Background(), model.CollectionRequested{Reason: "pass2", Date: ptr(date(t, "2026-09-06"))}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mem2.Total(); got != 5 {
+		t.Fatalf("rows after retry = %d, want 5", got)
+	}
+	if gone, err := st.ListFileFailures(context.Background(), "prod"); err != nil || len(gone) != 0 {
+		t.Fatalf("failure ledger after successful retry = %#v, err=%v", gone, err)
+	}
+
+	// 再全量重放一次（模拟状态文件丢失后重读）：幂等仍然是 5 行。
+	mem3 := storage.NewMemory(storage.MemoryOptions{})
+	e3 := newExecutor(t, root, state.NewMemory(), mem3)
+	if _, err := e3.Handle(context.Background(), model.CollectionRequested{Reason: "pass3", Date: ptr(date(t, "2026-09-06"))}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mem3.Total(); got != 5 {
+		t.Fatalf("rows after full replay = %d, want 5", got)
+	}
+}
