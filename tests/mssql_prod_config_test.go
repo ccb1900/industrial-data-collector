@@ -51,6 +51,10 @@ type mssqlDoc struct {
 		Sink    string                  `toml:"sink"`
 		Columns []storage.ColumnMapping `toml:"columns"`
 	} `toml:"formats"`
+	Machines []struct {
+		No    string `toml:"no"`
+		Group string `toml:"group"`
+	} `toml:"machines"`
 }
 
 func loadMSSQLDoc(t *testing.T) (mssqlDoc, []byte) {
@@ -136,6 +140,54 @@ var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func simpleIdent(s string) bool { return identRe.MatchString(s) }
 
+// fleet 展开的计数口径：一个 source unit = 机台 × 该机台组里的格式，不是
+// "每个 format 一个"。现网这份配置是 60 台机台、23 个格式声明，按格式组
+// 展开出 1119 个 source unit、1119 个 TableStorage；雪花发号器按注册表在
+// 进程内单例，所以它们只共用 1 个发号器。这条用例同时钉住展开乘法与
+// "全配置只有一个注册表"，防止再按 23 个发号器去估算撞键概率。
+func TestProdMSSQLFleetExpansionCount(t *testing.T) {
+	doc, data := loadMSSQLDoc(t)
+	res, err := sourcecomp.Parse(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	groupFormats := map[string]int{}
+	for _, g := range doc.FormatGroups {
+		groupFormats[g.Name] = len(g.Formats)
+	}
+	want := 0
+	for _, m := range doc.Machines {
+		n, ok := groupFormats[m.Group]
+		if !ok {
+			t.Fatalf("machine %q references unknown group %q", m.No, m.Group)
+		}
+		want += n
+	}
+	if want == 0 {
+		t.Fatal("no machines expanded")
+	}
+	if len(res.Sources) != want {
+		t.Fatalf("fleet expansion = %d source units, want machine×format = %d", len(res.Sources), want)
+	}
+	if len(res.Sources) != 1119 {
+		t.Fatalf("production fleet expansion = %d, want 1119（60 台按组展开，格式声明 23 个；配置变更时同步更新口径注释）", len(res.Sources))
+	}
+
+	ids := map[string]bool{}
+	registries := map[string]bool{}
+	for _, s := range res.Sources {
+		if ids[s.ID] {
+			t.Fatalf("duplicate source unit id %q", s.ID)
+		}
+		ids[s.ID] = true
+		registries[fmt.Sprintf("%v\x00%v\x00%v",
+			s.Config["driver"], s.Config["dsn"], s.Config["file_table"])] = true
+	}
+	if len(registries) != 1 {
+		t.Fatalf("source units span %d registries, want 1（每注册表一个进程内发号器的前提）", len(registries))
+	}
+}
+
 func TestProdMSSQLConfigRealServer(t *testing.T) {
 	dsn := os.Getenv("REAL_SQLSERVER_DSN")
 	if dsn == "" {
@@ -144,8 +196,9 @@ func TestProdMSSQLConfigRealServer(t *testing.T) {
 	doc, _ := loadMSSQLDoc(t)
 	sink := doc.Sinks[0]
 
-	// 一个注册表 + 每格式一张数据表：与现网同形状（23 张表共用一个注册表，
-	// 每个 format 各一个进程内雪花发号器），而不是每个格式各建一套。
+	// 一个注册表 + 每格式一张数据表：与现网同形状（23 张数据表共用一个
+	// 注册表）。雪花发号器按注册表在进程内单例，所以这 23 个 store 共用
+	// 1 个发号器；现网 1119 个 source unit 同理，不是每格式一个。
 	stamp := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
 	registry := "zcfg_files_" + stamp
 	tableNames := make([]string, 0, len(doc.Formats))
@@ -255,7 +308,7 @@ func TestProdMSSQLConfigRealServer(t *testing.T) {
 		t.Fatalf("registry distinct keys: %v", err)
 	}
 	if keys != len(doc.Formats) {
-		t.Errorf("distinct file_key = %d, want %d（同一条计数器发过 23 个键）", keys, len(doc.Formats))
+		t.Errorf("distinct file_key = %d, want %d（同一个注册表发号器发过 23 个键）", keys, len(doc.Formats))
 	}
 	// 表头随文件落库（注册表的 header 列是 NVARCHAR(4000)，最长的 70 列表头
 	// 要装得下，否则现场排错就没有原始表头可对照）。

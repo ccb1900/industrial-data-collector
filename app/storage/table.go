@@ -81,12 +81,13 @@ type TableConfig struct {
 	// snowflake.go），注册表按键回查复用。需要 FileTable（注册表从可选
 	// 变为必需）。
 	FileKey bool
-	// FileKeyNode 固定雪花键的 16 位节点号（0–65535）。缺省时**每个
-	// TableStorage 实例**（当前每个 format 一个发号器，同一 sink 下 23 个
-	// format 就有 23 个）各自随机取一个，不是每个进程一个。sink 级配置会
-	// 原样下发给所有 format——共用一张注册表时不要把整条 sink 钉在同一个
-	// 节点号上，否则同毫秒撞键概率从 1/65536 升到 1；需要固定就用 format
-	// 级 Extra 给每个 format 不同值。只在"要让键可复现"时才填。
+	// FileKeyNode 固定雪花键的 16 位节点号（0–65535）。发号器按注册表在
+	// 进程内单例：同一 (driver, DSN, file_table) 的所有 source unit 共用一个，
+	// 所以本字段是**注册表级**配置——共享同一注册表的源必须全部省略它，或
+	// 全部钉同一个值；出现冲突值 OpenTable 返回 ErrInvalidConfig。缺省时
+	// 每个进程对每个注册表随机取一个节点号。多进程部署时各进程仍各自随机，
+	// 跨进程同节点同毫秒同序号由 (file_key) 唯一索引兜底。只在"要让键可
+	// 复现"时才填。
 	FileKeyNode *int
 	// HeaderCheck 表头与声明列的失配处置："strict"（默认，Validate 补齐）
 	// = 表头有、声明没有的字段判整个文件失败；"warn" = 只告警不阻断。
@@ -393,7 +394,14 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 	}
 	t.db = db
 	t.closeMe = releaseClose(release)
-	return t.ensureSchema(ctx)
+	if err := t.ensureSchema(ctx); err != nil {
+		// schema 失败（含 file_key_node 冲突）必须回到未连接态：否则下一次
+		// EnsureConnected 看到 db != nil 会误判初始化已完成，带着半套表结构
+		// 进入写路径。
+		_ = t.Close()
+		return err
+	}
+	return nil
 }
 
 // OpenTableLazy defers connection to the first write (same semantics as the
@@ -814,8 +822,9 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 // 由 file-state 判定，不参与去重，所以这条"提前登记"没有正确性影响。
 //
 // 注册表的 (file_key) 唯一索引是最后防线：万一两个发号器同节点号同毫秒
-// 同序号，这里报错而不是让两个文件共用一个键。不同失败位置的重试语义不同，
-// 不要混为一谈：
+// 同序号，这里报错而不是让两个文件共用一个键。进程内同一注册表只有一个
+// 发号器，所以这一路只可能来自**跨进程**（或测试/人为替换发号器）。不同
+// 失败位置的重试语义不同，不要混为一谈：
 //   - 登记成功、数据写入失败（或进程崩溃）：注册行已在，重试按键回查命中，
 //     沿用原键；数据行按 (file_key, row_number) 幂等重写。
 //   - 登记撞三元组 (source_id, collection_date, file_id)：说明同一文件已被

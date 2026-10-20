@@ -156,12 +156,16 @@ func TestFileKeyCounterTableRetired(t *testing.T) {
 	}
 }
 
-// 两个实例（不同节点号）登记不同文件：键互不相同、都落库、不带计数器的串行点。
-func TestFileKeyTwoInstancesDistinctKeys(t *testing.T) {
+// 同一注册表（同 DSN + file_table）在进程内只有一个发号器：两个 TableStorage
+// 拿到同一个指针，登记不同文件时键互不相同，不带计数器的串行点。
+func TestFileKeySharedGeneratorAcrossStores(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
-	n0, n1 := 0, 1
+	n0 := 0
 	a := openFileKeyStore(t, dsn, &n0)
-	b := openFileKeyStore(t, dsn, &n1)
+	b := openFileKeyStore(t, dsn, &n0)
+	if a.fileKeyGen.Load() == nil || a.fileKeyGen.Load() != b.fileKeyGen.Load() {
+		t.Fatal("stores sharing one registry must share one generator")
+	}
 	ctx := context.Background()
 	if err := a.Write(ctx, fkBatch("a.log", "ha")); err != nil {
 		t.Fatal(err)
@@ -186,8 +190,8 @@ func TestFileKeyTwoInstancesDistinctKeys(t *testing.T) {
 	if keys["a.log"] == keys["b.log"] || keys["a.log"] == 0 || keys["b.log"] == 0 {
 		t.Fatalf("distinct files must get distinct non-zero keys: %#v", keys)
 	}
-	if flakeNodeOf(keys["a.log"]) != 0 || flakeNodeOf(keys["b.log"]) != 1 {
-		t.Fatalf("pinned node ids not honoured: %#v", keys)
+	if flakeNodeOf(keys["a.log"]) != 0 || flakeNodeOf(keys["b.log"]) != 0 {
+		t.Fatalf("registry-level pinned node 0 not honoured: %#v", keys)
 	}
 	// 数据行按各自的键落库。
 	var landed int
@@ -196,6 +200,115 @@ func TestFileKeyTwoInstancesDistinctKeys(t *testing.T) {
 	}
 	if landed != 2 {
 		t.Fatalf("data rows = %d, want 2", landed)
+	}
+}
+
+// 发号器归属注册表而不是数据表：同一注册表下两张不同的数据表必须共用
+// 同一个发号器（缓存键刻意不含 cfg.Table）。
+func TestFileKeySharesGeneratorAcrossDataTables(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "k.db")
+	open := func(table string) *TableStorage {
+		t.Helper()
+		cfg := TableConfig{
+			Driver: "sqlite", DSN: dsn, Dialect: "sqlite",
+			Table: table, FileTable: "reg", FileKey: true,
+			Columns: hcColumns(),
+		}
+		tw, err := OpenTable(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tw.Close() })
+		return tw
+	}
+	a := open("hc_a")
+	b := open("hc_b")
+	if a.fileKeyGen.Load() == nil || a.fileKeyGen.Load() != b.fileKeyGen.Load() {
+		t.Fatal("data tables sharing one registry must share one generator")
+	}
+	ctx := context.Background()
+	if err := a.Write(ctx, fkBatch("a.log", "ha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Write(ctx, fkBatch("b.log", "hb")); err != nil {
+		t.Fatal(err)
+	}
+	var distinct int
+	if err := a.db.QueryRow("SELECT COUNT(DISTINCT file_key) FROM reg").Scan(&distinct); err != nil {
+		t.Fatal(err)
+	}
+	if distinct != 2 {
+		t.Fatalf("distinct registry keys = %d, want 2", distinct)
+	}
+}
+
+// file_key_node 是注册表级钉值：共享注册表的两个源给出不同值，或先无钉值
+// 初始化后再来一个钉值，都必须按配置错误拒绝，而不是各自拿一个节点号。
+func TestFileKeyPinnedNodeConflict(t *testing.T) {
+	ctx := context.Background()
+	open := func(dsn string, node *int) error {
+		cfg := TableConfig{
+			Driver: "sqlite", DSN: dsn, Dialect: "sqlite",
+			Table: "hc", FileTable: "reg", FileKey: true, FileKeyNode: node,
+			Columns: hcColumns(),
+		}
+		s, err := OpenTable(ctx, cfg)
+		if s != nil {
+			t.Cleanup(func() { _ = s.Close() })
+		}
+		return err
+	}
+
+	dsn := filepath.Join(t.TempDir(), "conflict.db")
+	n0, n1 := 0, 1
+	if err := open(dsn, &n0); err != nil {
+		t.Fatal(err)
+	}
+	if err := open(dsn, &n1); !errs.Is(err, errs.ErrInvalidConfig) {
+		t.Fatalf("conflicting pins must fail with ErrInvalidConfig, got %v", err)
+	}
+	// 懒连接路径必须每次重试都报同一个配置错误：schema 失败后要回到未连接
+	// 态，不能被 db != nil 误判为已初始化。
+	lazy, err := OpenTableLazy(TableConfig{
+		Driver: "sqlite", DSN: dsn, Dialect: "sqlite",
+		Table: "hc", FileTable: "reg", FileKey: true, FileKeyNode: &n1,
+		Columns: hcColumns(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lazy.Close() })
+	if err := lazy.EnsureConnected(ctx); !errs.Is(err, errs.ErrInvalidConfig) {
+		t.Fatalf("lazy conflicting pin must fail with ErrInvalidConfig, got %v", err)
+	}
+	if err := lazy.EnsureConnected(ctx); !errs.Is(err, errs.ErrInvalidConfig) {
+		t.Fatalf("lazy store must keep failing after schema error, got %v", err)
+	}
+
+	dsn = filepath.Join(t.TempDir(), "late-pin.db")
+	n3 := 3
+	if err := open(dsn, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := open(dsn, &n3); !errs.Is(err, errs.ErrInvalidConfig) {
+		t.Fatalf("pin after an unpinned initialization must fail with ErrInvalidConfig, got %v", err)
+	}
+}
+
+// :memory: 每个池都是独立库，不参与注册表单例：两个内存库各有自己的发号器，
+// 各写各的，互不冲突。
+func TestFileKeyMemoryStoresDoNotShareGenerator(t *testing.T) {
+	a := openFileKeyStore(t, ":memory:", nil)
+	b := openFileKeyStore(t, ":memory:", nil)
+	if a.fileKeyGen.Load() == b.fileKeyGen.Load() {
+		t.Fatal(":memory: stores must not share a generator")
+	}
+	ctx := context.Background()
+	if err := a.Write(ctx, fkBatch("a.log", "ha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Write(ctx, fkBatch("b.log", "hb")); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -252,19 +365,26 @@ func TestFileKeyLegacyBackfill(t *testing.T) {
 	}
 }
 
-// 同一节点号、同一毫秒、同一序号的两个发号器必然撞 (file_key) 唯一索引：
-// 后到的整批按约束错误失败（没有可回查的注册行）；重试时发号器前进一个
-// 序号、换新键成功。这是唯一会在重试时换键的失败路径。
+// 跨进程撞键（或人为替换发号器）的语义：同节点、同毫秒、同序号必然撞
+// (file_key) 唯一索引；本次没有可回查的注册行，整批按约束错误失败；重试时
+// 发号器前进一个序号、换新键成功。这是唯一会在重试时换键的失败路径。
+// 进程内共享注册表之后，正常路径不再产生这种撞键，所以这里直接替换 b 的
+// 发号器来构造确定性的同起点序列。
 func TestFileKeyCollisionFailsThenRetriesWithNewKey(t *testing.T) {
 	fakeFlakeClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
 	dsn := filepath.Join(t.TempDir(), "k.db")
 	node := 7
 	a := openFileKeyStore(t, dsn, &node)
-	b := openFileKeyStore(t, dsn, &node) // 都在任何写入之前初始化 → 基线同为 0
+	b := openFileKeyStore(t, dsn, &node)
+	if a.fileKeyGen.Load() != b.fileKeyGen.Load() {
+		t.Fatal("test setup: stores must share the registry generator")
+	}
 	ctx := context.Background()
 	if err := a.Write(ctx, fkBatch("a.log", "ha")); err != nil {
 		t.Fatal(err)
 	}
+	// 模拟另一个进程：同一节点号、同一毫秒、序号从 1 重新开始。
+	b.fileKeyGen.Store(newFileKeyGen(int64(node), 0))
 	err := b.Write(ctx, fkBatch("b.log", "hb"))
 	if err == nil {
 		t.Fatal("generators sharing node/ms/seq must collide on file_key")
@@ -308,9 +428,11 @@ func TestFileKeyCollisionFailsThenRetriesWithNewKey(t *testing.T) {
 // 而不是本次多发的号。数据行按 (file_key, row_number) 幂等，不重复。
 func TestFileKeyTripleConflictKeepsWinnerKey(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
-	n0, n1 := 0, 1
-	a := openFileKeyStore(t, dsn, &n0)
-	b := openFileKeyStore(t, dsn, &n1)
+	a := openFileKeyStore(t, dsn, nil)
+	b := openFileKeyStore(t, dsn, nil)
+	if a.fileKeyGen.Load() != b.fileKeyGen.Load() {
+		t.Fatal("test setup: stores must share the registry generator")
+	}
 	ctx := context.Background()
 	batch := fkBatch("a.log", "ha")
 	if err := a.Write(ctx, batch); err != nil {

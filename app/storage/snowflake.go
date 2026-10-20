@@ -12,17 +12,22 @@ package storage
 // 本方案零往返、零共享行：键由进程自己算，数据库只在注册表 INSERT 时看到它。
 // 唯一性靠三件事叠加，都不需要协调：
 //   1) 位布局给每个发号器实例 16 位节点号（65536 个空间）+ 6 位同毫秒序号。
-//      节点号缺省按 TableStorage 实例随机（当前每个 format 一个发号器），
-//      不是每个 OS 进程一个；
+//      发号器按**注册表**进程级单例：同一进程内，所有共享同一
+//      (dialect, driver, DSN, file_table) 的 source unit 共用一个发号器。
+//      注意 source unit 的数量是"机台 × 各自格式组"：现网 60 台机台按组
+//      展开出约 1119 个 source unit、1119 个 TableStorage（格式声明共 23
+//      个），但它们共用 1 个发号器，不是每个 format/实例各一个。节点号
+//      缺省由该进程随机取一个；跨进程（多开、多机）才各有各的节点号；
 //   2) 发号器初始化时用注册表 MAX(file_key) 里的时间戳做基线，新键恒大于
 //      库里既有键（跨重启、跨时钟回拨都成立，且旧计数器发的小键天然不冲突）。
-//      这只保证"大于既有键"，不保证两个同时初始化的实例互不相同——不同
+//      这只保证"大于既有键"，不保证两个同时初始化的进程互不相同——不同
 //      节点号才提供后者；
 //   3) 注册表的 (file_key) 唯一索引是最后防线——万一两个发号器同节点号同
 //      毫秒同序号，这里报错而不是让两个文件共用一个键。按失败位置分三条
 //      路：登记成功但数据写失败，重试复用原键；三元组先到者胜出，重试复用
-//      胜出者的键；只有 file_key 唯一索引撞键这一路会在重试时换新键。三条
-//      都不会把数据挂到别的文件上，所以撞键是自愈/可重试事件，不是损坏。
+//      胜出者的键；只有 file_key 唯一索引撞键这一路会在重试时换新键（进程
+//      内单例之后，这一路只可能来自跨进程或人为替换发号器）。三条都不会
+//      把数据挂到别的文件上，所以撞键是自愈/可重试事件，不是损坏。
 //
 // 不选 UUIDv7：它是 128 位，要把 file_key 从 BIGINT 换成 BINARY(16)/
 // UNIQUEIDENTIFIER，主键宽度、各方言列型、以及已实测的 59.1% 体积收益
@@ -32,8 +37,10 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,9 +124,10 @@ func flakeTimeOf(key int64) time.Time {
 }
 
 // randomFlakeNode 取一个密码学随机的 16 位节点号。用 crypto/rand 而不是
-// "主机名+PID 哈希"：一个进程里每个 TableStorage（即每个 format）各有一个
-// 发号器，它们同时存在；不同配置目录的实例也可能共用一张注册表。哈希输入
-// 相同就会把它们绑到同一个节点号上，随机至少把它们摊开。
+// "主机名+PID 哈希"：同一台机器上可能有多个进程（不同配置目录、滚动升级
+// 的新旧进程）共用一张注册表，哈希输入相同就会把它们绑到同一个节点号上，
+// 随机至少把它们摊开。进程内部由注册表单例保证只有一个发号器，所以这里
+// 不需要再为"每个 format"分摊。
 func randomFlakeNode() int64 {
 	n, err := rand.Int(rand.Reader, big.NewInt(flakeNodeMax+1))
 	if err != nil {
@@ -130,8 +138,37 @@ func randomFlakeNode() int64 {
 	return n.Int64()
 }
 
-// initFileKeyGen 在 schema 阶段（写事务之外）把发号器立起来：读注册表
-// MAX(file_key) 作基线，节点号取配置值或随机。
+// fileKeyGenKey 标识"一个注册表在一个进程内的发号器"。
+//
+// 数据表（cfg.Table）刻意不在键里：同一注册表下的所有数据表必须共用同一个
+// 发号器，否则又退回"每个 source unit 一个发号器"——现网 1119 个 source unit
+// 会变成 1119 个同时存在的随机节点号。DSN 只存哈希，缓存不持有明文凭据。
+type fileKeyGenKey struct {
+	dialect   string
+	driver    string
+	fileTable string
+	dsnHash   [sha256.Size]byte
+}
+
+// sharedFileKeyGen 是注册表级发号器的槽位。mu 只串行化同一注册表的初始化与
+// 节点号一致性校验，不同注册表互不阻塞；gen 一旦建立就不再更换，进程内所有
+// source unit 的整个生命周期都看到同一条序列。
+type sharedFileKeyGen struct {
+	mu     sync.Mutex
+	gen    *fileKeyGen
+	pinned bool  // 首个调用者显式配置了 file_key_node
+	node   int64 // 实际节点号（显式值或随机值）
+}
+
+var (
+	sharedGensMu sync.Mutex
+	sharedGens   = map[fileKeyGenKey]*sharedFileKeyGen{}
+)
+
+// initFileKeyGen 在 schema 阶段（写事务之外）把发号器立起来：同一注册表在
+// 进程内只有一个发号器，第一个调用者读注册表 MAX(file_key) 作基线，后续
+// 调用者直接复用。节点号缺省按注册表随机取一个；file_key_node 因此是
+// 注册表级钉值——共享同一注册表的源必须全部省略它，或全部钉同一个值。
 //
 // MAX 走的是注册表上的 (file_key) 唯一索引，是一次索引末端读，成本可忽略；
 // 放在启动期而不是每批发号前，正是为了写路径一次往返都不发。
@@ -141,10 +178,69 @@ func (t *TableStorage) initFileKeyGen(ctx context.Context) error {
 	if t.fileKeyGen.Load() != nil {
 		return nil
 	}
+	g, err := t.registryFileKeyGen(ctx)
+	if err != nil {
+		return err
+	}
+	t.fileKeyGen.CompareAndSwap(nil, g)
+	return nil
+}
+
+func (t *TableStorage) registryFileKeyGen(ctx context.Context) (*fileKeyGen, error) {
+	// :memory: 的每个池就是另一个库（测试隔离依赖这一点），没有"同一注册表"
+	// 可共享，按实例发号。
+	if t.cfg.DSN == ":memory:" {
+		g, _, err := t.newRegistryFileKeyGen(ctx)
+		return g, err
+	}
+	key := fileKeyGenKey{
+		dialect:   strings.ToLower(t.cfg.Dialect),
+		driver:    t.cfg.Driver,
+		fileTable: t.cfg.FileTable,
+		dsnHash:   sha256.Sum256([]byte(t.cfg.DSN)),
+	}
+	sharedGensMu.Lock()
+	e := sharedGens[key]
+	if e == nil {
+		e = &sharedFileKeyGen{}
+		sharedGens[key] = e
+	}
+	sharedGensMu.Unlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.gen != nil {
+		if t.cfg.FileKeyNode != nil {
+			want := int64(*t.cfg.FileKeyNode) & flakeNodeMax
+			switch {
+			case !e.pinned:
+				return nil, errs.Sourcef(errs.ErrInvalidConfig,
+					"file key registry %q: file_key_node %d arrived after the registry generator was initialized without a pin; all sources sharing a registry must omit file_key_node or pin the same value",
+					t.cfg.FileTable, want)
+			case want != e.node:
+				return nil, errs.Sourcef(errs.ErrInvalidConfig,
+					"file key registry %q: file_key_node %d conflicts with the registry-level node %d; all sources sharing a registry must omit file_key_node or pin the same value",
+					t.cfg.FileTable, want, e.node)
+			}
+		}
+		return e.gen, nil
+	}
+	g, node, err := t.newRegistryFileKeyGen(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.gen, e.node = g, node
+	e.pinned = t.cfg.FileKeyNode != nil
+	return g, nil
+}
+
+// newRegistryFileKeyGen 读一次注册表 MAX(file_key) 作基线并构造发号器。
+// 调用方负责保证同一注册表（:memory: 除外）只调用一次。
+func (t *TableStorage) newRegistryFileKeyGen(ctx context.Context) (*fileKeyGen, int64, error) {
 	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 	var top sql.NullInt64
 	if err := t.db.QueryRowContext(ctx, "SELECT MAX(file_key) FROM "+ft).Scan(&top); err != nil {
-		return errs.ClassifyStorageError("file key baseline", err)
+		return nil, 0, errs.ClassifyStorageError("file key baseline", err)
 	}
 	baseline := int64(0)
 	if top.Valid {
@@ -152,13 +248,9 @@ func (t *TableStorage) initFileKeyGen(ctx context.Context) error {
 	}
 	node := randomFlakeNode()
 	if t.cfg.FileKeyNode != nil {
-		node = int64(*t.cfg.FileKeyNode)
+		node = int64(*t.cfg.FileKeyNode) & flakeNodeMax
 	}
-	g := newFileKeyGen(node, baseline)
-	if !t.fileKeyGen.CompareAndSwap(nil, g) {
-		return nil // 并发初始化：别人已立好，基线只会更保守，无需回退
-	}
-	return nil
+	return newFileKeyGen(node, baseline), node, nil
 }
 
 // nextFileKeyLocal 取本进程生成的键。发号器未初始化（存量库、schema 阶段

@@ -106,7 +106,7 @@ func TestRealMSSQLConnect(t *testing.T) {
 	t.Logf("connected to %q; server: %.60s", name, strings.TrimSpace(ver))
 }
 
-// 整型骨架：建表、建索引、计数器表、发号、重放幂等、注册表每文件一行。
+// 整型骨架：建表、建唯一索引、发号、重放幂等、注册表每文件一行。
 func TestRealMSSQLFileKeyBackbone(t *testing.T) {
 	f := newMSSQLFix(t)
 	s := openReal(t, f.cfg(true))
@@ -160,7 +160,8 @@ func TestRealMSSQLLegacyRegistry(t *testing.T) {
 	}
 }
 
-// 并发发号：20 个 sink 实例同时写各自的文件，键必须互不相同。
+// 并发发号：20 个 source unit 共用同一注册表的发号器，同时写各自的文件，
+// 键必须互不相同。
 func TestRealMSSQLConcurrentAllocation(t *testing.T) {
 	f := newMSSQLFix(t)
 	ctx := context.Background()

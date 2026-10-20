@@ -333,7 +333,9 @@ func TestExpandFleetHeaderCheckSink(t *testing.T) {
 }
 
 // file_key_node 是雪花发号的节点号：和 header_check 一样，sink 级键不进
-// SinkDef 白名单就会被静默丢弃，格式级同名键覆盖它（Extra 透传在最后）。
+// SinkDef 白名单就会被静默丢弃。展开层只负责透传，格式级同名键仍会覆盖它；
+// 但共享同一注册表时不同值会在 OpenTable 以 ErrInvalidConfig 拒绝（节点号
+// 是注册表级钉值，见 app/storage/snowflake.go）。
 func TestExpandFleetFileKeyNodeSink(t *testing.T) {
 	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
 	on := true

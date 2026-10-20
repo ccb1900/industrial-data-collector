@@ -45,11 +45,12 @@ type SinkDef struct {
 	// FileKey 用整型 file_key 替代逐行 file_id 文本作幂等骨架（全方言）。
 	// 骨架一经建表即固定，所以它是"新库/迁移后"才允许的开关。
 	FileKey *bool
-	// FileKeyNode 固定雪花发号的 16 位节点号（0–65535）。缺省时**每个
-	// TableStorage 实例**（即每个 format）各自随机取一个，不是每个进程一个。
-	// 这里写会原样下发给引用该 sink 的所有 format——共用一张注册表时不要
-	// 用 sink 级值把它们钉在同一个节点号上；要固定就用格式级 Extra 逐
-	// format 填不同值。
+	// FileKeyNode 固定雪花发号的 16 位节点号（0–65535）。发号器按注册表在
+	// 进程内单例——一个 sink 的 file_table 就是一张注册表，引用它的所有
+	// source unit（现网约 1119 个）共用一个发号器。因此本字段是注册表级
+	// 钉值：sink 级值会下发给所有 format，这是推荐写法；不要让格式级 Extra
+	// 再改成别的值，冲突会在 OpenTable 时以 ErrInvalidConfig 失败。缺省时
+	// 每个进程对每个注册表随机取一个节点号。
 	FileKeyNode *int
 	LazyConnect *bool
 	// HeaderCheck（strict|warn）与 ExtraRows 是表头校验的两个开关。写在

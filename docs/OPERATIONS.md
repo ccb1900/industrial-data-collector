@@ -347,17 +347,24 @@ chunk 一次 Prepare + 一次 Exec，全是持锁期间的往返。于是
 都不变：
 
 - 零 DB 往返、零共享行：写路径不再有跨源串行点。
-- 节点号缺省**每个 `TableStorage` 实例**随机取一个（crypto/rand），不是每个
-  进程一个——当前一个进程里每个 format 各有一个发号器，生产配置的 23 个
-  format 就是 23 个。`file_key_node` 可固定，但 sink 级值会原样下发给所有
-  引用它的 format；共用一张注册表时不要把整条 sink 钉在同一个节点号上，
-  要固定就用格式级覆盖逐 format 填不同值。**不选 UUIDv7**：128 位，键列要
+- 发号器按**注册表**在进程内单例：同一 `(dialect, driver, DSN, file_table)`
+  的所有 source unit 共用一个（`app/storage/snowflake.go` 的 `sharedGens`）。
+  数量口径是"机台 × 各自格式组"，不是"每个 format 一个"：现网 60 台机台
+  按组展开出 **1119 个 source unit、1119 个 `TableStorage`**（格式声明共
+  23 个），但它们只共用 **1 个发号器**。这一点由
+  `TestProdMSSQLFleetExpansionCount` 钉住。节点号
+  缺省由该进程对每个注册表随机取一个（crypto/rand）；跨进程（多开、多机、
+  滚动升级的新旧进程）才各有各的节点号。进程内单例之后，同一进程里不可能
+  再出现"两个节点号相同的发号器"，撞键只可能来自跨进程。
+  `file_key_node` 因此是**注册表级**钉值：共享同一注册表的源必须全部省略
+  它，或全部钉同一个值；冲突值（包括先无钉值初始化、后又来一个钉值）在
+  `OpenTable` 时以 `ErrInvalidConfig` 失败。**不选 UUIDv7**：128 位，键列要
   从 BIGINT 换成 BINARY(16)/UNIQUEIDENTIFIER，主键宽度与体积收益全要重算，
   而它比雪花多给的只有"不依赖节点号"——这里用唯一索引兜底更便宜。
 - 启动时读一次注册表 `MAX(file_key)` 的时间戳作基线：新进程发出的键恒大于
   库里既有键，跨重启与时钟回拨都成立；旧计数器发的小键（1..N）解不出时间戳，
   自然退回当前时间，**旧键与新键共存、无需迁移**。注意基线只保证"大于既有
-  键"，不保证两个同时初始化的发号器互不相同——那由不同节点号提供，最后由
+  键"，不保证两个同时初始化的**进程**互不相同——那由不同节点号提供，最后由
   唯一索引兜底。
 - 时钟回拨冻结时间戳、序号耗尽借未来 1ms，保证进程内严格递增。
 - 注册表的 `(file_key)` 唯一索引仍是最后防线，但"撞键后重试必换新键"只对
@@ -365,9 +372,79 @@ chunk 一次 Prepare + 一次 Exec，全是持锁期间的往返。于是
   命中，沿用原键；登记撞三元组 `(source_id, collection_date, file_id)` →
   同一文件已被先到者登记，重试复用**胜出者的键**，本次多发的号作废；只有
   登记撞 `(file_key)` 唯一索引（两个不同文件同节点同毫秒同序号）才会整文件
-  失败、重试重新发号。三条都不会把数据挂到别的文件上。**不能删这个唯一
-  索引**：删了 INSERT 会静默成功，两个文件共用一个键，JOIN 立即把两边的
-  数据行叠在一起。
+  失败、重试重新发号。进程内单例之后这一路只可能来自跨进程（或人为替换
+  发号器）。三条都不会把数据挂到别的文件上。**不能删这个唯一索引**：删了
+  INSERT 会静默成功，两个文件共用一个键，JOIN 立即把两边的数据行叠在一起。
+
+**上线前预检（只读）**：本次变更**不迁移数据、不改既有键、不回写注册表**；
+旧计数器小键与新雪花大键共存，键只要求唯一、不要求连续。但下面几项决定
+"上线即失败"还是"首次写入才暴露"，换 exe 前必须由具备生产只读权限的人
+在生产库执行（本仓库的开发环境被禁止访问生产库，只能提供清单）。把
+`dbo.laser_files` 换成实际注册表名：
+
+```sql
+-- 1) file_key 列是否已存在（存量注册表由启动时的 ALTER 补列）
+SELECT name, is_nullable, TYPE_NAME(system_type_id) AS type
+FROM sys.columns
+WHERE object_id = OBJECT_ID('dbo.laser_files') AND name = 'file_key';
+
+-- 2) 唯一索引是否就位：必须是 is_unique=1、键列只有 file_key 一列。
+--    名字不是 laser_files_file_key_uq 时，启动逻辑认不出来会再建一条。
+SELECT i.name, i.is_unique, i.has_filter, i.filter_definition,
+       ic.key_ordinal, c.name AS column_name
+FROM sys.indexes i
+JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE i.object_id = OBJECT_ID('dbo.laser_files') AND i.is_unique = 1
+ORDER BY i.name, ic.key_ordinal;
+
+-- 3) NULL 键、重复键、键空间
+SELECT COUNT(*) AS rows,
+       SUM(CASE WHEN file_key IS NULL THEN 1 ELSE 0 END) AS null_keys,
+       MIN(file_key) AS min_key, MAX(file_key) AS max_key
+FROM dbo.laser_files;
+
+SELECT file_key, COUNT(*) AS n
+FROM dbo.laser_files
+WHERE file_key IS NOT NULL
+GROUP BY file_key
+HAVING COUNT(*) > 1;
+
+-- 4) 其他数据表是否还带 file_id（file_key 骨架与之互斥，启动即报
+--    legacy backbone，避免往旧骨架里写半截）
+SELECT t.name AS table_name, c.name AS column_name
+FROM sys.tables t
+JOIN sys.columns c ON c.object_id = t.object_id
+WHERE c.name = 'file_id' AND t.name <> 'laser_files';
+
+-- 5) 旧计数器表是否还在（本程序已不读写；删之前确认无外部引用）
+SELECT name FROM sys.objects WHERE name = 'laser_files_file_key_seq';
+```
+
+判定与处置：
+
+- **唯一索引缺失**：首次启动会尝试 `CREATE UNIQUE INDEX`。空表/小表没问题；
+  大注册表要扫描并锁表，且多个 source unit 并发初始化时，`IF NOT EXISTS`
+  与 `CREATE` 之间的 TOCTOU 会让部分源初始化失败、等下个触发周期重试。
+  建议在业务低峰上线，或先按上面的判定手工建好索引。
+- **`file_key` 列不是 `bigint`**：`INT` 装不下约 1e17 的雪花键（会溢出/截断），
+  `ensureSchema` 只补列、不改既有列型；必须在低峰期手工 `ALTER` 成 `BIGINT`。
+- **索引名不同但功能等价**：程序按固定索引名探测（SQL Server），会再建一条
+  重复索引；不阻断，但占空间、拖慢写入，建议先改名或删旧。
+- **`null_keys > 1` 且尚无唯一索引**：SQL Server 的单列唯一索引只允许一个
+  NULL，建索引会失败。先回填这些行（或确认可删除）再上线；**不要**让程序
+  带着这个状态启动。
+- **存在重复 `file_key`**：绝不能上线；唯一索引会拒绝，或（若索引被删）
+  JOIN 会把两个文件的数据叠在一起。先人工裁决保留哪个键。
+- **数据表仍有 `file_id`**：说明该表还是 legacy 骨架，以 `file_key = true`
+  启动会整表报错；确认这张表是否本就该由这份配置接管。
+- **`min_key` 很小（旧计数器键）**：正常，键空间不重叠，无需迁移。
+
+注册表是键归属的唯一来源，换 exe 前至少备份它（数据库级备份最佳；最小
+回滚面是 `SELECT * INTO dbo.laser_files_bak_20261020 FROM dbo.laser_files`）。
+回滚旧版 exe 也安全：旧代码先按键回查复用既有雪花键；旧计数器停在 N，
+新发的 N+1… 与雪花大键不重叠。**不要**在生产直接执行 `DROP TABLE` 清理旧
+计数器表或备份表，除非已确认无外部依赖并单独拍板。
 
 **连带的行为变化**：发号与注册表登记移出写事务（登记只有一条语句，数据行
 才是整批改写）。因此写失败可能留下一条 `records = 0` 的注册行；完成态由
@@ -378,16 +455,19 @@ file-state 判定，注册表只被 `QueryRows` 的 JOIN 读，不参与去重�
 
 **退役**：`<file_table>_file_key_seq` 不再创建、不再读写；采集器与仓储代码里
 已没有任何路径引用它。存量库里的那张表可以删，但删之前先确认没有外部程序/
-脚本/报表还在读它——删表本身不影响本程序。`file_key_node` 是可选的 sink 键
-（0–65535，越界在 `Validate()` 报错），也可写在格式级覆盖 sink 级（格式级
-优先；sink 级会下发给所有 format，原因见上）。
+脚本/报表还在读它——删表本身不影响本程序。`file_key_node` 是注册表级可选
+钉值（0–65535，越界在 `Validate()` 报错），推荐写在 sink 级；格式级 Extra
+若覆盖成不同的值，会使该注册表的初始化报 `ErrInvalidConfig`。多进程部署时
+不要给两个进程钉同一个值——那会人为制造跨进程撞键。
 
-**验证边界**：雪花发号、并发登记、旧键回填、计数器表退役由离线用例覆盖
+**验证边界**：雪花发号、注册表级单例、节点冲突拒绝、进程内共享序列、
+`:memory:` 隔离、并发登记、旧键回填、计数器表退役由离线用例覆盖
 （`app/storage/snowflake_test.go`），其中两条确定性冲突用例分别覆盖"同节点
 撞 `file_key` → 约束失败 → 重试换新键"与"三元组先到者胜出 → 重试复用胜出
-者的键且数据幂等"；SQL Server 侧仍是"语法分支 + fail-fast"，本轮没有真库
-复跑（`REAL_SQLSERVER_DSN` 未设）。原计数器方案的真库发号用例（20×20 并发）
-随计数器表一并退役。
+者的键且数据幂等"；fleet 展开口径由 `tests/mssql_prod_config_test.go` 的
+`TestProdMSSQLFleetExpansionCount` 钉住。SQL Server 侧仍是"语法分支 +
+fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计数器方案的
+真库发号用例（20×20 并发）随计数器表一并退役。
 
 ## 文件登记表 `records` 恒为 0（2026-09-30 实测，未修，等拍板）
 
@@ -404,8 +484,9 @@ legacy   骨架：数据表实际行数=5  注册表 records=0  注册表行数=
 1. **写入时就是字面 0**：legacy 骨架的注册表 INSERT 把 `records` 实参写成 `0`
    （`Write` 内，table.go:915 附近）；`file_key` 骨架在三条方言分支里各传
    `int64(0)`（`resolveFileKey`）。两条路径都只 INSERT、从不更新。
-2. **没有第三处更新它**：注册表现今被 UPDATE 两处——`resolveFileKey` 的补键
-   `SET file_key = ?` 与计数器表的 `SET next = next + 1`——都不碰 `records`。
+2. **其他 UPDATE 也不碰它**：注册表只有 `resolveFileKey` 的补键
+   `SET file_key = ?`；旧计数器表的 `SET next = next + 1` 已随发号改造退役。
+   两者都不碰 `records`。
 3. **存储层根本拿不到总数**：`model.Storage` 接口只有 `Write(batch)` 与 `Close()`
    （app/model/model.go:241-244），**没有"文件收尾"钩子**；真正的总数走另一条不相通的
    路——`app/collector/executor.go:465` 的 `State.MarkFileCompleted(ctx, key, file, fr.Records)`
