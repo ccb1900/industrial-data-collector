@@ -304,13 +304,26 @@ mysql / postgres 仍未经真库验证。
 | 失配方向 | 含义 | 处置 | 豁免 |
 |---|---|---|---|
 | 表头有、声明没有 | 这些字段的值正在被丢弃 | **阻断**：在任何 DB 往返之前失败，整文件一条不写 | `header_check = "warn"`；或该格式开 `extra_rows = true`（全行 JSON 已落 `row_values`，值不丢）；`auto_columns = true` 恒不阻断（其契约就是按表头增量建列） |
+| 无名位置有值（空白表头、超出表头长度、整批无表头） | 没有任何列名可对应，任何映射都取不到 | **阻断** | `header_check = "warn"`；或 `extra_rows = true`（原始字段整行已进 `row_values`）。`auto_columns` **不**豁免——它只能给有表头名的字段建列 |
+| `name` 与别名同时带值 | `mapRow` 只取第一个命中的源名，后面的值被丢弃 | **阻断** | `header_check = "warn"`；或 `extra_rows = true` |
 | 声明有、表头没有 | 没有数据可丢，取空值 | 恒为告警，每个 `(表, 列)` 只记一次 | 列级 `optional = true` 连告警都不发 |
 
 判定口径与取值口径完全一致，所以不会有"校验说没事、值却取不到"的缝隙：两边都用
 表头/声明的**原文**（不做 TrimSpace，带空格的表头如实报失配）；计数单位是"表头名的
 出现次数"，同一 name 声明 k 次（重名表头用 `occurrence` 区分）才允许它在表头出现 k
-次；空表头字段跳过（不可声明）；无表头形态（`header = false`）整体跳过校验。
+次；列的 `aliases` 与 name 同权计入"已声明"，落表头里既不报多余也不报缺列；空白
+表头且**值为空**的位置跳过（不可声明，也没有值可丢）。`header = false` 与声明列
+不能共存：没有表头就没有列名可匹配，声明的每一列只会写空值，配置期直接拒绝
+（`header_check` 也救不了这种组合）。
 `optional` 与 `required` 互斥，`Validate()` 直接拒（`required` 已经会在缺列时判失败）。
+
+改名代际用列级 `aliases` 兼容，不要改名或放宽 `header_check`：取值先按 `name`，再按
+别名声明顺序回退，都落同一个 column。现场案例（2026-10-21）：`2#` 机台升级后把
+`R-Xerr/R-Yerr/L-Xerr/L-Yerr` 写成 `X-error R/Y-error R/X-error L/Y-error L`，其余
+机台仍是旧名；m377 的这四列以旧名为 `name`、新名为 `aliases`，两代文件都能落库。
+若改用"改名 + header_check = warn"，旧机台的四列会被静默丢弃。同一个文件里
+`name` 与别名**同时带值**属于配置或导出异常：`mapRow` 只取第一个命中的源名，
+其余值会丢，因此按丢值阻断（`extra_rows` / `warn` 只告警）。
 
 现场案例（2026-10-14 核）：在用的激光配置 `aaa` 声明 17 列，仓库里的
 `configs/laser_prod_mssql.toml` 声明 20 列，多出「相关比率 / Lack Rate / 加工程序」，
@@ -322,8 +335,8 @@ mysql / postgres 仍未经真库验证。
 `pwrmulti` 是缺列方向唯一的噪声源：三代 49 列、六代 50 列，声明取了两代并集，所以
 每个三代文件都"缺"两列。这类列标 `optional = true`。
 
-回归用例：`app/storage/headercheck_test.go`（阻断/放行/豁免/出现次数/原文口径/空表头
-/配置校验 9 例）、`tests/e2e_table_storage_test.go` 的补采链路、
+回归用例：`app/storage/headercheck_test.go`（阻断/放行/豁免/出现次数/原文口径/无名值
+/越界字段/别名冲突/配置校验）、`tests/e2e_table_storage_test.go` 的补采链路、
 `autocolumns_test.go` 的 occurrence 拆分。
 
 ### 发号定案：进程内雪花（2026-10-20，取代计数器行）

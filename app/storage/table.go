@@ -61,6 +61,23 @@ type ColumnMapping struct {
 	// 用于同一格式存在代际差异（如三代 49 列、六代 50 列的并集声明）。
 	// 缺列只是取空值，本身不阻断；与 Required 互斥（必填列不许豁免）。
 	Optional bool `toml:"optional"`
+	// Aliases 同一字段的代际备用表头名（name 在前，别名按声明顺序回退，
+	// 都落到同一个 Column）。用于机台升级后改字段名、但表结构和历史数据
+	// 不能分叉的场景（如 m377 的 "R-Xerr" 改成 "X-error R"）。表头校验
+	// 把别名视作已声明字段；但 name 与别名同时带值判为丢值（mapRow 只取
+	// 第一个命中的源名）。别名只对 csv 源生效。
+	Aliases []string `toml:"aliases"`
+}
+
+// sourceNames 返回该列可接受的表头名：name 在前，别名按声明顺序。
+func (c ColumnMapping) sourceNames() []string {
+	if len(c.Aliases) == 0 {
+		return []string{c.Name}
+	}
+	out := make([]string, 0, 1+len(c.Aliases))
+	out = append(out, c.Name)
+	out = append(out, c.Aliases...)
+	return out
 }
 
 // TableConfig configures the typed relational sink.
@@ -91,10 +108,11 @@ type TableConfig struct {
 	// 跨进程同节点同毫秒同序号由 (file_key) 唯一索引兜底。只在"要让键可
 	// 复现"时才填。
 	FileKeyNode *int
-	// HeaderCheck 表头与声明列的失配处置："strict"（默认，Validate 补齐）
-	// = 表头有、声明没有的字段判整个文件失败；"warn" = 只告警不阻断。
-	// 方向只有这一个：声明有、表头没有的列取空值，恒为告警（列级 optional
-	// 可豁免），不参与本开关。见 headerCheck。
+	// HeaderCheck 会丢值的失配处置："strict"（默认，Validate 补齐）= 表头
+	// 有、声明没有的字段，无名位置上的非空值，以及 name 与别名同时带值，
+	// 都判整个文件失败；"warn" = 只告警不阻断。声明有、表头没有的列取空值，
+	// 恒为告警（列级 optional 可豁免），不参与本开关。见 headerCheck。
+	// extra_rows = true 时未声明字段与无名值已整行进 row_values，恒只告警。
 	HeaderCheck string
 }
 
@@ -160,6 +178,17 @@ func (c *TableConfig) Validate() error {
 		if col.From == SourceMetadata && col.Occurrence != 0 {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: occurrence applies to csv sources only", col.Column)
 		}
+		if col.From == SourceMetadata && len(col.Aliases) > 0 {
+			return errs.Sourcef(errs.ErrInvalidConfig, "column %q: aliases apply to csv sources only", col.Column)
+		}
+		for _, alias := range col.Aliases {
+			if alias == "" {
+				return errs.Sourcef(errs.ErrInvalidConfig, "column %q: alias must not be empty", col.Column)
+			}
+			if alias == col.Name {
+				return errs.Sourcef(errs.ErrInvalidConfig, "column %q: alias %q duplicates its own name", col.Column, alias)
+			}
+		}
 		if !tableNamePattern.MatchString(col.Column) {
 			return errs.Sourcef(errs.ErrInvalidConfig, "column %q is not a simple identifier", col.Column)
 		}
@@ -168,11 +197,13 @@ func (c *TableConfig) Validate() error {
 		}
 		seen[col.Column] = true
 		if col.From == SourceCSV {
-			src := col.Name + "\x00" + strconv.Itoa(col.Occurrence)
-			if seenSrc[src] {
-				return errs.Sourcef(errs.ErrInvalidConfig, "csv source %q occurrence %d declared twice", col.Name, col.Occurrence)
+			for _, name := range col.sourceNames() {
+				src := name + "\x00" + strconv.Itoa(col.Occurrence)
+				if seenSrc[src] {
+					return errs.Sourcef(errs.ErrInvalidConfig, "csv source %q occurrence %d declared twice", name, col.Occurrence)
+				}
+				seenSrc[src] = true
 			}
-			seenSrc[src] = true
 		}
 		switch col.Type {
 		case "text":
@@ -485,7 +516,11 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		// Oracle / SQL Server 无 IF NOT EXISTS：查系统目录后按需建表。
 		if !t.tableExists(ctx, t.cfg.Table) {
 			if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
-				return err
+				// 多源并发首连时，系统目录检查与 CREATE 之间会被别的会话抢先建表。
+				// 2714 表示"对象已存在"，此时对方已提交，后续目录查询能看到真实表形。
+				if !mssqlRacedCreate(err) {
+					return err
+				}
 			}
 		}
 	} else if err := t.execDDL(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s, %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), strings.Join(cols, ", "), pk)); err != nil {
@@ -518,7 +553,10 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			ddl = fmt.Sprintf("ALTER TABLE %s ADD (%s %s)", quoteIdent(t.cfg.Dialect, t.cfg.Table), quoteIdent(t.cfg.Dialect, c.Column), dt[c.Type])
 		}
 		if err := t.execDDL(ctx, ddl); err != nil {
-			return err
+			// 并发补齐同一缺列时，后到的会话吃 2705；列已存在即视为成功。
+			if !(mssqlErrNumber(err) == 2705 && t.columnExists(ctx, t.cfg.Table, c.Column)) {
+				return err
+			}
 		}
 	}
 	// File registry (optional): one row per collected file, header as TEXT.
@@ -544,7 +582,9 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 		}
 		if fileDDL != "" {
 			if err := t.execDDL(ctx, fileDDL); err != nil {
-				return err
+				if !mssqlRacedCreate(err) {
+					return err
+				}
 			}
 		}
 		// file_key 模式的键位：注册表加一列整型键 + 唯一索引。
@@ -564,7 +604,9 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 			}
 			if !hasKey {
 				if err := t.execDDL(ctx, fmt.Sprintf("ALTER TABLE %s ADD file_key %s", ft, dt["bigint"])); err != nil {
-					return err
+					if !(mssqlErrNumber(err) == 2705 && t.columnExists(ctx, t.cfg.FileTable, "file_key")) {
+						return err
+					}
 				}
 			}
 			// 唯一约束是键分配的最后防线：分配若被并发击穿，这里报错而不是
@@ -584,7 +626,10 @@ func (t *TableStorage) ensureSchema(ctx context.Context) error {
 				uqDDL = fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (file_key)", uq, ft)
 			}
 			if err := t.execDDL(ctx, uqDDL); err != nil {
-				return err
+				// 1913：同名索引已由并发会话建好。索引存在即是目标状态。
+				if !(mssqlErrNumber(err) == 1913 && t.indexExists(ctx, t.cfg.FileTable, t.cfg.FileTable+"_file_key_uq")) {
+					return err
+				}
 			}
 			// 发号器在 schema 阶段立好：读一次 MAX(file_key) 作基线，
 			// 之后每批发号零往返。计数器表（<file_table>_file_key_seq）
@@ -704,6 +749,44 @@ func (t *TableStorage) existingColumns(ctx context.Context, table string) ([]str
 	return out, err
 }
 
+// mssqlErrNumber returns the SQL Server error number for a wrapped driver
+// error, or 0 when err did not come from the server. Non-SQL Server dialects
+// therefore never match the race tolerances below.
+func mssqlErrNumber(err error) int32 {
+	var e mssql.Error
+	if errors.As(err, &e) {
+		return e.Number
+	}
+	return 0
+}
+
+// mssqlRacedCreate reports a CREATE TABLE that lost the catalog
+// check-then-create race to another session. 2714 means the object exists and
+// the winning session has committed it, so a follow-up catalog read is safe.
+func mssqlRacedCreate(err error) bool {
+	return mssqlErrNumber(err) == 2714
+}
+
+func (t *TableStorage) columnExists(ctx context.Context, table, column string) bool {
+	var cnt int
+	if err := t.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
+		table, column).Scan(&cnt); err != nil {
+		return false
+	}
+	return cnt > 0
+}
+
+func (t *TableStorage) indexExists(ctx context.Context, table, index string) bool {
+	var cnt int
+	if err := t.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sys.indexes WHERE name = @p1 AND object_id = OBJECT_ID(@p2)",
+		index, table).Scan(&cnt); err != nil {
+		return false
+	}
+	return cnt > 0
+}
+
 func (t *TableStorage) execDDL(ctx context.Context, stmt string) error {
 	if _, err := t.db.ExecContext(ctx, stmt); err != nil {
 		return errs.ClassifyStorageError("ensure schema", err)
@@ -792,9 +875,12 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 				raw = ""
 			}
 		default:
-			if vals := byHeader[c.Name]; c.Occurrence < len(vals) {
-				raw = vals[c.Occurrence]
-				present = true
+			for _, name := range c.sourceNames() {
+				if vals := byHeader[name]; c.Occurrence < len(vals) {
+					raw = vals[c.Occurrence]
+					present = true
+					break
+				}
 			}
 		}
 		if !present || raw == "" {
@@ -930,20 +1016,55 @@ func insertIfMissingStmt(dialect, rawTable string, cols []string, conflict strin
 	}
 }
 
-// headerCheck 把解码表头与声明列双向比对，计数单位是"表头名的出现次数"：
+// headerCheck 把解码表头与声明列做丢值判定，计数单位是"表头名的出现次数"：
 // 同一 name 声明 k 次（重名表头用 occurrence 区分）才允许它在表头出现 k 次。
+// 列的 aliases 与 name 一样算作已声明：别名落在表头里既不判多余，也不报缺列。
 // 取值口径与 mapRow 一致——两边都用表头/声明的原文，不做 TrimSpace，所以带
 // 空格的表头确实取不到值，这里就如实报失配。
 //
-// 两个方向的代价不同，处置也不同：
+// 各方向的代价不同，处置也不同：
+//   - 无名位置有值（空白表头下、超出表头长度、整批无表头）：任何映射都取
+//     不到，auto_columns 也不行——它只能给有表头名的字段建列。默认
+//     （header_check = "strict"）判整个文件失败；warn 只告警；extra_rows
+//     把原始字段整行写进 row_values，值仍在库里，也只告警。
 //   - 表头有、声明没有：这些字段的值正在被丢弃。默认（header_check =
 //     "strict"）判整个文件失败，且在任何 DB 往返之前失败——文件不落半截、
 //     不登记完成，采集按 catchup_days 重排，声明补齐后自动补采。写成
 //     "warn" 只告警。auto_columns 的契约本就是"按表头增量建列"，extra_rows
 //     开着的格式未声明字段已整行进 row_values：这两种形态值不丢，恒只告警。
+//   - name 与别名同时带值：mapRow 只取第一个命中的源名，后面的值被静默
+//     丢弃；与"表头有、声明没有"同一处置口径。
 //   - 声明有、表头没有：没有数据可丢（取空值），恒为告警；同一格式存在代际
 //     差异时用列级 optional 豁免。
 func (t *TableStorage) headerCheck(batch model.Batch) error {
+	drops := findUnnamedDrops(batch.Header, batch.Records)
+	if len(drops) > 0 {
+		blocking := t.cfg.HeaderCheck == "strict" && !t.cfg.ExtraRows
+		for _, d := range drops {
+			if t.warnOnce("unnamed", fmt.Sprintf("%s #%d", d.Kind, d.Field)) {
+				slog.Warn("value under an unnamed header position is dropped",
+					"table", t.cfg.Table, "file", batch.File.Name, "row", d.Row,
+					"field", d.Field, "reason", d.Kind, "value", cellSample(d.Value),
+					"blocked", blocking)
+			}
+		}
+		if blocking {
+			var samples []string
+			for _, d := range drops {
+				if len(samples) == 3 {
+					break
+				}
+				samples = append(samples, fmt.Sprintf("row %d field #%d %s=%q", d.Row, d.Field, d.Kind, cellSample(d.Value)))
+			}
+			more := ""
+			if len(drops) > len(samples) {
+				more = fmt.Sprintf("; +%d more", len(drops)-len(samples))
+			}
+			return errs.Sourcef(errs.ErrStoragePermanent,
+				"header check: file %q has %d value(s) under unnamed fields for table %q (%s%s); their values would be lost — name the header field, or set extra_rows = true / header_check = \"warn\"",
+				batch.File.Name, len(drops), t.cfg.Table, strings.Join(samples, "; "), more)
+		}
+	}
 	if len(t.cfg.Columns) == 0 || len(batch.Header) == 0 {
 		return nil
 	}
@@ -953,12 +1074,15 @@ func (t *TableStorage) headerCheck(batch model.Batch) error {
 			continue
 		}
 		declared[c.Name]++
+		for _, alias := range c.Aliases {
+			declared[alias]++
+		}
 	}
 	seen := map[string]int{}
 	var order []string
 	for _, h := range batch.Header {
 		if strings.TrimSpace(h) == "" {
-			continue // 空表头不可声明，跳过（与 deriveColumns 一致）
+			continue // 空表头不可声明，跳过（与 deriveColumns 一致）；带值的情况已由无名检查处理
 		}
 		if seen[h] == 0 {
 			order = append(order, h)
@@ -986,12 +1110,55 @@ func (t *TableStorage) headerCheck(batch model.Batch) error {
 				batch.File.Name, len(extras), t.cfg.Table, strings.Join(extras, ", "))
 		}
 	}
+	positions := map[string][]int{}
+	for i, h := range batch.Header {
+		positions[h] = append(positions[h], i)
+	}
+	blockingAlias := t.cfg.HeaderCheck == "strict" && !t.cfg.ExtraRows
+	for i := range t.cfg.Columns {
+		c := &t.cfg.Columns[i]
+		if c.From == SourceMetadata || len(c.Aliases) == 0 {
+			continue
+		}
+		conflicts := aliasConflicts(*c, positions, batch.Records)
+		if len(conflicts) == 0 {
+			continue
+		}
+		if t.warnOnce("alias-conflict", c.Column) {
+			slog.Warn("two header names for the same column both carry data, the later value is dropped",
+				"table", t.cfg.Table, "file", batch.File.Name, "column", c.Column,
+				"rows", len(conflicts), "blocked", blockingAlias)
+		}
+		if blockingAlias {
+			var samples []string
+			for _, cf := range conflicts {
+				if len(samples) == 3 {
+					break
+				}
+				samples = append(samples, fmt.Sprintf("row %d %q=%q", cf.Row, cf.Other, cellSample(cf.Value)))
+			}
+			more := ""
+			if len(conflicts) > len(samples) {
+				more = fmt.Sprintf("; +%d more", len(conflicts)-len(samples))
+			}
+			return errs.Sourcef(errs.ErrStoragePermanent,
+				"header check: file %q: column %q takes header field %q, but %q also carries data in %d row(s) (%s%s); those values would be dropped — remove the duplicate field or map it to its own column",
+				batch.File.Name, c.Column, conflicts[0].Selected, conflicts[0].Other, len(conflicts), strings.Join(samples, "; "), more)
+		}
+	}
 	for i := range t.cfg.Columns {
 		c := &t.cfg.Columns[i]
 		if c.From == SourceMetadata || c.Optional {
 			continue
 		}
-		if seen[c.Name] > c.Occurrence {
+		present := false
+		for _, name := range c.sourceNames() {
+			if seen[name] > c.Occurrence {
+				present = true
+				break
+			}
+		}
+		if present {
 			continue
 		}
 		if t.warnOnce("missing", c.Column) {
@@ -1001,6 +1168,99 @@ func (t *TableStorage) headerCheck(batch model.Batch) error {
 		}
 	}
 	return nil
+}
+
+// unnamedDrop 是一个落在无名列位置上的非空值。Kind 说明为什么无名：
+// 空白表头、超出表头长度，或整批没有表头。
+type unnamedDrop struct {
+	Row   int64
+	Field int // 1 起的字段序号
+	Kind  string
+	Value string
+}
+
+// findUnnamedDrops 找出任何映射都取不到的非空值。无名位置不可声明，
+// auto_columns 也只能给有表头名的字段建列，所以这些值是纯丢失。
+func findUnnamedDrops(header []string, records []model.Record) []unnamedDrop {
+	var drops []unnamedDrop
+	for i := range records {
+		rec := &records[i]
+		for j, raw := range rec.Fields {
+			if strings.TrimSpace(raw) == "" {
+				continue
+			}
+			var kind string
+			switch {
+			case j >= len(header) && len(header) == 0:
+				kind = "no header"
+			case j >= len(header):
+				kind = "beyond header"
+			case strings.TrimSpace(header[j]) == "":
+				kind = "blank header"
+			default:
+				continue
+			}
+			drops = append(drops, unnamedDrop{Row: rec.RowNumber, Field: j + 1, Kind: kind, Value: raw})
+		}
+	}
+	return drops
+}
+
+// cellSample 截断证据值：长文本不该把错误信息撑爆。
+func cellSample(raw string) string {
+	r := []rune(raw)
+	if len(r) > 24 {
+		return string(r[:24]) + "…"
+	}
+	return raw
+}
+
+// aliasConflict 是一行里"已选中的源名有值、排在后面的备用名也带值"的证据，
+// 后者会被 mapRow 丢弃。
+type aliasConflict struct {
+	Row      int64
+	Selected string
+	Other    string
+	Value    string
+}
+
+// aliasConflicts 按 mapRow 的回退顺序找出被丢弃的备用名取值：第一个在表头
+// 里出现的源名负责取值，排在它后面的源名即使有数据也不再读取。
+func aliasConflicts(c ColumnMapping, positions map[string][]int, records []model.Record) []aliasConflict {
+	names := c.sourceNames()
+	if len(names) < 2 {
+		return nil
+	}
+	index := func(name string) int {
+		ps := positions[name]
+		if c.Occurrence < len(ps) {
+			return ps[c.Occurrence]
+		}
+		return -1
+	}
+	selected := -1
+	for i, name := range names {
+		if index(name) >= 0 {
+			selected = i
+			break
+		}
+	}
+	if selected < 0 {
+		return nil
+	}
+	var out []aliasConflict
+	for ri := range records {
+		rec := &records[ri]
+		for i := selected + 1; i < len(names); i++ {
+			j := index(names[i])
+			if j < 0 || j >= len(rec.Fields) || strings.TrimSpace(rec.Fields[j]) == "" {
+				continue
+			}
+			out = append(out, aliasConflict{Row: rec.RowNumber, Selected: names[selected], Other: names[i], Value: rec.Fields[j]})
+			break
+		}
+	}
+	return out
 }
 
 // warnOnce 同一 (方向, 字段) 只记一条：长跑进程按文件刷屏没有信息量。

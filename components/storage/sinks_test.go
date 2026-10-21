@@ -34,3 +34,15 @@ func TestSinkRegistryPutRemoveIdempotent(t *testing.T) {
 		t.Fatalf("after remove want 1 sink, got %d", len(r.Snapshot()))
 	}
 }
+
+func TestParseColumnsAliases(t *testing.T) {
+	cols, err := parseColumns([]any{map[string]any{
+		"name": "R-Xerr", "column": "r_xerr", "aliases": []string{"X-error R"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 1 || len(cols[0].Aliases) != 1 || cols[0].Aliases[0] != "X-error R" {
+		t.Fatalf("aliases not decoded: %+v", cols)
+	}
+}

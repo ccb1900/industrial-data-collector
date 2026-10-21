@@ -357,16 +357,26 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 	if docCfg.Enabled() && skip != 0 {
 		return fmt.Errorf("source-unit %q structured csv.metadata mode cannot be combined with skip_lines", cc.ID)
 	}
+	// 列映射按表头名取值；header=false 时没有表头，声明的每一列都只会写空值。
+	// 这是配置错误而不是运行时失配，装配前直接拒绝。
+	if !header {
+		if _, present := cc.Config["columns"]; present {
+			return fmt.Errorf("source-unit %q: header = false cannot be combined with declared columns (columns map by header name; every declared value would be stored empty)", cc.ID)
+		}
+	}
 
 	stateType := str(cc.Config, "state_type")
 	if stateType == "" {
 		stateType = "memory-state"
 	}
-	if stateType != "memory-state" && stateType != "file-state" {
+	if stateType != "memory-state" && stateType != "file-state" && stateType != "sqlite-state" {
 		return fmt.Errorf("source-unit %q unknown state_type %q", cc.ID, stateType)
 	}
 	if stateType == "file-state" && str(cc.Config, "state_dir") == "" {
 		return fmt.Errorf("source-unit %q file-state requires state_dir", cc.ID)
+	}
+	if stateType == "sqlite-state" && str(cc.Config, "state_dir") == "" {
+		return fmt.Errorf("source-unit %q sqlite-state requires state_dir", cc.ID)
 	}
 
 	storageType := str(cc.Config, "storage")

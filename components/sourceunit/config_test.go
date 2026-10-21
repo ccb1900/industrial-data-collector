@@ -1,6 +1,8 @@
 package sourceunit
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,6 +59,26 @@ func TestNewSourceUnitBackupAndFilesValidation(t *testing.T) {
 	}
 }
 
+// sqlite-state 必须落到 state_dir 下的共享 state.db，而不是按源建库；
+// 也绝不能退化成 memory-state（那会静默丢掉跨重启幂等性）。
+func TestBuildStateSQLite(t *testing.T) {
+	dir := t.TempDir()
+	st, isMemory, err := buildState(map[string]any{
+		"state_type": "sqlite-state",
+		"state_dir":  dir,
+	}, "m01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if isMemory {
+		t.Fatal("sqlite-state must not report itself as memory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state.db")); err != nil {
+		t.Fatalf("shared state.db not created: %v", err)
+	}
+}
+
 // TestBuildStorageFileKey 骨架开关必须在两个 typed 分支都落到 TableConfig：
 // 声明列分支与表头自动映射分支。这里静默丢键的后果是照旧按 legacy 骨架
 // 建表且毫无报错，所以逐分支断言。
@@ -91,5 +113,38 @@ func TestBuildStorageFileKey(t *testing.T) {
 	}
 	if tableCfg == nil || !tableCfg.FileKey || tableCfg.Dialect != "sqlserver" {
 		t.Fatalf("sqlserver FileKey not propagated: %+v", tableCfg)
+	}
+}
+
+// header=false + 声明列在装配层也要拒绝：TOML 校验可能看不到 format 级
+// 覆盖，而这条路径会建出一张恒为 NULL 的表，属于静默丢值。
+func TestBuildStorageRejectsHeaderlessDeclaredColumns(t *testing.T) {
+	_, _, _, err := buildStorage(map[string]any{
+		"storage": "sqlite", "dsn": ":memory:", "table": "t", "header": false,
+		"columns": []any{map[string]any{"name": "a", "column": "a", "type": "text"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "header = false") {
+		t.Fatalf("err = %v, want the header=false rejection", err)
+	}
+	// 没有声明列时 header=false 仍走 generic SQL 存储（整行 JSON，无损）。
+	_, sqlCfg, _, err := buildStorage(map[string]any{
+		"storage": "sqlite", "dsn": ":memory:", "table": "t", "header": false,
+	})
+	if err != nil || sqlCfg == nil {
+		t.Fatalf("header=false without columns must stay valid: cfg=%+v err=%v", sqlCfg, err)
+	}
+}
+
+// aliases 是列级代际别名，必须在 TOML 解码路径上原样带进 TableConfig；
+// 这里静默丢键的后果是现场照旧按"未声明字段"阻断整文件。
+func TestParseTableColumnsAliases(t *testing.T) {
+	cols, err := parseTableColumns([]any{map[string]any{
+		"name": "R-Xerr", "column": "r_xerr", "aliases": []any{"X-error R"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 1 || len(cols[0].Aliases) != 1 || cols[0].Aliases[0] != "X-error R" {
+		t.Fatalf("aliases not decoded: %+v", cols)
 	}
 }

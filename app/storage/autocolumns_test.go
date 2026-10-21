@@ -39,8 +39,8 @@ func TestAutoColumnsDeriveFromHeader(t *testing.T) {
 		Key: key, File: file,
 		Header: []string{"日期", "时间", "Stage", "识别结果 X", "识别结果 X", ""},
 		Records: []model.Record{
-			{RowNumber: 1, Fields: []string{"2026-9-17", "01:02:03", "R", "24", "ignored", "x"}},
-			{RowNumber: 2, Fields: []string{"2026-9-17", "01:02:04", "L", "-2", "ignored", "y"}},
+			{RowNumber: 1, Fields: []string{"2026-9-17", "01:02:03", "R", "24", "ignored", ""}},
+			{RowNumber: 2, Fields: []string{"2026-9-17", "01:02:04", "L", "-2", "ignored", ""}},
 		},
 	}
 	if err := tw.Write(ctx, batch); err != nil {

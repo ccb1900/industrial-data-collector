@@ -339,6 +339,34 @@ func TestValidateRejectsMoreThanOneMetadataComponent(t *testing.T) {
 	}
 }
 
+// state_type 三态：memory-state（缺省）/ file-state / sqlite-state；
+// 后两者都必须给出 state_dir，未知类型必须在启动前拒绝。
+func TestValidateSourceUnitStateType(t *testing.T) {
+	cfg := validConfig()
+	cfg.Components[0].Config["state_type"] = "sqlite-state"
+	cfg.Components[0].Config["state_dir"] = "../state"
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("sqlite-state with state_dir must be accepted: %v", err)
+	}
+	cfg = validConfig()
+	cfg.Components[0].Config["state_type"] = "file-state"
+	cfg.Components[0].Config["state_dir"] = "../state"
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("file-state with state_dir must be accepted: %v", err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"sqlite-state without state_dir": func(m map[string]any) { m["state_type"] = "sqlite-state" },
+		"file-state without state_dir":   func(m map[string]any) { m["state_type"] = "file-state" },
+		"unknown state_type":             func(m map[string]any) { m["state_type"] = "bogus" },
+	} {
+		cfg := validConfig()
+		mutate(cfg.Components[0].Config)
+		if err := Validate(cfg); err == nil {
+			t.Fatalf("%s must be rejected", name)
+		}
+	}
+}
+
 func TestValidateSourceUnitSkipLines(t *testing.T) {
 	cfg := validConfig()
 	cfg.Components[0].Config["skip_lines"] = 3
@@ -354,6 +382,22 @@ func TestValidateSourceUnitSkipLines(t *testing.T) {
 	cfg.Components[0].Config["skip_lines"] = "many"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("non-numeric skip_lines must be rejected")
+	}
+}
+
+// header=false + 声明列：没有表头可取，声明列恒空，配置期必须拒绝；
+// header=false 单独使用（无 columns）仍合法，落到 generic JSON 存储。
+func TestValidateSourceUnitHeaderlessDeclaredColumns(t *testing.T) {
+	cfg := validConfig()
+	cfg.Components[0].Config["header"] = false
+	cfg.Components[0].Config["columns"] = []any{map[string]any{"name": "a", "column": "a", "type": "text"}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "header = false") {
+		t.Fatalf("headerless declared columns must be rejected, got %v", err)
+	}
+	cfg = validConfig()
+	cfg.Components[0].Config["header"] = false
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("header=false without columns must remain valid: %v", err)
 	}
 }
 

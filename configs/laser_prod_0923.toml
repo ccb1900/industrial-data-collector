@@ -22,6 +22,7 @@ bundles = ["collector-core", "collector-console"]
 
 [defaults]
 state_dir = "../state"
+state_type = "sqlite-state"
 date_policy = "yesterday"
 catchup_days = 31
 batch_size = 1000
@@ -705,11 +706,11 @@ columns = [
   { name = "时间", column = "biz_time", type = "text" },
   { name = "stageNo.", column = "stage_no", type = "text" },
   { name = "maskNo.", column = "mask_no", type = "text" },
-  { name = "R-Xerr", column = "r_xerr", type = "text" },
-  { name = "R-Yerr", column = "r_yerr", type = "text" },
+  { name = "R-Xerr", column = "r_xerr", type = "text", aliases = ["X-error R"] },
+  { name = "R-Yerr", column = "r_yerr", type = "text", aliases = ["Y-error R"] },
   { name = "R-circulity", column = "r_circularity", type = "text" },
-  { name = "L-Xerr", column = "l_xerr", type = "text" },
-  { name = "L-Yerr", column = "l_yerr", type = "text" },
+  { name = "L-Xerr", column = "l_xerr", type = "text", aliases = ["X-error L"] },
+  { name = "L-Yerr", column = "l_yerr", type = "text", aliases = ["Y-error L"] },
   { name = "L-circulity", column = "l_circularity", type = "text" },
   { name = "light A-R", column = "light_a_r", type = "text" },
   { name = "light B-R", column = "light_b_r", type = "text" },

@@ -603,6 +603,23 @@ func buildState(cfg map[string]any, sourceID string) (model.CollectionState, boo
 			return nil, false, errs.Sourcef(errs.ErrInvalidConfig, "state file: %v", err)
 		}
 		return fs, false, nil
+	case "sqlite-state":
+		dir := configutil.OptionalString(cc, "state_dir", "./state")
+		if dir == "" {
+			return nil, false, errs.Sourcef(errs.ErrInvalidConfig, "sqlite-state state_dir must not be empty")
+		}
+		dbPath := filepath.Join(dir, "state.db")
+		if !state.PathAllowed(dbPath) {
+			return nil, false, errs.Sourcef(errs.ErrInvalidConfig, "state database path is invalid")
+		}
+		// Old file-state ledgers are imported on first use, so switching a
+		// deployed source to SQLite keeps its idempotency history.
+		legacy := filepath.Join(dir, sourceID, "collection-state.json")
+		ss, err := state.OpenSQLite(dbPath, sourceID, legacy)
+		if err != nil {
+			return nil, false, errs.Sourcef(errs.ErrInvalidConfig, "state sqlite: %v", err)
+		}
+		return ss, false, nil
 	default:
 		return nil, false, errs.Sourcef(errs.ErrInvalidConfig, "unknown state_type %q", kind)
 	}
@@ -668,6 +685,12 @@ func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig,
 		// Typed relational mode: declared columns become real database
 		// columns and the CSV header lands in the file registry table.
 		if rawColumns, present := cfg["columns"]; present {
+			// 没有表头就没有可匹配的列名：声明列会整列为空，属于配置错误，
+			// 在装配期拒绝，不等到写库时才表现为"全 NULL"。
+			if !header {
+				return nil, nil, nil, errs.Sourcef(errs.ErrInvalidConfig,
+					"header = false cannot be combined with declared columns (columns map by header name; every declared value would be stored empty)")
+			}
 			columns, cerr := parseTableColumns(rawColumns)
 			if cerr != nil {
 				return nil, nil, nil, cerr
@@ -726,6 +749,7 @@ func parseTableColumns(raw any) ([]storage.ColumnMapping, error) {
 			Required:   configutil.OptionalBool(cc, "required", false),
 			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
 			Optional:   configutil.OptionalBool(cc, "optional", false),
+			Aliases:    configutil.OptionalStrings(cc, "aliases"),
 		})
 	}
 	return out, nil

@@ -668,3 +668,58 @@ func TestRealMSSQLConcurrentReplay(t *testing.T) {
 		t.Errorf("restored row 2 count = %d, want %d", got, files)
 	}
 }
+
+// 1119 源懒连接时会在首次写时并发 ensureSchema。SQL Server 没有
+// CREATE ... IF NOT EXISTS，查目录与 CREATE 之间不是原子的：后到的会话会
+// 吃 2714/2705/1913。这里用 24 个并发初始化复现该竞态，要求全部成功。
+func TestRealMSSQLConcurrentSchemaInit(t *testing.T) {
+	dsn := mssqlDSN(t)
+	suffix := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
+	table := "zrt_c" + suffix
+	fileTable := "zrt_cf" + suffix
+	node := 11
+	cfg := TableConfig{
+		Driver: "sqlserver", DSN: dsn, Dialect: "sqlserver",
+		Table: table, FileTable: fileTable, FileKey: true, FileKeyNode: &node,
+		Columns: []ColumnMapping{
+			{From: SourceCSV, Name: "temperature", Column: "temperature", Type: "float"},
+			{From: SourceCSV, Name: "tag", Column: "tag", Type: "text"},
+		},
+	}
+	t.Cleanup(func() {
+		db, err := sql.Open("sqlserver", dsn)
+		if err != nil {
+			return
+		}
+		defer db.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, tbl := range []string{table, fileTable} {
+			if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteIdent("sqlserver", tbl)); err != nil {
+				t.Logf("cleanup drop %s: %v", tbl, err)
+			}
+		}
+	})
+
+	const workers = 24
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s, err := OpenTable(context.Background(), cfg)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			s.Close()
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent schema init %d: %v", i, err)
+		}
+	}
+}

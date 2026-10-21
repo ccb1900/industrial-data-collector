@@ -184,6 +184,7 @@ func parseColumns(raw any) ([]storage.ColumnMapping, error) {
 			Required:   configutil.OptionalBool(cc, "required", false),
 			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
 			Optional:   configutil.OptionalBool(cc, "optional", false),
+			Aliases:    configutil.OptionalStrings(cc, "aliases"),
 		}
 		out = append(out, col)
 	}

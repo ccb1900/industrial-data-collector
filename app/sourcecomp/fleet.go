@@ -21,6 +21,7 @@ import (
 // 覆盖点：file_stable_window_seconds）。
 type FleetDefaults struct {
 	StateDir            string
+	StateType           string
 	DatePolicy          string
 	SpecificDate        string
 	CatchupDays         int
@@ -186,6 +187,13 @@ type ScheduleDef struct {
 // expandFleet 展开：机台 × 其组的格式 → 源定义。引用完整性在此强校验
 // （缺格式/缺组/缺 sink/坏 since 任一 → 响亮失败，绝不静默丢采集）。
 func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups []FormatGroupDef, machines []MachineDef, schedules []ScheduleDef) ([]*ResolvedSource, []extconfig.ComponentConfig, error) {
+	stateType := d.StateType
+	if stateType == "" {
+		stateType = "file-state"
+	}
+	if stateType != "file-state" && stateType != "sqlite-state" {
+		return nil, nil, fmt.Errorf("defaults: state_type must be file-state or sqlite-state, got %q", stateType)
+	}
 	sinkByName := map[string]SinkDef{}
 	for _, sk := range sinks {
 		if sk.Name == "" {
@@ -276,7 +284,7 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 				"catchup_days":               d.CatchupDays,
 				"file_stable_window_seconds": d.StableWindowSeconds,
 				"state_dir":                  d.StateDir,
-				"state_type":                 "file-state",
+				"state_type":                 stateType,
 				"header":                     true,
 				"storage":                    sinkByName[f.Sink].Driver,
 				"dsn":                        sinkByName[f.Sink].DSN,
@@ -472,6 +480,7 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 		return d, fmt.Errorf("defaults must be a table ([defaults])")
 	}
 	d.StateDir, _ = m["state_dir"].(string)
+	d.StateType, _ = m["state_type"].(string)
 	d.DatePolicy, _ = m["date_policy"].(string)
 	if v, ok := m["specific_date"].(string); ok {
 		d.SpecificDate = v

@@ -217,7 +217,38 @@ func TestExpandFleetMachineSchedule(t *testing.T) {
 	}
 }
 
-// 并发/备份横切默认：非默认值才下发进源配置（默认形态逐字节不变）。
+// state_type 是 [defaults] 级横切开关：缺省维持 file-state（既有部署不变），
+// sqlite-state 原样下发到每个源，未知值在展开期响亮失败。
+func TestExpandFleetStateType(t *testing.T) {
+	sinks := []SinkDef{{Name: "db", Driver: "sqlite", DSN: ":memory:"}}
+	formats := []FormatDef{{Name: "f", Match: "x_YYMMDD.csv", Table: "t", Sink: "db"}}
+	groups := []FormatGroupDef{{Name: "g", Formats: []string{"f"}}}
+	machines := []MachineDef{{No: "m1", Path: `\\h\YYYYMM`, Group: "g"}}
+	expand := func(stateType string) ([]*ResolvedSource, error) {
+		d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", StateType: stateType}
+		out, _, err := expandFleet(d, sinks, formats, groups, machines, nil)
+		return out, err
+	}
+	out, err := expand("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["state_type"]; got != "file-state" {
+		t.Fatalf("default state_type = %#v, want file-state", got)
+	}
+	out, err = expand("sqlite-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["state_type"]; got != "sqlite-state" {
+		t.Fatalf("state_type = %#v, want sqlite-state", got)
+	}
+	if _, err := expand("bogus-state"); err == nil || !strings.Contains(err.Error(), "state_type") {
+		t.Fatalf("unknown state_type: %v", err)
+	}
+}
+
+// TestExpandFleetConcurrencyAndBackupDefaults 并发/备份横切默认：非默认值才下发进源配置（默认形态逐字节不变）。
 func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 	d := FleetDefaults{StateDir: "../state", DatePolicy: "yesterday", BatchSize: 1000}
 	sinks := []SinkDef{{Name: "db", Driver: "oracle", DSN: "oracle://x"}}

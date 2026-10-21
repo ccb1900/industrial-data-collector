@@ -43,6 +43,7 @@ type ParseResult struct {
 //
 //	[defaults]
 //	state_dir = "../state"
+//	state_type = "sqlite-state"   # 或 file-state（默认）
 //
 //	[[sinks]]
 //	name = "plant-oracle"

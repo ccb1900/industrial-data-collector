@@ -62,6 +62,34 @@ func OptionalIntPtr(cc config.ComponentConfig, key string) *int {
 	return &n
 }
 
+// OptionalStrings 读取字符串数组；缺省返回 nil。TOML 数组解码后可能
+// 是 []string 或 []any，两种都收（与 columns 列表的解码形态一致）。
+func OptionalStrings(cc config.ComponentConfig, key string) []string {
+	v, ok := cc.Config[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch list := v.(type) {
+	case []string:
+		return list
+	case []any:
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			if item == nil {
+				continue
+			}
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	case string:
+		if list == "" {
+			return nil
+		}
+		return []string{list}
+	}
+	return nil
+}
+
 func OptionalBool(cc config.ComponentConfig, key string, def bool) bool {
 	v, ok := cc.Config[key]
 	if !ok {

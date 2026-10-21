@@ -76,7 +76,7 @@ func TestQueryRowsCrossBatch(t *testing.T) {
 		for i, n := range nums {
 			records = append(records, model.Record{RowNumber: int64(i + 1), Fields: []string{fmt.Sprintf("%d.%d", n, n)}})
 		}
-		if err := s.Write(ctx, model.Batch{Key: key, File: file, Records: records}); err != nil {
+		if err := s.Write(ctx, model.Batch{Key: key, File: file, Header: []string{"temperature"}, Records: records}); err != nil {
 			t.Fatalf("write %s/%s: %v", source, date, err)
 		}
 	}

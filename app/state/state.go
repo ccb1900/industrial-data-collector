@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gocordis-csv-collector/app/model"
@@ -547,6 +548,9 @@ func NewFile(path string) (*FileState, error) {
 		return nil, errors.New("state file path is empty")
 	}
 	fs := &FileState{MemoryState: *NewMemory(), path: path}
+	// 只读属性会让 Windows 的 MoveFileEx 无法覆盖目标（Access is denied），
+	// 且一次被设上就永远写不进去——加载时先自愈。
+	clearReadOnly(path)
 	if data, err := os.ReadFile(path); err == nil {
 		var snap memorySnapshot
 		if err := json.Unmarshal(data, &snap); err != nil {
@@ -567,6 +571,17 @@ func NewFile(path string) (*FileState, error) {
 	return fs, nil
 }
 
+// clearReadOnly 清除文件只读位：Windows 的 MoveFileEx 无法覆盖只读目标
+// （ERROR_ACCESS_DENIED）。Go 在 Windows 上把 os.Chmod 的写位映射到
+// FILE_ATTRIBUTE_READONLY。
+func clearReadOnly(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o200 == 0 {
+		_ = os.Chmod(path, 0o666)
+	}
+}
+
+var tmpSeq atomic.Uint64
+
 func (s *FileState) save() error {
 	data, err := json.Marshal(snapshot(&s.MemoryState))
 	if err != nil {
@@ -575,11 +590,28 @@ func (s *FileState) save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
+	// 固定 ".tmp" 会让热重载重叠或双开的两个写者互踩，每次用唯一名。
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", s.path, os.Getpid(), tmpSeq.Add(1))
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	clearReadOnly(s.path)
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		lastErr = os.Rename(tmp, s.path)
+		if lastErr == nil {
+			return nil
+		}
+		if !renameRetryable(lastErr) {
+			break
+		}
+		// 杀软/备份代理可能在新文件写入后短暂持有句柄，退避后再试。
+		clearReadOnly(s.path)
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+	}
+	_ = os.Remove(tmp)
+	return lastErr
 }
 
 func (s *FileState) Begin(ctx context.Context, key model.CollectionKey, lease time.Duration) (bool, error) {

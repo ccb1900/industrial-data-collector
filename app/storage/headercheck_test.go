@@ -185,14 +185,68 @@ func TestHeaderCheckMatchesRawHeaderText(t *testing.T) {
 	}
 }
 
-// 空表头字段（现场日志常见）不参与比对；无表头的解析形态整体跳过校验。
-func TestHeaderCheckSkipsBlankAndHeaderless(t *testing.T) {
+// 无名位置上的值不再静默丢弃：空白表头带值、整批无表头都判失败；
+// 空白表头但值为空不涉及丢值，照常放行。
+func TestHeaderCheckBlocksUnnamedValues(t *testing.T) {
 	tw := hcOpen(t, TableConfig{Columns: []ColumnMapping{{Name: "a", Column: "ca", Type: "text"}}})
-	if err := tw.Write(context.Background(), hcBatch([]string{"a", "  "}, []string{"1", "2"})); err != nil {
-		t.Fatalf("blank header field must be skipped: %v", err)
+	err := tw.Write(context.Background(), hcBatch([]string{"a", "  "}, []string{"1", "2"}))
+	if err == nil || !strings.Contains(err.Error(), "under unnamed fields") || !strings.Contains(err.Error(), "blank header") {
+		t.Fatalf("blank header with a value must block and say why, got %v", err)
 	}
-	if err := tw.Write(context.Background(), hcBatch(nil, []string{"1"})); err != nil {
-		t.Fatalf("headerless batch must skip the check: %v", err)
+	if n := hcRowCount(t, tw); n != 0 {
+		t.Fatalf("blocked file must land nothing, rows = %d", n)
+	}
+	if err := tw.Write(context.Background(), hcBatch([]string{"a", "  "}, []string{"1", " "})); err != nil {
+		t.Fatalf("blank header with an empty value must pass: %v", err)
+	}
+	if err := tw.Write(context.Background(), hcBatch(nil, []string{"1"})); err == nil || !strings.Contains(err.Error(), "no header") {
+		t.Fatalf("headerless batch with a value must block, got %v", err)
+	}
+}
+
+// ragged 行超出表头长度的字段同样取不到；extra_rows 已保留整行原文，只告警。
+func TestHeaderCheckBlocksFieldsBeyondHeader(t *testing.T) {
+	tw := hcOpen(t, TableConfig{Columns: []ColumnMapping{{Name: "a", Column: "ca", Type: "text"}}})
+	err := tw.Write(context.Background(), hcBatch([]string{"a"}, []string{"1", "orphan"}))
+	if err == nil || !strings.Contains(err.Error(), "beyond header") {
+		t.Fatalf("surplus field with a value must block, got %v", err)
+	}
+	if err := tw.Write(context.Background(), hcBatch([]string{"a"}, []string{"1", "  "})); err != nil {
+		t.Fatalf("empty surplus field must pass: %v", err)
+	}
+	x := hcOpen(t, TableConfig{ExtraRows: true, Columns: []ColumnMapping{{Name: "a", Column: "ca", Type: "text"}}})
+	if err := x.Write(context.Background(), hcBatch([]string{"a"}, []string{"1", "orphan"})); err != nil {
+		t.Fatalf("extra_rows preserves the whole raw row, must not block: %v", err)
+	}
+	var raw string
+	if err := x.db.QueryRow(`SELECT row_values FROM hc`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "orphan") {
+		t.Fatalf("row_values must preserve the unnamed value, got %s", raw)
+	}
+}
+
+// auto_columns 只能给有表头名的字段建列，救不了无名位置上的值。
+func TestHeaderCheckAutoColumnsCannotNameBlankHeader(t *testing.T) {
+	tw := hcOpen(t, TableConfig{AutoColumns: true, Columns: []ColumnMapping{}})
+	err := tw.Write(context.Background(), hcBatch([]string{"a", "  "}, []string{"1", "orphan"}))
+	if err == nil || !strings.Contains(err.Error(), "blank header") {
+		t.Fatalf("auto_columns must not exempt unnamed values, got %v", err)
+	}
+}
+
+func TestHeaderCheckUnnamedWarnMode(t *testing.T) {
+	logs := captureLogs(t)
+	tw := hcOpen(t, TableConfig{HeaderCheck: "warn", Columns: []ColumnMapping{{Name: "a", Column: "ca", Type: "text"}}})
+	if err := tw.Write(context.Background(), hcBatch([]string{"a", "  "}, []string{"1", "orphan"})); err != nil {
+		t.Fatalf("warn mode must not block: %v", err)
+	}
+	if n := hcRowCount(t, tw); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+	if !strings.Contains(logs.String(), "unnamed header position") {
+		t.Fatalf("expected an unnamed-value warning: %s", logs.String())
 	}
 }
 
@@ -217,5 +271,111 @@ func TestHeaderCheckConfigValidation(t *testing.T) {
 	}
 	if def.HeaderCheck != "strict" {
 		t.Fatalf("unset header_check must default to strict, got %q", def.HeaderCheck)
+	}
+}
+
+// 代际改名：表头用别名时既不算多余字段，也不报缺列，值落到同一个 Column。
+func TestHeaderCheckAliasCoversBothGenerations(t *testing.T) {
+	logs := captureLogs(t)
+	tw := hcOpen(t, TableConfig{Columns: []ColumnMapping{
+		{Name: "R-Xerr", Column: "r_xerr", Type: "text", Aliases: []string{"X-error R"}},
+	}})
+	// 老机台表头（name）与新机台表头（alias）都必须写进 r_xerr。
+	oldGen := hcBatch([]string{"R-Xerr"}, []string{"old"})
+	if err := tw.Write(context.Background(), oldGen); err != nil {
+		t.Fatalf("declared header must pass: %v", err)
+	}
+	newGen := hcBatch([]string{"X-error R"}, []string{"new"})
+	newGen.Records[0].RowNumber = 2
+	if err := tw.Write(context.Background(), newGen); err != nil {
+		t.Fatalf("alias header must pass the check: %v", err)
+	}
+	rows, err := tw.db.Query(`SELECT r_xerr FROM hc ORDER BY row_number`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, v)
+	}
+	if len(got) != 2 || got[0] != "old" || got[1] != "new" {
+		t.Fatalf("values = %v, want [old new]", got)
+	}
+	if strings.Contains(logs.String(), "no matching header") {
+		t.Fatalf("alias must silence the missing-column warning: %s", logs.String())
+	}
+}
+
+// 别名与 name 同时带值：mapRow 只取 name，别名的值会被静默丢弃，默认阻断。
+func TestHeaderCheckAliasConflictBlocks(t *testing.T) {
+	cols := []ColumnMapping{{Name: "R-Xerr", Column: "r_xerr", Type: "text", Aliases: []string{"X-error R"}}}
+	tw := hcOpen(t, TableConfig{Columns: cols})
+	err := tw.Write(context.Background(), hcBatch([]string{"R-Xerr", "X-error R"}, []string{"old", "new"}))
+	if err == nil || !strings.Contains(err.Error(), "also carries data") {
+		t.Fatalf("name+alias both with data must block, got %v", err)
+	}
+	if n := hcRowCount(t, tw); n != 0 {
+		t.Fatalf("blocked file must land nothing, rows = %d", n)
+	}
+	// 别名列为空不算冲突：没有值被丢弃。
+	if err := tw.Write(context.Background(), hcBatch([]string{"R-Xerr", "X-error R"}, []string{"old", " "})); err != nil {
+		t.Fatalf("empty alias value must pass: %v", err)
+	}
+	// 两个别名同时带值同样只取第一个，后面的值会丢。
+	two := hcOpen(t, TableConfig{Columns: []ColumnMapping{
+		{Name: "v", Column: "cv", Type: "text", Aliases: []string{"v1", "v2"}},
+	}})
+	if err := two.Write(context.Background(), hcBatch([]string{"v1", "v2"}, []string{"one", "two"})); err == nil {
+		t.Fatal("two aliases with data: the second value would be dropped, must block")
+	}
+	// warn 模式与 extra_rows（整行原文在 row_values）只告警。
+	warn := hcOpen(t, TableConfig{HeaderCheck: "warn", Columns: cols})
+	if err := warn.Write(context.Background(), hcBatch([]string{"R-Xerr", "X-error R"}, []string{"old", "new"})); err != nil {
+		t.Fatalf("warn mode must not block: %v", err)
+	}
+	extra := hcOpen(t, TableConfig{ExtraRows: true, Columns: cols})
+	if err := extra.Write(context.Background(), hcBatch([]string{"R-Xerr", "X-error R"}, []string{"old", "new"})); err != nil {
+		t.Fatalf("extra_rows preserves the raw row, must not block: %v", err)
+	}
+}
+
+// 别名与 name 同权参与校验，配置里的歧义必须在 Validate 阶段拒掉。
+func TestColumnAliasValidation(t *testing.T) {
+	base := func(cols ...ColumnMapping) TableConfig {
+		return TableConfig{Driver: "sqlite", DSN: ":memory:", Dialect: "sqlite", Table: "hc", Columns: cols}
+	}
+	for name, tc := range map[string]struct {
+		cols []ColumnMapping
+		want string
+	}{
+		"empty alias": {
+			[]ColumnMapping{{Name: "a", Column: "ca", Type: "text", Aliases: []string{""}}},
+			"alias must not be empty",
+		},
+		"alias equals name": {
+			[]ColumnMapping{{Name: "a", Column: "ca", Type: "text", Aliases: []string{"a"}}},
+			"duplicates its own name",
+		},
+		"alias shared by two columns": {
+			[]ColumnMapping{
+				{Name: "a", Column: "ca", Type: "text", Aliases: []string{"x"}},
+				{Name: "b", Column: "cb", Type: "text", Aliases: []string{"x"}},
+			},
+			"declared twice",
+		},
+		"metadata alias": {
+			[]ColumnMapping{{From: SourceMetadata, Name: "a", Column: "ca", Type: "text", Aliases: []string{"x"}}},
+			"aliases apply to csv sources only",
+		},
+	} {
+		cfg := base(tc.cols...)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want mention of %q", name, err, tc.want)
+		}
 	}
 }

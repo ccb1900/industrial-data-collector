@@ -193,7 +193,18 @@ Parser settings are declared inline on the format / source unit
 A typed table sink maps CSV header fields to real columns through `columns`
 entry tables: `from` (`csv` | `metadata`), `name` (the header field, matched
 verbatim), `column`, `type`, `required`, `occurrence` (which appearance of a
-repeated header name), and `optional`.
+repeated header name), `optional`, and `aliases` (alternate header spellings
+for a renamed field; `csv` sources only).
+
+`aliases` covers header generations where a machine upgrade renames a field
+(for example m377's `R-Xerr` became `X-error R` on an upgraded machine). The
+value is looked up under `name` first and then each alias in declaration
+order, and always lands in the same `column`. The header check treats an alias
+as declared, so the field is neither reported as extra nor as missing.
+If the name and an alias both carry data in the same file, the lookup would
+silently drop the alias value, so the header check treats that as data loss
+too (blocked in `strict`, warned otherwise). Aliases participate in the
+duplicate-source check, so two columns cannot claim the same header spelling.
 
 `header_check` (source unit / format level, default `strict`) decides what
 happens when the decoded header and the declaration disagree. The two
@@ -205,7 +216,14 @@ directions are not symmetric:
   the declaration is fixed. `header_check = "warn"` logs instead of blocking;
   `extra_rows = true` never blocks (the raw row is already captured in
   `row_values`), and neither does `auto_columns = true`, whose contract is
-  header-driven column growth.
+  header-driven column growth (it does not cover unnamed positions).
+- A non-empty value at a position with no usable header name — a blank header
+  cell, a field beyond the header length, or every field of a headerless batch
+  — cannot be mapped by any column, including `auto_columns`. `strict` blocks
+  it; `extra_rows = true` preserves the raw fields in `row_values`, so it only
+  warns. `header = false` combined with declared `columns` is rejected at
+  config validation: without a header there is no name to match and every
+  declared value would be stored empty.
 - A declared column the header does not carry stores an empty value and warns
   once per `(table, column)`; `optional = true` silences even the warning
   (used for per-generation format variants declared as a union). `optional`

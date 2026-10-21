@@ -46,7 +46,7 @@ func TestSharedPoolRefcountLifecycle(t *testing.T) {
 	}
 	key := model.CollectionKey{SourceID: "s", Date: date}
 	file := model.FileIdentity{SourceID: "s", Path: "/x.txt", Name: "x.txt", Hash: "h1"}
-	batch := model.Batch{Key: key, File: file, Records: []model.Record{{RowNumber: 1, Fields: []string{"x"}}}}
+	batch := model.Batch{Key: key, File: file, Header: []string{"v"}, Records: []model.Record{{RowNumber: 1, Fields: []string{"x"}}}}
 	if err := b.Write(ctx, batch); err != nil {
 		t.Fatal(err)
 	}
