@@ -44,6 +44,24 @@ func TestBuildMultiRowStatements(t *testing.T) {
 	}
 }
 
+// 重放直插：只插缺失行，参数行优先连续编号，且绝不生成 MERGE 探测。
+func TestBuildInsertMissingStatement(t *testing.T) {
+	cols := []string{"file_key", "row_number", `[temperature]`, `[tag]`}
+	stmt := buildInsertMissing("t", cols, "file_key, row_number", 2)
+	for _, want := range []string{
+		"INSERT INTO [t] (file_key, row_number, [temperature], [tag])",
+		"FROM (VALUES (@p1, @p2, @p3, @p4), (@p5, @p6, @p7, @p8)) src (c0, c1, c2, c3)",
+		"WHERE NOT EXISTS (SELECT 1 FROM [t] dst WHERE dst.file_key = src.c0 AND dst.row_number = src.c1)",
+	} {
+		if !strings.Contains(stmt, want) {
+			t.Fatalf("insert-missing missing %q: %s", want, stmt)
+		}
+	}
+	if strings.Contains(stmt, "MERGE") {
+		t.Fatalf("insert-missing must not probe with MERGE: %s", stmt)
+	}
+}
+
 // 行为验证：跨 chunk 边界的大批次全部落库，重放幂等（ON CONFLICT 兜底）。
 func TestMultiRowWriteChunksAndReplay(t *testing.T) {
 	ctx := context.Background()

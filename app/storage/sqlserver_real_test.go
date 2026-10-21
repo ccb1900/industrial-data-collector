@@ -452,7 +452,7 @@ func TestRealMSSQLWideFormatBatch(t *testing.T) {
 }
 
 // CSV 空列在批量装载下必须仍是 NULL：KeepNulls 显式声明，避免目标列将来
-// 带默认值时被静默替换。重放走 MERGE，行数与空值都不变。
+// 带默认值时被静默替换。重放走非探测直插，行数与空值都不变。
 func TestRealMSSQLBulkNulls(t *testing.T) {
 	f := newMSSQLFix(t)
 	cfg := f.cfg(true)
@@ -490,7 +490,7 @@ func TestRealMSSQLBulkNulls(t *testing.T) {
 }
 
 // 批量装载中途被服务端拒绝时，事务必须整体回滚：数据表零残留，文件不
-// 会被调用方标记完成；修正后重试（走 MERGE）必须补齐全量且不重复。
+// 会被调用方标记完成；修正后重试（走非探测直插）必须补齐全量且不重复。
 // 这是"丢数据不能忍"的硬断言：任何半截写入都算失败。
 func TestRealMSSQLBulkAtomicity(t *testing.T) {
 	f := newMSSQLFix(t)
@@ -546,5 +546,125 @@ func TestRealMSSQLBulkAtomicity(t *testing.T) {
 	}
 	if got := queryInt(t, s, countOf(f.table)); got != rows {
 		t.Fatalf("replay rows = %d, want %d", got, rows)
+	}
+}
+
+// 重放不再用 MERGE 探测：已存在行保留原值，缺失行补齐，重复重放仍幂等。
+func TestRealMSSQLReplayInsertMissing(t *testing.T) {
+	f := newMSSQLFix(t)
+	s := openReal(t, f.cfg(true))
+	ctx := context.Background()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	const rows = 60
+	recs := make([]model.Record, 0, rows)
+	for i := 0; i < rows; i++ {
+		recs = append(recs, model.Record{
+			RowNumber: int64(i + 1),
+			Fields:    []string{fmt.Sprintf("%d.5", i+1), fmt.Sprintf("t%d", i+1)},
+		})
+	}
+	batch := model.Batch{
+		Key:      model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+		File:     model.FileIdentity{SourceID: model.SourceID("gauge"), Path: "/logs/replay.csv", Name: "replay.csv", Hash: "replay.csv"},
+		Header:   []string{"temperature", "tag"},
+		Sequence: 1,
+		Records:  recs,
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("fresh write: %v", err)
+	}
+	tbl := quoteIdent("sqlserver", f.table)
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM "+tbl+" WHERE [row_number] BETWEEN 21 AND 40"); err != nil {
+		t.Fatalf("delete partial rows: %v", err)
+	}
+	// 与 MERGE 的 NOT MATCHED 语义一致：已存在的行不能被重放覆盖。
+	if _, err := s.db.ExecContext(ctx, "UPDATE "+tbl+" SET [temperature] = 99 WHERE [row_number] = 1"); err != nil {
+		t.Fatalf("mark existing row: %v", err)
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != rows {
+		t.Fatalf("rows after replay = %d, want %d", got, rows)
+	}
+	if got := queryInt(t, s, "SELECT COUNT(*) FROM "+tbl+" WHERE [row_number] = 21 AND [tag] = N't21'"); got != 1 {
+		t.Errorf("missing row not restored: %d", got)
+	}
+	var temp float64
+	if err := s.db.QueryRowContext(ctx, "SELECT [temperature] FROM "+tbl+" WHERE [row_number] = 1").Scan(&temp); err != nil {
+		t.Fatal(err)
+	}
+	if temp != 99 {
+		t.Errorf("existing row overwritten: temperature = %v, want 99", temp)
+	}
+	if err := s.Write(ctx, batch); err != nil {
+		t.Fatalf("second replay: %v", err)
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != rows {
+		t.Fatalf("rows after second replay = %d, want %d", got, rows)
+	}
+}
+
+// 16 路并发重放（每文件一半行缺失）不得死锁或报错，最终每文件全量、无重复。
+// 这是重放路径从 MERGE 改直插后的并发回归：MERGE 的探测 U 锁持有到提交，
+// 该形状在 1119 源基准里制造过 11 次 1205。
+func TestRealMSSQLConcurrentReplay(t *testing.T) {
+	f := newMSSQLFix(t)
+	s := openReal(t, f.cfg(true))
+	ctx := context.Background()
+	var d model.CollectionDate
+	if err := d.UnmarshalText([]byte("2026-09-09")); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		files = 16
+		rows  = 200
+	)
+	batches := make([]model.Batch, files)
+	for i := range batches {
+		recs := make([]model.Record, 0, rows)
+		for r := 1; r <= rows; r++ {
+			recs = append(recs, model.Record{
+				RowNumber: int64(r),
+				Fields:    []string{fmt.Sprintf("%d.5", r), fmt.Sprintf("f%d-r%d", i, r)},
+			})
+		}
+		batches[i] = model.Batch{
+			Key:      model.CollectionKey{SourceID: model.SourceID("gauge"), Date: d},
+			File:     model.FileIdentity{SourceID: model.SourceID("gauge"), Path: fmt.Sprintf("/logs/concurrent-%d.csv", i), Name: fmt.Sprintf("concurrent-%d.csv", i), Hash: fmt.Sprintf("concurrent-%d.csv", i)},
+			Header:   []string{"temperature", "tag"},
+			Sequence: 1,
+			Records:  recs,
+		}
+		if err := s.Write(ctx, batches[i]); err != nil {
+			t.Fatalf("fresh write %d: %v", i, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM "+quoteIdent("sqlserver", f.table)+" WHERE [row_number] % 2 = 0"); err != nil {
+		t.Fatalf("delete even rows: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, files)
+	for i := range batches {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = s.Write(ctx, batches[i])
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent replay %d: %v", i, err)
+		}
+	}
+	if got := queryInt(t, s, countOf(f.table)); got != files*rows {
+		t.Fatalf("rows = %d, want %d", got, files*rows)
+	}
+	if got := queryInt(t, s, "SELECT COUNT(*) FROM "+quoteIdent("sqlserver", f.table)+" WHERE [row_number] = 2"); got != files {
+		t.Errorf("restored row 2 count = %d, want %d", got, files)
 	}
 }

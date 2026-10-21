@@ -577,5 +577,22 @@ func TestFleetPerf1119(t *testing.T) {
 	if beforeIdx != nil && afterIdx != nil {
 		perfIndexDelta(beforeIdx, afterIdx)
 	}
+	if os.Getenv("REAL_FLEET_REPLAY") == "1" {
+		// 重放相位：每 5 行删 1 行，16 路并发重放同一批文件。旧 MERGE 会在
+		// 探测行上持 U 锁到提交，多文件同表时成环；直插路径不应出现 1205。
+		for _, tbl := range dataTables {
+			if _, err := db.ExecContext(ctx, "DELETE FROM ["+tbl+"] WHERE [row_number] % 5 = 0"); err != nil {
+				t.Fatalf("delete replay rows %s: %v", tbl, err)
+			}
+		}
+		replayBefore, _ := perfWaitStats(ctx, db)
+		replay := perfRunFleet(ctx, sources, stores, "measure", rowsPerFile, batchSize, concurrency)
+		perfLogRun(t, "replay missing rows", replay, rowsPerFile, concurrency)
+		if replayBefore != nil {
+			if replayAfter, err := perfWaitStats(ctx, db); err == nil {
+				perfWaitDelta(replayBefore, replayAfter)
+			}
+		}
+	}
 	perfVerify(t, ctx, db, registry, sources, int64(rowsPerFile))
 }

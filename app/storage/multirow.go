@@ -90,6 +90,23 @@ func buildMultiRow(dialect, table string, cols []string, conflict string, n int)
 	}
 }
 
+// buildInsertMissing 构造 SQL Server 的"只插缺失行"语句，用于重放/已登记
+// 文件的非首写。与 MERGE 的区别在锁：NOT EXISTS 的探测在 READ COMMITTED
+// 下只取语句级 S 锁，语句结束即释放；MERGE 的探测 U 锁要持有到事务提交，
+// 多文件并发重放时会形成锁环（现场 1119 源基线 11 次 1205 的根因）。
+// 并发重复处理同一文件仍可能撞唯一键，由调用方回退 MERGE 重放。
+func buildInsertMissing(table string, cols []string, conflict string, n int) string {
+	q := quoteIdent("sqlserver", table)
+	aliases := make([]string, 0, len(cols))
+	for i := range cols {
+		aliases = append(aliases, srcAlias(i))
+	}
+	return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM (VALUES %s) src (%s) WHERE NOT EXISTS (SELECT 1 FROM %s dst WHERE %s);",
+		q, strings.Join(cols, ", "), strings.Join(srcRefs(len(cols)), ", "),
+		strings.Join(valueRows("sqlserver", cols, n), ", "),
+		strings.Join(aliases, ", "), q, strings.Join(onClause(cols, conflict), " AND "))
+}
+
 func valueRows(dialect string, cols []string, n int) []string {
 	rows := make([]string, 0, n)
 	for i := 0; i < n; i++ {

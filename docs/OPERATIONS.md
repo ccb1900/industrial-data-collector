@@ -481,24 +481,32 @@ fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计�
 到提交：1119 源整轮出现 11 次死锁（1205）、单轮内有 1.1 万行未落库（基准只跑
 一遍、不重试；生产里死锁归为 transient，文件不标记完成，下一轮会重采，见下节
 「写入失败与数据完整性」）。`LCK_M_U` 累计等待 129.7s、数据表行锁等待 87.6s。
-因此 **新分配的雪花键首写不再做逐行冲突探测**：
+因此 SQL Server 的首写与重放都不再做 MERGE 探测：
 
 | 阶段 | 协议 | 1119 文件整轮 | 吞吐 | P50 / P95 / P99 | 失败 |
 |---|---|---|---|---|---|
 | 基线 | 每 chunk 多行 `MERGE` | 1m44.6s | 10.7 files/s | 1.258 / 2.999 / 5.684s | 11 次死锁 |
 | 直插 | 每 chunk 多行 `INSERT` | 1m47.1s | 10.4 files/s | 1.237 / 3.338 / 5.362s | 0（U 锁消失，CPU/日志成瓶颈） |
 | **批量装载** | **TDS `INSERT BULK`（CopyIn）** | **9.7s** | **115.4 files/s、11.5 万行/s** | **0.133 / 0.197 / 0.237s** | **0** |
+| 重放直插 | `INSERT ... WHERE NOT EXISTS` | 1m37.6s | 11.5 files/s | 1.131 / 3.123 / 4.379s | 0 |
 
 为什么新键可以省探测：`resolveFileKey` 返回的 `fresh` 只在本进程刚为这个文件
 建注册行、且读回的就是自己新发的雪花键时为真；此时数据表里不可能已有该键的
-行。重放、已登记文件、并发登记输家一律 `fresh = false`，继续走原 `MERGE` 幂等
-路径。批量装载只用于 SQL Server（其余方言未做同口径测量）：单流实测 1000 行
-× 20 列 `263ms → 32ms`、× 70 列 `822ms → 41ms`。若批量装载撞唯一键（只可能
-来自并发重复处理同一文件），整个事务回滚，并以幂等 `MERGE` 重放一次，不会把
-正常重采集判成永久失败。CSV 空列仍落 `NULL`（`KeepNulls`），真库用例
-`TestRealMSSQLBulkNulls` 钉住。批量装载还显式传 `ROWS_PER_BATCH = 本批实际
-行数`：不传时优化器缺基数，16 并发下整轮 11.9s、`RESOURCE_SEMAPHORE` 峰值
-40 路等待；传了之后 9.7s、该等待从峰值榜消失，P95 419ms → 197ms。
+行，SQL Server 走 TDS 批量装载（其余方言未做同口径测量）：单流实测 1000 行
+× 20 列 `263ms → 32ms`、× 70 列 `822ms → 41ms`。重放、已登记文件、并发登记
+输家一律 `fresh = false`，走 `INSERT ... WHERE NOT EXISTS` 只插缺失行；
+`NOT EXISTS` 的 S 锁在语句结束即释放，不像 MERGE 的探测 U 锁要持有到提交，
+因此多文件并发重放不再成环。两条快速路径撞唯一键（只可能来自并发重复处理
+同一文件）都会回滚，并以幂等 `MERGE` 重放一次，不会把正常重采集判成永久
+失败。CSV 空列仍落 `NULL`（`KeepNulls`），真库用例 `TestRealMSSQLBulkNulls`
+钉住。批量装载还显式传 `ROWS_PER_BATCH = 本批实际行数`：不传时优化器缺基数，
+16 并发下整轮 11.9s、`RESOURCE_SEMAPHORE` 峰值 40 路等待；传了之后 9.7s、
+该等待从峰值榜消失，P95 419ms → 197ms。
+
+重放相位（`REAL_FLEET_REPLAY=1`，2026-10-21）：热态写完后每 5 行删 1 行，再
+16 路并发重放同一批 1119 个文件、补 22.4 万行；1m37.6s、P95 3.123s、**0 失败**。
+重放本身仍是逐行探测（1.1M 次），耗时与旧路径同量级；收益是 1205 与失败归零，
+等待增量前 12 里已看不到 `LCK_M_U`（旧基线累计 129.7s）。
 
 并发拐点（同一基准，仅改并发）：8 路 71.2 files/s / P50 94ms / P95 229ms，
 16 路 115.4 files/s / P50 133ms / P95 197ms，32 路 103.3 files/s / P95 456ms
@@ -516,6 +524,7 @@ REAL_FLEET_PERF=1 \
 REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=disable' \
   go test -count=1 -v -timeout 30m -run TestFleetPerf1119 ./tests/
 # 可调：REAL_FLEET_FILES / REAL_FLEET_ROWS / REAL_FLEET_CONCURRENCY
+# 重放相位：再加 REAL_FLEET_REPLAY=1（先删每 5 行中的 1 行，再 16 路并发重放）
 ```
 
 ## 写入失败与数据完整性（2026-10-20）
@@ -529,8 +538,8 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
    `MarkFileCompleted` 持久化成功，才把文件标记为完成；任一步失败都进失败账，
    文件保持未完成。
 3. **失败文件下一轮从头重采**：已提交的前置批次是合法的部分数据，重采时按
-   `(file_key, row_number)` / 三元组幂等跳过或覆盖，剩余批次补齐。不会重复，
-   也不会因为"前一批已成功"而跳过整个文件。
+   `(file_key, row_number)` / 三元组只补缺失行、不覆盖既有行，剩余批次补齐。
+   不会重复，也不会因为"前一批已成功"而跳过整个文件。
 4. **瞬时错误可重试**：SQL Server 1205 死锁、1222 锁等待超时、连接断开等归为
    transient；整轮采集标记失败，但文件未完成，下一轮触发会重新采集。失败账
    （failed-file ledger）保留路径、次数与最近错误，控制台可见。
@@ -538,15 +547,25 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
    阻断）、必填列缺失、类型转换失败、NVARCHAR(4000) 截断（2628）等都会让整个
    文件失败并留在失败账里，不会"写进去一部分、其余静默丢掉"。修正源文件或
    配置后重采即可补齐。
-6. **批量装载的唯一键回退**：fresh 键批量撞唯一键只可能来自并发重复处理同一
-   文件；回滚后禁用批量、以 MERGE 重放一次。不会把正常重采集判成永久失败，
-   也不会留下半批数据。
+6. **快速路径的唯一键回退**：fresh 批量装载或重放直插撞唯一键只可能来自并发
+   重复处理同一文件；回滚后禁用快速路径、以幂等 MERGE 重放一次。不会把正常
+   重采集判成永久失败，也不会留下半批数据。
+7. **重放不持有探测 U 锁**：SQL Server 非 fresh 写用 `INSERT ... WHERE NOT EXISTS`，
+   探测 S 锁语句级释放；已存在行保留原值，缺失行补齐。并发重复处理同一文件
+   由第 6 条的 MERGE 回退兜底。
 
 证据（均可复跑）：
 
 - `TestRealMSSQLBulkAtomicity`（真库）：100 行批量，第 50 行放 4001 字符触发
   服务端截断错误 → 数据表 **0 行**（无半截）；修正后重试 → 100 行；再重放
   仍 100 行。
+- `TestRealMSSQLReplayInsertMissing`（真库）：60 行写满后删掉 21–40 行、改掉
+  第 1 行值；重放后总数 60、缺失行恢复、已存在行**未被覆盖**；再重放仍 60。
+- `TestRealMSSQLConcurrentReplay`（真库）：16 文件 × 200 行，删偶数行后 16 路
+  并发重放，全部成功、3200 行无重复。
+- `TestBuildInsertMissingStatement`（离线）：语句形态、参数行优先编号，且
+  不含 MERGE。
+- 1119 源重放相位（真库压测）：删 22.4 万行后 16 路并发重放，0 失败、0 死锁。
 - `TestCollectorMidFileWriteFailureRetriesWithoutLoss`（调度层）：5 行文件按
   批大小 2 切成 3 批，第二批注入失败 → 首轮只落 2 行、文件进失败账；下一轮
   恢复后总行数 5；再全量重放仍 5。
