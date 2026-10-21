@@ -2,10 +2,11 @@
 // batch_size=1000 的批次在局域网 Oracle 上逐行就是 1000 次 RTT（0.3-1ms
 // 的 RTT 即 0.3-1s/批次）——写库成为切真库后的最大单项开销。
 //
-// 幂等语义逐方言保留：VALUES 系（mysql/sqlite/postgres）带 INSERT IGNORE /
-// ON CONFLICT DO NOTHING；oracle/sqlserver 保持 MERGE（NOT MATCHED 才插
-// 入）——oracle 表上有主键约束，普通 INSERT 在部分提交后的文件重放会
-// 撞 ORA-00001 永久失败，MERGE 语义不可替换，只能折叠不能降级。
+// 幂等语义逐方言保留：mysql 用 INSERT IGNORE，sqlite/postgres 用 ON CONFLICT
+// DO NOTHING；oracle/sqlserver 的 fresh 键走无探测直插（新发的键不可能有
+// 既有行），重放走反连接 INSERT ... WHERE NOT EXISTS 只补缺失行。MERGE 只剩
+// 撞唯一键时的回退与注册表单行 insert-if-missing——它在数据行上的探测锁要
+// 持有到提交，多文件并发时会成环，不能留在写路径里。
 package storage
 
 import (
@@ -90,21 +91,53 @@ func buildMultiRow(dialect, table string, cols []string, conflict string, n int)
 	}
 }
 
-// buildInsertMissing 构造 SQL Server 的"只插缺失行"语句，用于重放/已登记
-// 文件的非首写。与 MERGE 的区别在锁：NOT EXISTS 的探测在 READ COMMITTED
-// 下只取语句级 S 锁，语句结束即释放；MERGE 的探测 U 锁要持有到事务提交，
-// 多文件并发重放时会形成锁环（现场 1119 源基线 11 次 1205 的根因）。
-// 并发重复处理同一文件仍可能撞唯一键，由调用方回退 MERGE 重放。
-func buildInsertMissing(table string, cols []string, conflict string, n int) string {
-	q := quoteIdent("sqlserver", table)
+// buildInsert 构造无冲突处理的多行 INSERT，只用于 fresh 键——新发的键在
+// 数据表里不可能已有行。Oracle 不支持多行 VALUES，用 SELECT ... FROM DUAL
+// UNION ALL 展开。撞唯一键只可能来自并发重复处理同一文件，调用方回退到
+// 幂等语句。
+func buildInsert(dialect, table string, cols []string, n int) string {
+	q := quoteIdent(dialect, table)
+	if dialect == "oracle" {
+		sels := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			sels = append(sels, fmt.Sprintf("SELECT %s FROM DUAL", placeholders(dialect, i*len(cols)+1, len(cols))))
+		}
+		return fmt.Sprintf("INSERT INTO %s (%s) %s", q, strings.Join(cols, ", "), strings.Join(sels, " UNION ALL "))
+	}
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
+		q, strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "))
+}
+
+// buildInsertMissing 构造"只插缺失行"的语句，用于 SQL Server / Oracle 的
+// 重放与已登记文件。两条路径都把 MERGE 从数据写路径里拿掉：反连接的探测
+// 不占用 MERGE 在目标行上的探测锁（SQL Server 的 U 锁、Oracle 的 MERGE
+// 目标读），多文件并发重放时不会形成锁环。并发重复处理同一文件仍可能撞
+// 唯一键，由调用方回退 MERGE 重放。
+func buildInsertMissing(dialect, table string, cols []string, conflict string, n int) string {
+	q := quoteIdent(dialect, table)
 	aliases := make([]string, 0, len(cols))
 	for i := range cols {
 		aliases = append(aliases, srcAlias(i))
 	}
+	on := strings.Join(onClause(cols, conflict), " AND ")
+	if dialect == "oracle" {
+		sels := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			ph := aliasedPlaceholders(i*len(cols)+1, len(cols))
+			parts := make([]string, 0, len(cols))
+			for c := range cols {
+				parts = append(parts, fmt.Sprintf("%s AS %s", ph[c], srcAlias(c)))
+			}
+			sels = append(sels, fmt.Sprintf("SELECT %s FROM DUAL", strings.Join(parts, ", ")))
+		}
+		return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM (%s) src WHERE NOT EXISTS (SELECT 1 FROM %s dst WHERE %s)",
+			q, strings.Join(cols, ", "), strings.Join(srcRefs(len(cols)), ", "),
+			strings.Join(sels, " UNION ALL "), q, on)
+	}
 	return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM (VALUES %s) src (%s) WHERE NOT EXISTS (SELECT 1 FROM %s dst WHERE %s);",
 		q, strings.Join(cols, ", "), strings.Join(srcRefs(len(cols)), ", "),
-		strings.Join(valueRows("sqlserver", cols, n), ", "),
-		strings.Join(aliases, ", "), q, strings.Join(onClause(cols, conflict), " AND "))
+		strings.Join(valueRows(dialect, cols, n), ", "),
+		strings.Join(aliases, ", "), q, on)
 }
 
 func valueRows(dialect string, cols []string, n int) []string {

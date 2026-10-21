@@ -843,8 +843,9 @@ func (t *TableStorage) mapRow(key model.CollectionKey, fileKey int64, file model
 // 会在跨实例场景下读到过期键。
 // resolveFileKey 返回 (键, fresh)。fresh 为真表示本调用刚为这个文件在
 // 注册表里立行、且拿到的就是自己新发的雪花键——数据表里不可能已有该键
-// 的行，写路径可以省掉逐行探测，直接批量装载。重放、并发登记输家、以及
-// 已有登记的文件一律 fresh=false，走"只插缺失行"的幂等直插。
+// 的行，写路径可以省掉逐行探测，直接无探测直插（SQL Server 批量装载、
+// Oracle 普通多行 INSERT）。重放、并发登记输家、以及已有登记的文件一律
+// fresh=false，走"只插缺失行"的幂等直插。
 func (t *TableStorage) resolveFileKey(ctx context.Context, batch model.Batch) (int64, bool, error) {
 	ft := quoteIdent(t.cfg.Dialect, t.cfg.FileTable)
 	p := func(start, n int) string { return placeholders(t.cfg.Dialect, start, n) }
@@ -1021,9 +1022,10 @@ func (t *TableStorage) Write(ctx context.Context, batch model.Batch) error {
 	return t.write(ctx, batch, true)
 }
 
-// write 的 allowFast 只服务内部回退：SQL Server 上首次装载走 TDS 批量，
-// 重放/已登记文件走"只插缺失行"的直插；两者撞唯一键（只可能来自并发
-// 重复处理同一文件）时禁用快速路径，按幂等 MERGE 重放一次。
+// write 的 allowFast 只服务内部回退：SQL Server / Oracle 的首次装载走无
+// 探测直插（TDS 批量 / 普通多行 INSERT），重放/已登记文件走"只插缺失行"
+// 的反连接直插；两者撞唯一键（只可能来自并发重复处理同一文件）时禁用
+// 快速路径，按幂等 MERGE 重放一次。
 func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast bool) error {
 	if err := t.headerCheck(batch); err != nil {
 		return err
@@ -1061,13 +1063,16 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast b
 		fileKey = fk
 		fresh = f
 	}
-	// SQL Server 的两种免探测写：新发的键在数据表里绝无既有行，走 TDS
-	// 批量装载（实测 1000 行 × 20 列 263ms→32ms、× 70 列 822ms→41ms）；
-	// 重放/已登记文件只插缺失行，NOT EXISTS 的 S 锁语句级释放，不像 MERGE
-	// 那样把探测 U 锁持有到提交。其它方言未做同口径测量，保持原语义。
-	fast := allowFast && t.cfg.Dialect == "sqlserver"
-	bulkFresh := fast && fresh
-	insertMissing := fast && !bulkFresh
+	// SQL Server / Oracle 的免探测写：fresh 键不可能有既有行（SQL Server
+	// 走 TDS 批量装载，实测 1000 行 × 20 列 263ms→32ms、× 70 列 822ms→41ms；
+	// Oracle 走普通多行 INSERT）；重放/已登记文件只插缺失行。MERGE 从数据
+	// 写路径移除，只留作并发撞键时的回退。MySQL / PostgreSQL / SQLite 的
+	// 重放本来就是 INSERT IGNORE / ON CONFLICT DO NOTHING，不经 MERGE，
+	// 保持原语义。
+	fast := allowFast && (t.cfg.Dialect == "sqlserver" || t.cfg.Dialect == "oracle")
+	bulkFresh := fast && fresh && t.cfg.Dialect == "sqlserver"
+	plainFresh := fast && fresh && t.cfg.Dialect == "oracle"
+	insertMissing := fast && !bulkFresh && !plainFresh
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
 		return errs.ClassifyStorageError("begin", err)
@@ -1133,10 +1138,9 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast b
 			}
 			return berr
 		}
-	} else if insertMissing {
-		// 重放/已登记：只插缺失行。NOT EXISTS 探测在 READ COMMITTED 下
-		// 只取语句级 S 锁，不像 MERGE 的 U 锁那样持有到提交，避免多文件
-		// 并发重放时的锁环。并发重复处理同一文件撞唯一键时回退 MERGE。
+	} else if plainFresh {
+		// Oracle fresh 键：普通多行 INSERT，不做 MERGE 探测。并发重复处理
+		// 同一文件撞唯一键时回退幂等 MERGE。
 		n := chunkRowsFor(t.cfg.Dialect, len(cols))
 		for start := 0; start < len(rowValues); start += n {
 			end := start + n
@@ -1144,7 +1148,27 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast b
 				end = len(rowValues)
 			}
 			chunk := rowValues[start:end]
-			stmt := buildInsertMissing(t.cfg.Table, cols, conflict, len(chunk))
+			stmt := buildInsert(t.cfg.Dialect, t.cfg.Table, cols, len(chunk))
+			if err := t.execChunk(ctx, tx, stmt, chunk, cols, batch); err != nil {
+				_ = tx.Rollback()
+				if errors.Is(err, errs.ErrStorageConstraint) {
+					return t.write(ctx, batch, false)
+				}
+				return err
+			}
+		}
+	} else if insertMissing {
+		// 重放/已登记：只插缺失行。反连接探测不占用 MERGE 的目标探测锁，
+		// 避免多文件并发重放时的锁环。并发重复处理同一文件撞唯一键时
+		// 回退 MERGE。
+		n := chunkRowsFor(t.cfg.Dialect, len(cols))
+		for start := 0; start < len(rowValues); start += n {
+			end := start + n
+			if end > len(rowValues) {
+				end = len(rowValues)
+			}
+			chunk := rowValues[start:end]
+			stmt := buildInsertMissing(t.cfg.Dialect, t.cfg.Table, cols, conflict, len(chunk))
 			if err := t.execChunk(ctx, tx, stmt, chunk, cols, batch); err != nil {
 				_ = tx.Rollback()
 				if errors.Is(err, errs.ErrStorageConstraint) {

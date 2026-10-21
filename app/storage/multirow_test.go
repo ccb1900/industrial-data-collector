@@ -47,7 +47,7 @@ func TestBuildMultiRowStatements(t *testing.T) {
 // 重放直插：只插缺失行，参数行优先连续编号，且绝不生成 MERGE 探测。
 func TestBuildInsertMissingStatement(t *testing.T) {
 	cols := []string{"file_key", "row_number", `[temperature]`, `[tag]`}
-	stmt := buildInsertMissing("t", cols, "file_key, row_number", 2)
+	stmt := buildInsertMissing("sqlserver", "t", cols, "file_key, row_number", 2)
 	for _, want := range []string{
 		"INSERT INTO [t] (file_key, row_number, [temperature], [tag])",
 		"FROM (VALUES (@p1, @p2, @p3, @p4), (@p5, @p6, @p7, @p8)) src (c0, c1, c2, c3)",
@@ -59,6 +59,50 @@ func TestBuildInsertMissingStatement(t *testing.T) {
 	}
 	if strings.Contains(stmt, "MERGE") {
 		t.Fatalf("insert-missing must not probe with MERGE: %s", stmt)
+	}
+
+	ora := buildInsertMissing("oracle", "t", []string{"file_key", "row_number", `"V"`}, "file_key, row_number", 2)
+	for _, want := range []string{
+		`INSERT INTO "T" (file_key, row_number, "V") SELECT src.c0, src.c1, src.c2 FROM (`,
+		"SELECT :1 AS c0, :2 AS c1, :3 AS c2 FROM DUAL UNION ALL SELECT :4 AS c0, :5 AS c1, :6 AS c2 FROM DUAL",
+		`WHERE NOT EXISTS (SELECT 1 FROM "T" dst WHERE dst.file_key = src.c0 AND dst.row_number = src.c1)`,
+	} {
+		if !strings.Contains(ora, want) {
+			t.Fatalf("oracle insert-missing missing %q: %s", want, ora)
+		}
+	}
+	if strings.Contains(ora, "MERGE") || strings.Contains(ora, "VALUES") {
+		t.Fatalf("oracle insert-missing must be anti-join, not MERGE/VALUES: %s", ora)
+	}
+}
+
+// fresh 键的普通多行 INSERT：SQL Server/MySQL/PostgreSQL/SQLite 用 VALUES，
+// Oracle 不支持多行 VALUES，用 UNION ALL 展开。
+func TestBuildPlainInsertStatements(t *testing.T) {
+	cases := []struct {
+		dialect string
+		cols    []string
+		wants   []string
+	}{
+		{"sqlserver", []string{"file_key", "row_number", "[v]"}, []string{"INSERT INTO [t]", "VALUES (@p1, @p2, @p3), (@p4, @p5, @p6)"}},
+		{"mysql", []string{"file_key", "row_number", "`v`"}, []string{"INSERT INTO `t`", "VALUES (?, ?, ?), (?, ?, ?)"}},
+		{"postgres", []string{"file_key", "row_number", `"v"`}, []string{`INSERT INTO "t"`, "VALUES ($1, $2, $3), ($4, $5, $6)"}},
+		{"sqlite", []string{"file_key", "row_number", `"v"`}, []string{`INSERT INTO "t"`, "VALUES (?, ?, ?), (?, ?, ?)"}},
+		{"oracle", []string{"file_key", "row_number", `"V"`}, []string{`INSERT INTO "T"`, "SELECT :1, :2, :3 FROM DUAL UNION ALL SELECT :4, :5, :6 FROM DUAL"}},
+	}
+	for _, c := range cases {
+		stmt := buildInsert(c.dialect, "t", c.cols, 2)
+		for _, want := range c.wants {
+			if !strings.Contains(stmt, want) {
+				t.Fatalf("%s plain insert missing %q: %s", c.dialect, want, stmt)
+			}
+		}
+		if strings.Contains(stmt, "MERGE") || strings.Contains(stmt, "NOT EXISTS") {
+			t.Fatalf("%s plain insert must not probe: %s", c.dialect, stmt)
+		}
+		if c.dialect == "oracle" && strings.Contains(stmt, "VALUES") {
+			t.Fatalf("oracle plain insert must use UNION ALL: %s", stmt)
+		}
 	}
 }
 
@@ -106,6 +150,70 @@ func TestMultiRowWriteChunksAndReplay(t *testing.T) {
 	}
 	if page.Total != total {
 		t.Fatalf("rows after replay = %d, want %d (idempotent)", page.Total, total)
+	}
+}
+
+// SQLite 重放只补缺失行：已存在行保持原值，不覆盖、不重复
+// （ON CONFLICT DO NOTHING）。与 SQL Server / Oracle 的反连接直插钉同一组
+// 不变量——这三个方言的重放语句不同，语义必须一致。
+func TestSQLiteReplayRestoresMissingRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenTable(ctx, fileKeyCfg(filepath.Join(t.TempDir(), "replay.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	const total = 60
+	rows := make([]string, 0, total)
+	for i := 1; i <= total; i++ {
+		rows = append(rows, fmt.Sprintf("%d.0", i))
+	}
+	writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, rows...)
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM t_readings WHERE row_number BETWEEN 21 AND 40`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE t_readings SET temperature = 99 WHERE row_number = 1`); err != nil {
+		t.Fatal(err)
+	}
+	// 同一个文件重放：注册行已存在，fresh=false，走 ON CONFLICT DO NOTHING。
+	writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, rows...)
+
+	var n int
+	var first, restored float64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM t_readings`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != total {
+		t.Fatalf("rows after replay = %d, want %d", n, total)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT temperature FROM t_readings WHERE row_number = 1`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if first != 99 {
+		t.Fatalf("existing row was overwritten: temperature = %v, want 99", first)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT temperature FROM t_readings WHERE row_number = 30`).Scan(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored != 30 {
+		t.Fatalf("missing row not restored: temperature = %v, want 30", restored)
+	}
+	var files int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM t_files`).Scan(&files); err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 {
+		t.Fatalf("registry rows = %d, want 1", files)
+	}
+	// 再重放一次：仍然幂等。
+	writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, rows...)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM t_readings`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != total {
+		t.Fatalf("rows after second replay = %d, want %d", n, total)
 	}
 }
 

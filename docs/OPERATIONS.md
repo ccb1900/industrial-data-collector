@@ -465,9 +465,10 @@ file-state 判定，注册表只被 `QueryRows` 的 JOIN 读，不参与去重�
 （`app/storage/snowflake_test.go`），其中两条确定性冲突用例分别覆盖"同节点
 撞 `file_key` → 约束失败 → 重试换新键"与"三元组先到者胜出 → 重试复用胜出
 者的键且数据幂等"；fleet 展开口径由 `tests/mssql_prod_config_test.go` 的
-`TestProdMSSQLFleetExpansionCount` 钉住。SQL Server 侧仍是"语法分支 +
-fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计数器方案的
-真库发号用例（20×20 并发）随计数器表一并退役。
+`TestProdMSSQLFleetExpansionCount` 钉住。SQL Server 侧已在本地真库复跑
+（2026-10-21：`TestRealMSSQLFileKeyBackbone`、`TestRealMSSQLConcurrentAllocation`、
+`TestRealMSSQLLongPathIdentity` 等 15 项全绿）。原计数器方案的真库发号用例
+（20×20 并发）随计数器表一并退役。
 
 ## 写路径性能：1119 源整轮压测（2026-10-20）
 
@@ -481,7 +482,19 @@ fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计�
 到提交：1119 源整轮出现 11 次死锁（1205）、单轮内有 1.1 万行未落库（基准只跑
 一遍、不重试；生产里死锁归为 transient，文件不标记完成，下一轮会重采，见下节
 「写入失败与数据完整性」）。`LCK_M_U` 累计等待 129.7s、数据表行锁等待 87.6s。
-因此 SQL Server 的首写与重放都不再做 MERGE 探测：
+因此 SQL Server 与 Oracle 的首写与重放都不再做 MERGE 探测；MySQL /
+PostgreSQL / SQLite 的重放本来就是冲突忽略写入（`INSERT IGNORE` /
+`ON CONFLICT DO NOTHING`），不经 MERGE，保持原语义：
+
+| 方言 | fresh 首写 | 重放 / 已登记文件 | 并发撞唯一键（仅 SQL Server / Oracle） |
+|---|---|---|---|
+| SQL Server | TDS `INSERT BULK`（CopyIn） | `INSERT ... SELECT ... WHERE NOT EXISTS` | 回滚后禁用快速路径，走幂等 MERGE 重放一次 |
+| Oracle | 普通多行 `INSERT ... SELECT ... FROM DUAL UNION ALL` | 同左，外加 `WHERE NOT EXISTS` | 同上 |
+| MySQL | `INSERT IGNORE` | `INSERT IGNORE` | — |
+| PostgreSQL | `INSERT ... ON CONFLICT DO NOTHING` | 同左 | — |
+| SQLite | `INSERT ... ON CONFLICT DO NOTHING` | 同左 | — |
+
+SQL Server 1119 文件整轮（同口径）：
 
 | 阶段 | 协议 | 1119 文件整轮 | 吞吐 | P50 / P95 / P99 | 失败 |
 |---|---|---|---|---|---|
@@ -492,21 +505,35 @@ fail-fast"，本轮没有真库复跑（`REAL_SQLSERVER_DSN` 未设）。原计�
 
 为什么新键可以省探测：`resolveFileKey` 返回的 `fresh` 只在本进程刚为这个文件
 建注册行、且读回的就是自己新发的雪花键时为真；此时数据表里不可能已有该键的
-行，SQL Server 走 TDS 批量装载（其余方言未做同口径测量）：单流实测 1000 行
-× 20 列 `263ms → 32ms`、× 70 列 `822ms → 41ms`。重放、已登记文件、并发登记
-输家一律 `fresh = false`，走 `INSERT ... WHERE NOT EXISTS` 只插缺失行；
-`NOT EXISTS` 的 S 锁在语句结束即释放，不像 MERGE 的探测 U 锁要持有到提交，
-因此多文件并发重放不再成环。两条快速路径撞唯一键（只可能来自并发重复处理
-同一文件）都会回滚，并以幂等 `MERGE` 重放一次，不会把正常重采集判成永久
-失败。CSV 空列仍落 `NULL`（`KeepNulls`），真库用例 `TestRealMSSQLBulkNulls`
-钉住。批量装载还显式传 `ROWS_PER_BATCH = 本批实际行数`：不传时优化器缺基数，
-16 并发下整轮 11.9s、`RESOURCE_SEMAPHORE` 峰值 40 路等待；传了之后 9.7s、
-该等待从峰值榜消失，P95 419ms → 197ms。
+行。SQL Server 走 TDS 批量装载：单流实测 1000 行 × 20 列 `263ms → 32ms`、
+× 70 列 `822ms → 41ms`；Oracle 走普通多行 INSERT（本地无真库，未做同口径
+计时，语句形态由单元测试钉住）。重放、已登记文件、并发登记输家、以及未启用
+file_key 的旧骨架一律不走批量/直插，走"只插缺失行"：SQL Server / Oracle 用
+反连接 `WHERE NOT EXISTS`，MySQL / PostgreSQL / SQLite 用各自的原生冲突忽略
+写法。反连接的 S 锁在语句结束即释放，不像 MERGE 的探测锁要持有到提交，因此
+多文件并发重放不再成环。SQL Server / Oracle 的快速路径撞唯一键（只可能来自
+并发重复处理同一文件）都会回滚，并以幂等 `MERGE` 重放一次，不会把正常重采集
+判成永久失败。CSV 空列仍落 `NULL`（`KeepNulls`），真库用例
+`TestRealMSSQLBulkNulls` 钉住。批量装载还显式传 `ROWS_PER_BATCH = 本批实际
+行数`：不传时优化器缺基数，16 并发下整轮 11.9s、`RESOURCE_SEMAPHORE` 峰值
+40 路等待；传了之后 9.7s、该等待从峰值榜消失，P95 419ms → 197ms。
+
+注册表本身的单行 `insert-if-missing` 在 Oracle / SQL Server 上仍用 MERGE：
+file_key 模式下它在数据事务之外自动提交、锁随语句释放；旧骨架只在
+`Sequence == 1` 执行一次，不在数据行的锁环里。
 
 重放相位（`REAL_FLEET_REPLAY=1`，2026-10-21）：热态写完后每 5 行删 1 行，再
 16 路并发重放同一批 1119 个文件、补 22.4 万行；1m37.6s、P95 3.123s、**0 失败**。
-重放本身仍是逐行探测（1.1M 次），耗时与旧路径同量级；收益是 1205 与失败归零，
-等待增量前 12 里已看不到 `LCK_M_U`（旧基线累计 129.7s）。
+重放本身仍要逐行做反连接探测（1.1M 次），耗时与旧路径同量级；收益是 1205 与
+失败归零，等待增量前 12 里已看不到 `LCK_M_U`（旧基线累计 129.7s）。
+
+方言验证边界：本地只有 SQL Server 2019 CU32 真库。Oracle / MySQL /
+PostgreSQL 没有本地真库，只验证到语句形态（`TestBuildInsertMissingStatement`、
+`TestBuildPlainInsertStatements`）；SQLite 有行为用例
+`TestSQLiteReplayRestoresMissingRows`（删中间 20 行 + 改第 1 行后重放：缺行
+补齐、既有行不被覆盖、再重放幂等）。SQL Server 的补行/并发语义由
+`TestRealMSSQLReplayInsertMissing`、`TestRealMSSQLConcurrentReplay` 与 1119
+源重放相位钉住。上 Oracle 真库前，至少先跑一遍同形状的补行用例。
 
 并发拐点（同一基准，仅改并发）：8 路 71.2 files/s / P50 94ms / P95 229ms，
 16 路 115.4 files/s / P50 133ms / P95 197ms，32 路 103.3 files/s / P95 456ms
@@ -547,12 +574,14 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
    阻断）、必填列缺失、类型转换失败、NVARCHAR(4000) 截断（2628）等都会让整个
    文件失败并留在失败账里，不会"写进去一部分、其余静默丢掉"。修正源文件或
    配置后重采即可补齐。
-6. **快速路径的唯一键回退**：fresh 批量装载或重放直插撞唯一键只可能来自并发
-   重复处理同一文件；回滚后禁用快速路径、以幂等 MERGE 重放一次。不会把正常
-   重采集判成永久失败，也不会留下半批数据。
-7. **重放不持有探测 U 锁**：SQL Server 非 fresh 写用 `INSERT ... WHERE NOT EXISTS`，
-   探测 S 锁语句级释放；已存在行保留原值，缺失行补齐。并发重复处理同一文件
-   由第 6 条的 MERGE 回退兜底。
+6. **快速路径的唯一键回退**：SQL Server / Oracle 的 fresh 批量装载、直插或重放
+   反连接撞唯一键只可能来自并发重复处理同一文件；回滚后禁用快速路径、以幂等
+   MERGE 重放一次。不会把正常重采集判成永久失败，也不会留下半批数据。
+7. **重放不持有 MERGE 探测锁**：SQL Server / Oracle 非 fresh 写用
+   `INSERT ... WHERE NOT EXISTS`，探测 S 锁语句级释放；MySQL / PostgreSQL /
+   SQLite 用 `INSERT IGNORE` / `ON CONFLICT DO NOTHING`。五个方言语义一致：
+   已存在行保留原值，缺失行补齐。并发重复处理同一文件由第 6 条的 MERGE 回退
+   兜底。
 
 证据（均可复跑）：
 
@@ -563,8 +592,12 @@ REAL_SQLSERVER_DSN='sqlserver://sa:<pwd>@127.0.0.1:1433?database=<db>&encrypt=di
   第 1 行值；重放后总数 60、缺失行恢复、已存在行**未被覆盖**；再重放仍 60。
 - `TestRealMSSQLConcurrentReplay`（真库）：16 文件 × 200 行，删偶数行后 16 路
   并发重放，全部成功、3200 行无重复。
-- `TestBuildInsertMissingStatement`（离线）：语句形态、参数行优先编号，且
-  不含 MERGE。
+- `TestBuildInsertMissingStatement`（离线）：SQL Server 与 Oracle 的反连接
+  语句形态、参数行优先编号，且不含 MERGE。
+- `TestBuildPlainInsertStatements`（离线）：五个方言的 fresh 直插形态
+  （Oracle 用 `UNION ALL ... FROM DUAL`），不含 MERGE / NOT EXISTS。
+- `TestSQLiteReplayRestoresMissingRows`（离线，真 SQLite）：删中间 20 行、改
+  第 1 行后重放 → 60 行、缺行恢复、既有行保持修改值；再重放仍 60。
 - 1119 源重放相位（真库压测）：删 22.4 万行后 16 路并发重放，0 失败、0 死锁。
 - `TestCollectorMidFileWriteFailureRetriesWithoutLoss`（调度层）：5 行文件按
   批大小 2 切成 3 批，第二批注入失败 → 首轮只落 2 行、文件进失败账；下一轮
