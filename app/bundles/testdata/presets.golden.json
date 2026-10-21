@@ -1,8 +1,6 @@
 {
   "collector-console": [
     {
-      "ID": "ui-page-overview",
-      "Type": "ui-page",
       "Config": {
         "actions": [
           {
@@ -22,34 +20,29 @@
           {
             "items": [
               {
+                "field": "sources",
                 "label": "数据源",
-                "op": "count",
-                "query": "sources"
+                "op": "sum",
+                "query": "overview-stats"
               },
               {
-                "filter": {
-                  "in": [
-                    "Failed",
-                    "Pending"
-                  ],
-                  "key": "status"
-                },
+                "field": "pending",
                 "label": "待处理",
-                "op": "count",
-                "query": "collections",
+                "op": "sum",
+                "query": "overview-stats",
                 "warn": true
               },
               {
                 "field": "records",
                 "label": "累计记录",
                 "op": "sum",
-                "query": "collections"
+                "query": "overview-stats"
               },
               {
                 "field": "filesFailed",
                 "label": "失败文件",
                 "op": "sum",
-                "query": "collections",
+                "query": "overview-stats",
                 "warn": true
               }
             ],
@@ -78,30 +71,15 @@
                 "title": "原因"
               }
             ],
-            "filter": {
-              "anyOf": [
-                {
-                  "in": [
-                    "Failed",
-                    "Pending"
-                  ],
-                  "key": "status"
-                },
-                {
-                  "gt": 0,
-                  "key": "filesFailed"
-                }
-              ]
-            },
             "kind": "table",
             "pageSize": 8,
-            "query": "collections",
+            "query": "overview-attention",
             "title": "需要处理（失败 / 等待数据）"
           },
           {
             "dateKey": "date",
             "kind": "trend",
-            "query": "collections",
+            "query": "overview-trend",
             "series": [
               {
                 "key": "records",
@@ -116,11 +94,11 @@
           }
         ]
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-page-overview",
+      "Type": "ui-page"
     },
     {
-      "ID": "ui-page-collect",
-      "Type": "ui-page",
       "Config": {
         "description": "以源为中心的运营台：选源 → 日历选日期 → 当日任务、文件、失败与数据样本都在这一屏。",
         "icon": "profile",
@@ -168,6 +146,9 @@
             "detailViews": [
               {
                 "kind": "calendar",
+                "params": {
+                  "sourceId": "$focus.sourceId"
+                },
                 "query": "collections",
                 "title": "采集状态日历"
               },
@@ -258,6 +239,7 @@
                 "pageSize": 5,
                 "params": {
                   "limit": "5",
+                  "sample": "1",
                   "sourceId": "$focus.sourceId"
                 },
                 "query": "rows",
@@ -280,11 +262,11 @@
           }
         ]
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-page-collect",
+      "Type": "ui-page"
     },
     {
-      "ID": "ui-page-data",
-      "Type": "ui-page",
       "Config": {
         "description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
         "icon": "search",
@@ -323,11 +305,11 @@
           }
         ]
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-page-data",
+      "Type": "ui-page"
     },
     {
-      "ID": "ui-page-config",
-      "Type": "ui-page",
       "Config": {
         "actions": [
           {
@@ -562,11 +544,11 @@
           }
         ]
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-page-config",
+      "Type": "ui-page"
     },
     {
-      "ID": "ui-panel-logs",
-      "Type": "ui-panel",
       "Config": {
         "order": 25,
         "pages": [
@@ -601,11 +583,11 @@
           }
         ]
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-panel-logs",
+      "Type": "ui-panel"
     },
     {
-      "ID": "ui-panel-event-feed",
-      "Type": "ui-panel",
       "Config": {
         "order": 20,
         "pages": [
@@ -616,37 +598,37 @@
         "renderer": "event-feed",
         "title": "事件流"
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "ui-panel-event-feed",
+      "Type": "ui-panel"
     }
   ],
   "collector-core": [
     {
+      "Config": null,
+      "Enabled": null,
       "ID": "console-bridge",
-      "Type": "console-bridge",
-      "Config": null,
-      "Enabled": null
+      "Type": "console-bridge"
     },
     {
+      "Config": null,
+      "Enabled": null,
       "ID": "console-rows",
-      "Type": "console-rows",
-      "Config": null,
-      "Enabled": null
+      "Type": "console-rows"
     },
     {
+      "Config": null,
+      "Enabled": null,
       "ID": "query-provider",
-      "Type": "query-provider",
-      "Config": null,
-      "Enabled": null
+      "Type": "query-provider"
     },
     {
+      "Config": null,
+      "Enabled": null,
       "ID": "ui",
-      "Type": "ui",
-      "Config": null,
-      "Enabled": null
+      "Type": "ui"
     },
     {
-      "ID": "plugin-explorer",
-      "Type": "plugin-explorer",
       "Config": {
         "icon": "block",
         "order": 40,
@@ -654,7 +636,9 @@
         "route": "/plugins",
         "title": "插件"
       },
-      "Enabled": null
+      "Enabled": null,
+      "ID": "plugin-explorer",
+      "Type": "plugin-explorer"
     }
   ]
 }

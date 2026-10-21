@@ -205,8 +205,7 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 		if s.StableWindow > 0 {
 			// A file whose mtime is younger than the stable window may still be
 			// open for writing; it is intentionally not discovered yet — but
-			// the attempt is counted: if EVERY candidate was unstable the
-			// caller must see "not ready" (Pending), never an empty success.
+			// the attempt is counted so the caller keeps the date Pending.
 			// mtime 在未来（文件服务器时钟快于采集机的常见偏斜）不算不稳定：
 			// 负差值恒小于窗口会把文件永远挡在发现之外——UNC 生产环境的
 			// 典型故障，本地盘开发永不复现。写入中的文件由下方双 stat 兜住。
@@ -221,6 +220,9 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 			return errs.ClassifySourceError(path, err)
 		}
 		if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
+			// 文件正在改写：按不稳定计数，绝不能折叠成"没有候选文件"——
+			// 执行器对空清单的语义是 Drop 日期台账，会把重试证据抹掉。
+			unstable++
 			return nil
 		}
 		if s.ContentDetect && !s.looksLikeCSV(path) {
@@ -238,9 +240,10 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	if walkErr != nil {
 		return nil, walkErr
 	}
-	// 全部候选都在稳定窗口内：这不是"无文件"（那会终态化日期），
-	// 而是"还没准备好"——以不稳定错误让执行器保持 Pending。
-	if len(out) == 0 && unstable > 0 {
+	// 只要还有候选文件在稳定窗口内，整轮就不能终态化：先把已稳定文件采完
+	// 会把日期记成 Succeeded，同一批里仍在拷贝的文件之后永远进不来
+	// （Begin 会挡住 Succeeded 日期）。宁可整轮 Pending，等全部稳定后一次采全。
+	if unstable > 0 {
 		return nil, errs.Sourcef(errs.ErrFileUnstable, "%d file(s) inside the stable window", unstable)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
@@ -321,7 +324,9 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 		return nil, errs.ClassifySourceError(path, err)
 	}
 	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
-		return nil, nil // changing between stats; wait for a later trigger
+		// 两次 stat 之间在变：显式不稳定，让执行器保留下次触发重探，
+		// 而不是当成"该日期没有数据"。
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q changed while probing", path)
 	}
 	file := model.FileIdentity{
 		SourceID: s.ID(),
@@ -374,7 +379,8 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 		return nil, errs.ClassifySourceError(s.root, err)
 	}
 	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
-		return nil, nil // changing between stats; wait for a later trigger
+		// 两次 stat 之间在变：显式不稳定（同 listDatedFilename）。
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q changed while probing", s.root)
 	}
 	file := model.FileIdentity{
 		SourceID: s.ID(),

@@ -424,8 +424,16 @@ state files.
 
 - `app/query.UnitState` — the per-source durable projection (collection
   records, completed files, failure ledger). `app/host` builds it after each
-  reconciliation from `sourceunit.SourceUnitComponent.Projection()` (or from
-  legacy shared state components) and calls `QueryComponent.AttachUnits`.
+  reconciliation: ledger-backed units go through the batched
+  `state.ProjectionSnapshotter.SnapshotProjection` (128 sources per chunk,
+  one read transaction, 3 SQL statements per chunk) and are split per source
+  with `sourceunit.SourceUnitComponent.ProjectionFromSnapshot`; process-local
+  state components use the strict per-unit `Projection(ctx)`. Units are then
+  attached with `QueryComponent.AttachUnits` under a bounded 20s context.
+- Lazy history: the in-memory read model keeps a window of 90 days ending at
+  the ledger's latest date; older dates are served on demand through
+  `state.LedgerReader` behind the `query.HistorySource` seam, so post-restart
+  history remains queryable without projecting every row at startup.
 - Read model: sources, collection records (Succeeded/Failed/**Pending**,
   post-restart history included), completed files with record counts, and
   the failure ledger are projected idempotently; live events keep updating

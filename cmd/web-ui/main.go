@@ -37,6 +37,7 @@ import (
 	"gocordis-csv-collector/app/fleetstore"
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/internal/applock"
+	"gocordis-csv-collector/internal/gziphttp"
 	"gocordis-csv-collector/web"
 )
 
@@ -170,7 +171,7 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 		}
 	}()
 
-	httpServer := &http.Server{Addr: addr, Handler: srv}
+	httpServer := &http.Server{Addr: addr, Handler: gziphttp.Wrap(srv)}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

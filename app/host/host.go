@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 	"gocordis-csv-collector/app/sourcecomp"
+	"gocordis-csv-collector/app/state"
 	configplugin "gocordis-csv-collector/components/config"
 	consolebridge "gocordis-csv-collector/components/consolebridge"
 	queryplugin "gocordis-csv-collector/components/query"
@@ -68,7 +70,13 @@ type Host struct {
 	fleetAnnounced bool
 	resync         func(ctx context.Context) error
 	resyncMu       sync.Mutex
-	mu             sync.Mutex
+	// reclaimedRunning records that the startup sweep of orphaned Running
+	// rows already ran; a second Startup must not terminalize live runs.
+	reclaimedRunning bool
+	// processStart separates this process's collections from those of the
+	// previous one: only rows started before it can be orphaned Running.
+	processStart time.Time
+	mu           sync.Mutex
 }
 
 // SetFleetStore wires the console-editable fleet declaration store. resync
@@ -240,6 +248,7 @@ func New(log *slog.Logger) (*Host, error) {
 	explorer.SetOwned(ctrl.Owned)
 	return &Host{
 		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
+		processStart: time.Now(),
 	}, nil
 }
 
@@ -336,7 +345,7 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 		// 泄漏 DSN/口令；真实配置仍由宿主/补丁持有。
 		h.explorer.SetDesired(redactConfigForDisplay(cfg))
 	}
-	h.attachStateProjection()
+	h.attachStateProjection(ctx)
 	return nil
 }
 
@@ -650,15 +659,25 @@ func (h *Host) EffectiveSnapshot() map[string]any {
 	return renderEffective(cfg, true)
 }
 
-// attachStateProjection feeds the durable state of every source unit (and of
-// legacy shared state components) into the query provider's read model, so
-// the UI projects persisted truth — collection history across restarts,
-// Pending dates, and the local failure ledger — and not only the events of
-// the current process window. It is application-layer composition: the query
-// provider keeps being the single observation adapter, and the state stays
-// owned by the CollectionState components.
-func (h *Host) attachStateProjection() {
-	var units []query.UnitState
+// State projection is a bounded background read: the ledger is shared by the
+// whole fleet, and an unbounded serial scan used to delay every reconcile.
+const (
+	projectionTimeout    = 20 * time.Second
+	projectionChunkSize  = 128
+	projectionWindowDays = 90
+)
+
+// attachStateProjection feeds the durable state of every source unit into the
+// query provider's read model, so the UI projects persisted truth — collection
+// history across restarts, Pending dates, and the local failure ledger — and
+// not only the events of the current process window. It is application-layer
+// composition: the query provider keeps being the single observation adapter,
+// and the state stays owned by the CollectionState components.
+//
+// Units sharing a SQLite ledger are projected in batches (a fixed number of
+// queries regardless of date count). Only a recent window is kept in memory;
+// older dates are served lazily through the ledger history adapter.
+func (h *Host) attachStateProjection(ctx context.Context) {
 	var unitComps []*sourceunitplugin.SourceUnitComponent
 	var qp *queryplugin.QueryComponent
 	var bridge *consolebridge.Component
@@ -669,7 +688,6 @@ func (h *Host) attachStateProjection() {
 		switch comp := o.Fiber.Component().(type) {
 		case *sourceunitplugin.SourceUnitComponent:
 			unitComps = append(unitComps, comp)
-			units = append(units, comp.Projection())
 		case *queryplugin.QueryComponent:
 			qp = comp
 		case *consolebridge.Component:
@@ -694,7 +712,17 @@ func (h *Host) attachStateProjection() {
 			)
 		}
 	}
-	if qp == nil || len(units) == 0 {
+	if qp == nil {
+		return
+	}
+	qp.SetHistory(newLedgerHistory(unitComps))
+	if len(unitComps) == 0 {
+		return
+	}
+	projCtx, cancel := context.WithTimeout(ctx, projectionTimeout)
+	defer cancel()
+	units := h.projectUnits(projCtx, unitComps)
+	if len(units) == 0 {
 		return
 	}
 	if err := qp.AttachUnits(units); err != nil {
@@ -702,8 +730,98 @@ func (h *Host) attachStateProjection() {
 	}
 }
 
-// projectSharedState builds one unit projection from a legacy shared
-// CollectionState, enumerating the sources it holds records for.
+type projectionGroup struct {
+	snapshot state.ProjectionSnapshotter
+	comps    []*sourceunitplugin.SourceUnitComponent
+}
+
+// projectUnits reads every unit's projection, batching units that share a
+// ledger. A failed batch falls back to per-unit reads; a failed unit is left
+// out rather than attached empty, so a transient ledger error never erases
+// rows the read model already has.
+func (h *Host) projectUnits(ctx context.Context, comps []*sourceunitplugin.SourceUnitComponent) []query.UnitState {
+	var out []query.UnitState
+	groups := make(map[string]*projectionGroup)
+	var keys []string
+	for _, comp := range comps {
+		snap := comp.ProjectionSnapshotter()
+		if snap == nil {
+			u, err := comp.Projection(ctx)
+			if err != nil {
+				h.log.Warn("state projection failed", "source", comp.SourceID(), "error", err.Error())
+				continue
+			}
+			out = append(out, u)
+			continue
+		}
+		key := snap.SnapshotKey()
+		group, ok := groups[key]
+		if !ok {
+			group = &projectionGroup{snapshot: snap}
+			groups[key] = group
+			keys = append(keys, key)
+		}
+		group.comps = append(group.comps, comp)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		group := groups[key]
+		since := projectionWindowStart(ctx, group.comps, h.log)
+		for start := 0; start < len(group.comps); start += projectionChunkSize {
+			end := start + projectionChunkSize
+			if end > len(group.comps) {
+				end = len(group.comps)
+			}
+			chunk := group.comps[start:end]
+			sources := make([]model.SourceID, len(chunk))
+			for i, comp := range chunk {
+				sources[i] = model.SourceID(comp.SourceID())
+			}
+			snapshot, err := group.snapshot.SnapshotProjection(ctx, sources, since)
+			if err != nil {
+				h.log.Warn("bulk state projection failed; falling back to per-unit reads",
+					"ledger", key, "sources", len(chunk), "error", err.Error())
+				for _, comp := range chunk {
+					u, perr := comp.Projection(ctx)
+					if perr != nil {
+						h.log.Warn("state projection failed", "source", comp.SourceID(), "error", perr.Error())
+						continue
+					}
+					out = append(out, u)
+				}
+				continue
+			}
+			for _, comp := range chunk {
+				out = append(out, comp.ProjectionFromSnapshot(snapshot))
+			}
+		}
+	}
+	return out
+}
+
+// projectionWindowStart derives the in-memory window from the ledger's newest
+// date instead of the wall clock: historical fixtures and restored backups
+// keep a window around their own data.
+func projectionWindowStart(ctx context.Context, comps []*sourceunitplugin.SourceUnitComponent, logger *slog.Logger) model.CollectionDate {
+	for _, comp := range comps {
+		reader := comp.LedgerReader()
+		if reader == nil {
+			continue
+		}
+		latest, ok, err := reader.LedgerLatest(ctx)
+		if err != nil {
+			logger.Warn("ledger latest date unavailable; projecting full history",
+				"source", comp.SourceID(), "error", err.Error())
+			return model.CollectionDate{}
+		}
+		if !ok {
+			continue
+		}
+		return latest.AddDate(0, 0, -projectionWindowDays)
+	}
+	return model.CollectionDate{}
+}
+
 func (h *Host) Trigger(ctx context.Context, req model.CollectionRequested) error {
 	sch, err := h.scheduler()
 	if err != nil {
@@ -730,6 +848,35 @@ func (h *Host) Startup(ctx context.Context) error {
 	for _, o := range h.ctrl.Owned() {
 		if err := o.Fiber.Ready(ctx); err != nil {
 			return fmt.Errorf("component %s not ready: %w", o.ID, err)
+		}
+	}
+	// 启动回收：单实例锁保证上一个采集进程已不存在，持久化的 Running
+	// 行全是孤儿。不回收就要等满 24h 租约，重启后的补采会跳过这些
+	// 日期——界面上的 Running 看起来"永远不会执行"。
+	h.mu.Lock()
+	reclaim := !h.reclaimedRunning
+	h.reclaimedRunning = true
+	h.mu.Unlock()
+	if reclaim {
+		var n int64
+		for _, o := range h.ctrl.Owned() {
+			if o.Fiber == nil || o.Fiber.Component() == nil {
+				continue
+			}
+			unit, ok := o.Fiber.Component().(*sourceunitplugin.SourceUnitComponent)
+			if !ok {
+				continue
+			}
+			got, err := unit.ReclaimRunning(ctx, h.processStart)
+			if err != nil {
+				h.log.Warn("reclaim interrupted collections failed", "component", o.ID, "error", err.Error())
+				continue
+			}
+			n += got
+		}
+		if n > 0 {
+			h.log.Warn("reclaimed collections interrupted by the previous process; scheduling them again", "rows", n)
+			h.attachStateProjection(ctx)
 		}
 	}
 	return h.Trigger(ctx, model.CollectionRequested{Reason: "startup"})

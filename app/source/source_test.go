@@ -69,6 +69,40 @@ func TestStableWindowSkipsNewFile(t *testing.T) {
 	}
 }
 
+// 同一天只要还有一个文件没稳定，整轮必须 Pending：先采已稳定文件会把
+// 日期记成 Succeeded，仍在写入的那份之后永远进不来。
+func TestStableWindowMixedCandidatesStaysPending(t *testing.T) {
+	root := t.TempDir()
+	dateDir := filepath.Join(root, "2026-09-06")
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stable := filepath.Join(dateDir, "old.csv")
+	fresh := filepath.Join(dateDir, "new.csv")
+	if err := os.WriteFile(stable, []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fresh, []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(stable, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fresh, now, now); err != nil {
+		t.Fatal(err)
+	}
+	s := New("prod", root, "*.csv", 30*time.Second)
+	s.Now = func() time.Time { return now }
+	files, err := s.List(context.Background(), model.ListRequest{SourceID: "prod", Date: mustDate(t, "2026-09-06")})
+	if !errs.Is(err, errs.ErrFileUnstable) {
+		t.Fatalf("err = %v, want ErrFileUnstable", err)
+	}
+	if files != nil {
+		t.Fatalf("mixed batch must not return a partial success: %#v", files)
+	}
+}
+
 func mustDate(t *testing.T, s string) model.CollectionDate {
 	t.Helper()
 	var d model.CollectionDate

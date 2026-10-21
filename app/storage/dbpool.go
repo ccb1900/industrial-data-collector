@@ -26,9 +26,17 @@ const (
 	// 空闲收缩：夜间批量写完后会话及时释放，不在数据库侧挂常驻会话。
 	sharedPoolMaxIdle     = 4
 	sharedPoolIdleTimeout = 2 * time.Minute
+
+	// 控制台读路径走独立小池：批量写入把共享池占满时，KPI/明细查询
+	// 不必排在写会话后面，写入也不会被页面轮询挤占。
+	readPoolMaxOpen = 8
+	readPoolMaxIdle = 2
 )
 
-type poolKey struct{ driver, dsn string }
+type poolKey struct {
+	driver, dsn string
+	read        bool
+}
 
 type pooledDB struct {
 	db   *sql.DB
@@ -44,24 +52,36 @@ var (
 // :memory: 不共享——"每个池各自独立的内存库"本来就是它的语义，测试
 // 隔离依赖这一点。
 func acquireDB(dialect, driver, dsn string) (*sql.DB, func(), error) {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-
 	if dsn == ":memory:" {
-		db, err := openTuned(dialect, driver, dsn)
+		db, err := openTuned(dialect, driver, dsn, false)
 		if err != nil {
 			return nil, nil, err
 		}
 		return db, func() { _ = db.Close() }, nil
 	}
+	return acquirePooled(dialect, driver, dsn, false)
+}
 
-	key := poolKey{driver, dsn}
+// acquireReadDB 返回控制台读路径专用池。SQLite 单连接模型下读与写共用
+// 同一连接（独立连接会自己把自己锁住），返回 nil 表示"沿用主池"。
+func acquireReadDB(dialect, driver, dsn string) (*sql.DB, func(), error) {
+	if strings.EqualFold(dialect, "sqlite") || dsn == ":memory:" {
+		return nil, func() {}, nil
+	}
+	return acquirePooled(dialect, driver, dsn, true)
+}
+
+func acquirePooled(dialect, driver, dsn string, read bool) (*sql.DB, func(), error) {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+
+	key := poolKey{driver: driver, dsn: dsn, read: read}
 	if p, ok := pools[key]; ok {
 		p.refs++
 		db := p.db
 		return db, func() { releaseDB(key) }, nil
 	}
-	db, err := openTuned(dialect, driver, dsn)
+	db, err := openTuned(dialect, driver, dsn, read)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -93,7 +113,7 @@ func releaseClose(release func()) func() error {
 
 // openTuned 打开一个按方言调优的池：SQLite 单写者，进程内单连接串行 +
 // busy_timeout 跨进程等待；网络库共享池设并发上限与空闲回收。
-func openTuned(dialect, driver, dsn string) (*sql.DB, error) {
+func openTuned(dialect, driver, dsn string, read bool) (*sql.DB, error) {
 	dialect = strings.ToLower(dialect)
 	openDSN := dsn
 	if driver == "sqlite" {
@@ -108,6 +128,10 @@ func openTuned(dialect, driver, dsn string) (*sql.DB, error) {
 		// SQLite 单写者：进程内串行化避免 "database is locked"，跨进程由
 		// busy_timeout 兜底；:memory: 的多连接各自独立库，也由此根治。
 		db.SetMaxOpenConns(1)
+	} else if read {
+		db.SetMaxOpenConns(readPoolMaxOpen)
+		db.SetMaxIdleConns(readPoolMaxIdle)
+		db.SetConnMaxIdleTime(sharedPoolIdleTimeout)
 	} else {
 		db.SetMaxOpenConns(sharedPoolMaxOpen)
 		db.SetMaxIdleConns(sharedPoolMaxIdle)

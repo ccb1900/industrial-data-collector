@@ -12,6 +12,10 @@ type stubRows struct{ n int64 }
 func (s stubRows) QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (appstorage.RowsPage, error) {
 	return appstorage.RowsPage{Total: s.n}, nil
 }
+
+func (s stubRows) QueryRowsSample(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (appstorage.RowsPage, error) {
+	return s.QueryRows(ctx, sourceID, date, limit, offset, filters)
+}
 func (s stubRows) Stats(ctx context.Context) (appstorage.StorageStats, error) {
 	return appstorage.StorageStats{}, nil
 }

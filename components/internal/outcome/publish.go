@@ -73,6 +73,11 @@ func PublishCollectionResult(ctx context.Context, emitCtx *runtime.Context, res 
 	case model.StatusSkipped:
 		// 实例制：无数据的日期不物化台账，也不入事件流——结果里的
 		// Skipped 只是日志语义，读取方（日历/列表）不应见到伪任务。
+		// 但"曾经物化、这次探不到文件而 Drop"是退役动作，必须通知
+		// 读取方把旧行清掉。
+		if res.Dropped {
+			_ = event.Serial(ctx, emitCtx, events.CollectionDropped, events.CollectionDroppedPayload{Key: res.Key})
+		}
 	}
 }
 

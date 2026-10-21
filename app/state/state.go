@@ -35,6 +35,10 @@ func stateKey(k model.CollectionKey) string {
 	return string(k.SourceID) + "|" + k.Date.String()
 }
 
+// interruptedNote 是启动回收写入的原因：它让控制台的"原因"列直接说明
+// Running 为什么结束，而不是留一条无解释的失败。
+const interruptedNote = "collection interrupted by process restart"
+
 // MemoryState is an in-process CollectionState. It is safe for concurrent use
 // and supports stale Running leases for process-restart recovery tests.
 type MemoryState struct {
@@ -243,6 +247,31 @@ func (s *MemoryState) MarkFileFailed(ctx context.Context, key model.CollectionKe
 	rec.Attempts++
 	s.failedFiles[ck][file.Identity()] = rec
 	return nil
+}
+
+// ReclaimRunning closes every Running record started before startedBefore as
+// an interrupted failure. It is called once at process start with the host's
+// construction time: rows from the previous process are necessarily orphaned
+// (single-instance lock), while runs started by this process stay untouched.
+func (s *MemoryState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.nowTime()
+	var n int64
+	for k, rec := range s.collections {
+		if rec.Status != model.StatusRunning || !rec.StartedAt.Before(startedBefore) {
+			continue
+		}
+		rec.Status = model.StatusFailed
+		rec.Note = interruptedNote
+		rec.EndedAt = now
+		s.collections[k] = rec
+		n++
+	}
+	return n, nil
 }
 
 // CollectionRecords returns every persisted collection record of one source,
@@ -666,6 +695,16 @@ func (s *FileState) MarkFileFailed(ctx context.Context, key model.CollectionKey,
 		return err
 	}
 	return s.save()
+}
+
+func (s *FileState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := s.MemoryState.ReclaimRunning(ctx, startedBefore)
+	if err != nil || n == 0 {
+		return n, err
+	}
+	return n, s.save()
 }
 
 func (s *FileState) Close() error { return nil }

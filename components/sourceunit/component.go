@@ -128,25 +128,64 @@ func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionK
 	return out, nil
 }
 
+// ReclaimRunning closes Running records left by a previous process so the
+// startup pass can collect those dates immediately (see Host.Startup).
+func (c *SourceUnitComponent) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
+	return c.stateSvc.ReclaimRunning(ctx, startedBefore)
+}
+
 // Projection builds the durable UI projection of this unit: collection
 // records, completed files, and the failure ledger as they exist in the
 // unit's CollectionState right now. It is read-only; the unit keeps no
-// reference to any observer.
-func (c *SourceUnitComponent) Projection() query.UnitState {
-	ctx := context.Background()
+// reference to any observer. Hosts projecting many units of one shared
+// ledger use ProjectionSnapshotter instead.
+func (c *SourceUnitComponent) Projection(ctx context.Context) (query.UnitState, error) {
 	u := query.UnitState{SourceID: string(c.sourceID), Path: c.path}
-	if recs, err := c.stateSvc.CollectionRecords(ctx, c.sourceID); err == nil {
-		u.Collections = recs
-		for _, rec := range recs {
-			if files, err := c.stateSvc.FileRecords(ctx, rec.Key); err == nil {
-				u.CompletedFiles = append(u.CompletedFiles, files...)
-			}
+	recs, err := c.stateSvc.CollectionRecords(ctx, c.sourceID)
+	if err != nil {
+		return u, err
+	}
+	u.Collections = recs
+	for _, rec := range recs {
+		files, err := c.stateSvc.FileRecords(ctx, rec.Key)
+		if err != nil {
+			return u, err
 		}
+		u.CompletedFiles = append(u.CompletedFiles, files...)
 	}
-	if failures, err := c.stateSvc.ListFileFailures(ctx, c.sourceID); err == nil {
-		u.Failures = failures
+	failures, err := c.stateSvc.ListFileFailures(ctx, c.sourceID)
+	if err != nil {
+		return u, err
 	}
-	return u
+	u.Failures = failures
+	return u, nil
+}
+
+// ProjectionSnapshotter exposes the bulk ledger read when this unit's state
+// is backed by a shared SQLite ledger; process-local states return nil and
+// keep the per-unit Projection path.
+func (c *SourceUnitComponent) ProjectionSnapshotter() state.ProjectionSnapshotter {
+	snap, _ := c.stateSvc.(state.ProjectionSnapshotter)
+	return snap
+}
+
+// LedgerReader exposes on-demand history reads for dates outside the read
+// model's projection window (SQLite-backed units only).
+func (c *SourceUnitComponent) LedgerReader() state.LedgerReader {
+	reader, _ := c.stateSvc.(state.LedgerReader)
+	return reader
+}
+
+// ProjectionFromSnapshot assembles this unit's projection from a bulk
+// snapshot of its ledger.
+func (c *SourceUnitComponent) ProjectionFromSnapshot(snap state.ProjectionSnapshot) query.UnitState {
+	return query.UnitState{
+		SourceID:       string(c.sourceID),
+		Path:           c.path,
+		Collections:    snap.Collections[c.sourceID],
+		CompletedFiles: snap.Files[c.sourceID],
+		Failures:       snap.Failures[c.sourceID],
+	}
 }
 
 // Apply starts one worker/event-handler activation for this Source.

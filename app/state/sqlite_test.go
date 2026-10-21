@@ -189,6 +189,54 @@ func TestSQLiteStateLeaseExpiry(t *testing.T) {
 	}
 }
 
+// Restart 回收：上一个进程遗留的 Running 在启动时直接终结，不等 24h
+// 租约；本进程启动后开始的采集与成功记录不受影响。
+func TestSQLiteStateReclaimRunning(t *testing.T) {
+	st := openTestSQLite(t, filepath.Join(t.TempDir(), "state.db"), "prod", "")
+	ctx := context.Background()
+	stale := key("2026-09-06")
+	live := key("2026-09-07")
+	done := key("2026-09-08")
+	if ok, _ := st.Begin(ctx, stale, 24*time.Hour); !ok {
+		t.Fatal("begin stale")
+	}
+	time.Sleep(2 * time.Millisecond)
+	cutoff := time.Now()
+	if ok, _ := st.Begin(ctx, live, 24*time.Hour); !ok {
+		t.Fatal("begin live")
+	}
+	if ok, _ := st.Begin(ctx, done, 24*time.Hour); !ok {
+		t.Fatal("begin done")
+	}
+	if err := st.End(ctx, done, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.ReclaimRunning(ctx, cutoff)
+	if err != nil || n != 1 {
+		t.Fatalf("reclaimed = %d err=%v, want 1", n, err)
+	}
+	status, ok, _ := st.StatusOf(ctx, stale)
+	if !ok || status != model.StatusFailed {
+		t.Fatalf("stale status = %q ok=%v, want Failed", status, ok)
+	}
+	if recs, _ := st.CollectionRecords(ctx, "prod"); len(recs) != 3 || recs[0].Note != interruptedNote {
+		t.Fatalf("collections after reclaim = %+v", recs)
+	}
+	if incomplete, _ := st.ListIncomplete(ctx, "prod", stale.Date, 24*time.Hour); len(incomplete) != 1 {
+		t.Fatalf("reclaimed row must be planned again, got %v", incomplete)
+	}
+	if ok, _ := st.Begin(ctx, stale, 24*time.Hour); !ok {
+		t.Fatal("reclaimed row must be claimable immediately")
+	}
+	if status, _, _ := st.StatusOf(ctx, live); status != model.StatusRunning {
+		t.Fatalf("live run was reclaimed: %q", status)
+	}
+	if status, _, _ := st.StatusOf(ctx, done); status != model.StatusSucceeded {
+		t.Fatalf("succeeded row was touched: %q", status)
+	}
+}
+
 func TestSQLiteStateAppendMode(t *testing.T) {
 	st := openTestSQLite(t, filepath.Join(t.TempDir(), "state.db"), "prod", "")
 	st.SetAppendMode()

@@ -82,6 +82,22 @@ func queryFiles(t *testing.T, adapter *consolehost.Host, sourceID, date string) 
 	return hubQuery[[]wireFile](t, adapter, "files", url.Values{"sourceId": []string{sourceID}, "date": []string{date}})
 }
 
+// wireStats mirrors the overview-stats row (a one-row list on the wire).
+type wireStats struct {
+	Sources     int   `json:"sources"`
+	Pending     int   `json:"pending"`
+	Records     int64 `json:"records"`
+	FilesFailed int   `json:"filesFailed"`
+}
+
+func queryStats(t *testing.T, adapter *consolehost.Host) wireStats {
+	rows := hubQuery[[]wireStats](t, adapter, "overview-stats", url.Values{})
+	if len(rows) != 1 {
+		t.Fatalf("overview-stats returned %d rows, want 1", len(rows))
+	}
+	return rows[0]
+}
+
 // wireFailure mirrors the bridge's flat camelCase failure shape (dto.go),
 // like wireCollection/wireFile — the hub never leaks application structs.
 type wireFailure struct {

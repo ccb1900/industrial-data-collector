@@ -253,6 +253,10 @@ type RowsQuery interface {
 	// dimension is unfiltered (cross-batch queries). filters are
 	// exact-match column filters (declared columns only).
 	QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error)
+	// QueryRowsSample is QueryRows without the COUNT(*) pass: sample views
+	// never show a total, and the count is the expensive half on large
+	// tables. Total in the response is the returned row count.
+	QueryRowsSample(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error)
 	// Stats reports connectivity and per-table row counts for the storage
 	// insight cards.
 	Stats(ctx context.Context) (StorageStats, error)
@@ -260,10 +264,17 @@ type RowsQuery interface {
 
 // TableStorage is the typed relational sink.
 type TableStorage struct {
+	// connMu 保护连接字段与惰性建连：files_per_source>1 时同一实例的
+	// 多个文件并发写，首个批次会同时进入 EnsureConnected。
+	connMu  sync.Mutex
 	db      *sql.DB
 	lazy    bool
 	cfg     TableConfig
 	closeMe func() error
+	// readDB 是控制台读路径的独立连接池（SQLite 为 nil，沿用主池）：
+	// 批量写入占满主池时读查询仍能返回。
+	readDB    *sql.DB
+	readClose func() error
 
 	// 自动字段映射：columns 未声明时，以解码表头建列并可随后续文件增量
 	// 加列（同名文件同表、同名字段同列、新字段 ALTER 补列）。
@@ -273,7 +284,8 @@ type TableStorage struct {
 	autoCols atomic.Pointer[[]ColumnMapping]
 	evoMu    sync.Mutex
 	// 声明式 columns + auto_columns 并存时声明优先，多余表头字段告警。
-	driftWarned map[string]bool // 写路径串行访问
+	warnMu      sync.Mutex
+	driftWarned map[string]bool // 由 warnMu 保护，文件级并发写共享
 	// fileKeyGen 是雪花发号器，schema 阶段立好（initFileKeyGen）。
 	// 原子指针：多个源并发首写时先到先得，后到者复用同一实例。
 	fileKeyGen atomic.Pointer[fileKeyGen]
@@ -404,6 +416,7 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 		return nil, errs.ClassifyStorageError("ping", err)
 	}
 	t := &TableStorage{db: db, cfg: cfg, closeMe: releaseClose(release)}
+	t.attachReadPool()
 	if err := t.ensureSchema(ctx); err != nil {
 		_ = t.Close()
 		return nil, err
@@ -412,7 +425,11 @@ func OpenTable(ctx context.Context, cfg TableConfig) (*TableStorage, error) {
 }
 
 // EnsureConnected opens the connection for a lazy store (open + ping + schema).
+// It is safe for concurrent callers: the first one connects, the rest observe
+// the completed state under connMu (never a half-initialized store).
 func (t *TableStorage) EnsureConnected(ctx context.Context) error {
+	t.connMu.Lock()
+	defer t.connMu.Unlock()
 	if t.db != nil {
 		return nil
 	}
@@ -427,11 +444,12 @@ func (t *TableStorage) EnsureConnected(ctx context.Context) error {
 	}
 	t.db = db
 	t.closeMe = releaseClose(release)
+	t.attachReadPool()
 	if err := t.ensureSchema(ctx); err != nil {
 		// schema 失败（含 file_key_node 冲突）必须回到未连接态：否则下一次
 		// EnsureConnected 看到 db != nil 会误判初始化已完成，带着半套表结构
 		// 进入写路径。
-		_ = t.Close()
+		_ = t.releaseLocked()
 		return err
 	}
 	return nil
@@ -444,6 +462,35 @@ func OpenTableLazy(cfg TableConfig) (*TableStorage, error) {
 		return nil, err
 	}
 	return &TableStorage{lazy: true, cfg: cfg}, nil
+}
+
+// attachReadPool opens the console read pool. Failure degrades to the shared
+// write pool instead of blocking collection startup.
+func (t *TableStorage) attachReadPool() {
+	if t.readDB != nil || t.readClose != nil {
+		return
+	}
+	db, release, err := acquireReadDB(t.cfg.Dialect, t.cfg.Driver, t.cfg.DSN)
+	if err != nil {
+		slog.Warn("read pool unavailable; console reads share the write pool",
+			"table", t.cfg.Table, "error", err)
+		return
+	}
+	if db == nil {
+		return
+	}
+	t.readDB = db
+	t.readClose = releaseClose(release)
+}
+
+// queryDB routes console reads to the dedicated pool when one exists.
+func (t *TableStorage) queryDB() *sql.DB {
+	t.connMu.Lock()
+	defer t.connMu.Unlock()
+	if t.readDB != nil {
+		return t.readDB
+	}
+	return t.db
 }
 
 // dialectTypes maps a logical type to the dialect's DDL type.
@@ -1264,8 +1311,9 @@ func aliasConflicts(c ColumnMapping, positions map[string][]int, records []model
 }
 
 // warnOnce 同一 (方向, 字段) 只记一条：长跑进程按文件刷屏没有信息量。
-// 写路径按源串行，无需加锁（与 driftWarned 的既有约定一致）。
 func (t *TableStorage) warnOnce(kind, key string) bool {
+	t.warnMu.Lock()
+	defer t.warnMu.Unlock()
 	if t.driftWarned == nil {
 		t.driftWarned = map[string]bool{}
 	}
@@ -1297,10 +1345,10 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast b
 		return err
 	}
 	// 连接先行：惰性库在首个批次才打开，派生列后的补建表必须持有 db。
-	if t.db == nil {
-		if err := t.EnsureConnected(ctx); err != nil {
-			return err
-		}
+	// 无条件调用（内部有加锁快路径）：并发首批次各自读 t.db 会与建连写
+	// 竞争，files_per_source>1 时这是必现路径。
+	if err := t.EnsureConnected(ctx); err != nil {
+		return err
 	}
 	// 自动字段映射：以解码表头建列；后续文件出现新表头字段（或既有字段
 	// 的新一次出现）时增量加列，同名文件恒落同表、同名字段恒落同列。
@@ -1509,14 +1557,28 @@ func (t *TableStorage) execChunk(ctx context.Context, tx *sql.Tx, stmt string, c
 
 // QueryRows implements RowsQuery.
 func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error) {
+	return t.queryRows(ctx, sourceID, date, limit, offset, filters, true)
+}
+
+// QueryRowsSample implements RowsQuery: same page, no COUNT(*) pass.
+func (t *TableStorage) QueryRowsSample(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error) {
+	return t.queryRows(ctx, sourceID, date, limit, offset, filters, false)
+}
+
+func (t *TableStorage) queryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string, withTotal bool) (RowsPage, error) {
 	page := RowsPage{Columns: []string{}, Rows: [][]interface{}{}}
-	if t.db == nil {
+	db := t.queryDB()
+	if db == nil {
 		// lazy_connect 模式：读路径同样按需建连，重启后无需一次写入来“唤醒”。
 		if !t.lazy {
 			return page, errs.ClassifyStorageError("closed", sql.ErrConnDone)
 		}
 		if err := t.EnsureConnected(ctx); err != nil {
 			return page, err
+		}
+		db = t.queryDB()
+		if db == nil {
+			return page, errs.ClassifyStorageError("closed", sql.ErrConnDone)
 		}
 	}
 	if limit <= 0 || limit > 1000 {
@@ -1590,11 +1652,14 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	}
 	// Total 先算：页面 SELECT 会在单连接池（SQLite）里占用唯一连接，
 	// 结果集未关就发 COUNT 会同池自锁（无限连接池掩盖了这一顺序缺陷）。
-	if err := t.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT COUNT(*) FROM %s %s", from, w), args...).Scan(&page.Total); err != nil {
-		return page, errs.ClassifyStorageError("count rows", err)
+	// 样本视图不需要总数，跳过 COUNT——大表上它是最贵的一半。
+	if withTotal {
+		if err := db.QueryRowContext(ctx, fmt.Sprintf(
+			"SELECT COUNT(*) FROM %s %s", from, w), args...).Scan(&page.Total); err != nil {
+			return page, errs.ClassifyStorageError("count rows", err)
+		}
 	}
-	rows, err := t.db.QueryContext(ctx, query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return page, errs.ClassifyStorageError("query rows", err)
 	}
@@ -1613,6 +1678,9 @@ func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, lim
 	}
 	if err := rows.Err(); err != nil {
 		return page, errs.ClassifyStorageError("iterate rows", err)
+	}
+	if !withTotal {
+		page.Total = int64(len(page.Rows))
 	}
 	return page, nil
 }
@@ -1652,15 +1720,20 @@ func readFilterClauses(dialect string, qual func(string) string, dateBind func(s
 // counts. A down database reports connected=false instead of failing.
 func (t *TableStorage) Stats(ctx context.Context) (StorageStats, error) {
 	out := StorageStats{Connected: false}
-	if t.db == nil {
+	db := t.queryDB()
+	if db == nil {
 		if !t.lazy {
 			return out, nil
 		}
 		if err := t.EnsureConnected(ctx); err != nil {
 			return out, nil // down database: honest offline, not an error
 		}
+		db = t.queryDB()
+		if db == nil {
+			return out, nil
+		}
 	}
-	if err := t.db.PingContext(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		return out, nil
 	}
 	out.Connected = true
@@ -1669,7 +1742,7 @@ func (t *TableStorage) Stats(ctx context.Context) (StorageStats, error) {
 			continue
 		}
 		var n int64
-		if err := t.db.QueryRowContext(ctx,
+		if err := db.QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM "+quoteIdent(t.cfg.Dialect, name)).Scan(&n); err == nil {
 			out.Tables = append(out.Tables, TableStat{Table: name, Rows: n})
 		}
@@ -1678,13 +1751,27 @@ func (t *TableStorage) Stats(ctx context.Context) (StorageStats, error) {
 }
 
 func (t *TableStorage) Close() error {
-	if t.closeMe == nil {
-		return nil
+	t.connMu.Lock()
+	defer t.connMu.Unlock()
+	return t.releaseLocked()
+}
+
+// releaseLocked 释放两个连接池并回到未连接态；调用方必须持有 connMu。
+func (t *TableStorage) releaseLocked() error {
+	var first error
+	if t.readClose != nil {
+		first = t.readClose()
+		t.readClose = nil
+		t.readDB = nil
 	}
-	err := t.closeMe()
+	if t.closeMe != nil {
+		if err := t.closeMe(); first == nil {
+			first = err
+		}
+	}
 	t.db = nil
 	t.closeMe = nil
-	return err
+	return first
 }
 
 var _ model.Storage = (*TableStorage)(nil)

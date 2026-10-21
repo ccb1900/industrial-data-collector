@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,8 +20,19 @@ import (
 // Query bridge as everything else, without a second lifecycle.
 
 func projectionDocument(root, stateDir, specificDate string) string {
+	return projectionDocumentState(root, stateDir, specificDate, "")
+}
+
+// projectionDocumentState is the same fleet document with an optional
+// [defaults] state_type override (fleet default is file-state).
+func projectionDocumentState(root, stateDir, specificDate, stateType string) string {
+	defaults := fmt.Sprintf(`state_dir = %q, date_policy = "specific", specific_date = %q, batch_size = 1000, file_stable_window_seconds = 0`,
+		stateDir, specificDate)
+	if stateType != "" {
+		defaults += fmt.Sprintf(`, state_type = %q`, stateType)
+	}
 	return fmt.Sprintf(`
-defaults = { state_dir = %q, date_policy = "specific", specific_date = %q, batch_size = 1000, file_stable_window_seconds = 0 }
+defaults = { %s }
 
 [[sinks]]
 name = "mem"
@@ -62,7 +74,7 @@ type = "query-provider"
 [[components]]
 id = "ui"
 type = "ui"
-`, stateDir, specificDate, root)
+`, defaults, root)
 }
 
 func uiAdapter(h *host.Host) *uiplugin.Host {
@@ -150,6 +162,94 @@ func TestProjectionSurvivesRestart(t *testing.T) {
 	fails := queryFailures(t, adapter2)
 	if len(fails) != 1 || fails[0].Name != "broken.csv" {
 		t.Fatalf("projected ledger = %#v, want broken.csv", fails)
+	}
+}
+
+// TestProjectionWindowServesLazyHistory proves the bounded-memory design: the
+// in-memory projection keeps a recent window around the newest ledger date,
+// and older dates are answered lazily from the same SQLite ledger through the
+// console's ordinary queries.
+func TestProjectionWindowServesLazyHistory(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "machine001")
+	stateDir := filepath.Join(base, "state")
+	recent := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	old := time.Now().AddDate(0, 0, -120).Format("2006-01-02")
+	if err := writeDay(root, old, "old.csv", "id,name\n1,a\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDay(root, recent, "new.csv", "id,name\n2,b\n3,c\n"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	collect := func(date string) {
+		t.Helper()
+		parsed, err := sourcecomp.Parse([]byte(projectionDocumentState(root, stateDir, date, "sqlite-state")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := newApp(t)
+		active(ctx, t, h, parsed.Config)
+		if err := triggerReq(ctx, h, model.CollectionRequested{Reason: "startup", SourceID: "machine001-exports"}); err != nil {
+			t.Fatalf("collect %s: %v", date, err)
+		}
+		if err := h.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	collect(old)
+	collect(recent)
+
+	// Reconcile only: the ledger holds both dates, but memory projects only the
+	// window around the newest one (120 days back is outside the 90-day window).
+	parsed, err := sourcecomp.Parse([]byte(projectionDocumentState(root, stateDir, recent, "sqlite-state")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newApp(t)
+	defer h.Close(context.Background())
+	active(ctx, t, h, parsed.Config)
+	adapter := uiAdapter(h)
+	if adapter == nil {
+		t.Fatal("ui adapter missing")
+	}
+
+	cols := hubQuery[[]wireCollection](t, adapter, "collections", url.Values{"sourceId": []string{"machine001-exports"}})
+	records := map[string]int64{}
+	for _, c := range cols {
+		if c.SourceID != "machine001-exports" {
+			continue
+		}
+		if c.Status != "Succeeded" {
+			t.Fatalf("projected collection %s = %#v, want Succeeded", c.Date, c)
+		}
+		records[c.Date] = c.Records
+	}
+	if records[old] != 1 || records[recent] != 2 {
+		t.Fatalf("projected records = %#v, want old=1 recent=2 (old served from the ledger)", records)
+	}
+
+	oldFiles := queryFiles(t, adapter, "machine001-exports", old)
+	if len(oldFiles) != 1 || oldFiles[0].Name != "old.csv" || oldFiles[0].Records != 1 {
+		t.Fatalf("lazy files for %s = %#v", old, oldFiles)
+	}
+	recentFiles := queryFiles(t, adapter, "machine001-exports", recent)
+	if len(recentFiles) != 1 || recentFiles[0].Name != "new.csv" || recentFiles[0].Records != 2 {
+		t.Fatalf("files for %s = %#v", recent, recentFiles)
+	}
+
+	one := hubQuery[wireCollection](t, adapter, "collection", url.Values{
+		"sourceId": []string{"machine001-exports"}, "date": []string{old},
+	})
+	if one.Date != old || one.Status != "Succeeded" || one.Records != 1 || one.FilesCompleted != 1 {
+		t.Fatalf("lazy collection = %#v", one)
+	}
+
+	stats := queryStats(t, adapter)
+	if stats.Sources != 1 || stats.Pending != 0 || stats.Records != 3 || stats.FilesFailed != 0 {
+		t.Fatalf("overview stats = %#v, want lifetime totals across both dates", stats)
 	}
 }
 

@@ -191,6 +191,24 @@ func (s *SQLiteState) MarkFileFailed(ctx context.Context, key model.CollectionKe
 	return err
 }
 
+// ReclaimRunning closes this source's Running rows started before the current
+// process began. The failure ledger is left intact: it is exactly what the
+// retry needs.
+func (s *SQLiteState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	res, err := s.store.db.ExecContext(ctx, `UPDATE state_collections
+		SET status = ?, note = ?, ended_at = ?
+		WHERE source_id = ? AND status = ? AND started_at < ?`,
+		string(model.StatusFailed), interruptedNote, time.Now().UnixNano(),
+		string(s.sourceID), string(model.StatusRunning), startedBefore.UnixNano())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *SQLiteState) ListFileFailures(ctx context.Context, sourceID model.SourceID) ([]model.FileFailure, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

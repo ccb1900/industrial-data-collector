@@ -155,8 +155,47 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := register(func() (func() error, error) {
-		return hubRegistry.RegisterQuery("collections", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
-			views, err := collections.ListCollections(ctx)
+		return hubRegistry.RegisterQuery("collections", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
+			filter, herr := parseCollectionFilter(params)
+			if herr != nil {
+				return nil, herr
+			}
+			views, err := collections.ListCollectionsFiltered(ctx, filter)
+			if err != nil {
+				return nil, hubErr(err)
+			}
+			return toUICollections(views), nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	// 概览三个聚合查询：KPI、趋势与待处理清单由查询能力在服务端算完再回传，
+	// 浏览器不再为了几个数字接收整段采集历史（现场 1.6 万行、2MB 以上）。
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("overview-stats", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			stats, err := collections.Stats(ctx)
+			if err != nil {
+				return nil, hubErr(err)
+			}
+			return []overviewStatsRow{statsRow(stats)}, nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("overview-trend", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			points, err := collections.Trend(ctx)
+			if err != nil {
+				return nil, hubErr(err)
+			}
+			return trendRows(points), nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("overview-attention", owner, func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+			views, err := collections.Attention(ctx)
 			if err != nil {
 				return nil, hubErr(err)
 			}

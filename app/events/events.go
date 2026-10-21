@@ -23,7 +23,17 @@ var (
 	// keeps the "missed day, waiting for data" state visible to observers
 	// instead of leaving it invisible between Pending and Failed.
 	CollectionPending = runtime.NewEventKey[CollectionPendingPayload]("collection.pending")
+
+	// CollectionDropped retires a previously materialized row: a later probe
+	// found no matching files and the ledger entry was removed. It is only
+	// published for rows that actually existed, so the catch-up window's many
+	// never-materialized dates stay out of the event stream.
+	CollectionDropped = runtime.NewEventKey[CollectionDroppedPayload]("collection.dropped")
 )
+
+type CollectionDroppedPayload struct {
+	Key model.CollectionKey
+}
 
 type CollectionPendingPayload struct {
 	Key  model.CollectionKey

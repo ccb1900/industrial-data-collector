@@ -107,6 +107,106 @@ func TestCollectorPartialFileFailureSkipsCompletedFiles(t *testing.T) {
 	}
 }
 
+// blockingParser 让流一直读到 ctx 取消：模拟采集中途进程收到停止信号。
+type blockingParser struct{ started chan struct{} }
+
+func (p *blockingParser) Parse(ctx context.Context, _ io.Reader) (model.CSVDocument, error) {
+	return model.CSVDocument{Data: &blockingStream{ctx: ctx, started: p.started}}, nil
+}
+
+type blockingStream struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingStream) Header() []string { return []string{"id"} }
+
+func (s *blockingStream) Next() (model.Record, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.ctx.Done()
+	return model.Record{}, s.ctx.Err()
+}
+
+// 取消后终态必须落账：Running 行会被 Begin 的 24h 租约和 ListIncomplete
+// 同时挡住，只有进程重启才会回收——服务停止再启动的常见操作会让日期
+// 静默停采一天。
+func TestCanceledCollectionEndsPendingNotRunning(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id\n1\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	st := state.NewMemory()
+	e := newExecutor(t, root, st, storage.NewMemory(storage.MemoryOptions{}))
+	bp := &blockingParser{started: make(chan struct{})}
+	e.Parser = bp
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = e.Handle(ctx, model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	}()
+	select {
+	case <-bp.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("collection never reached the parser")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("collection did not return after cancel")
+	}
+
+	key := model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-06")}
+	got, ok, err := st.StatusOf(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got != model.StatusPending {
+		t.Fatalf("state after cancel = %q (found=%v), want Pending", got, ok)
+	}
+	incomplete, err := st.ListIncomplete(context.Background(), "prod", key.Date, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incomplete) != 1 {
+		t.Fatalf("canceled date must stay listed for recovery, got %v", incomplete)
+	}
+}
+
+// 重试时已完成的文件走 FileCompleted 短路，必须回报台账里的真实行数：
+// 带 0 发 FileCompleted 会把读模型里的记录数覆盖成 0。
+func TestRetryReportsRecordsOfAlreadyCompletedFiles(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n2,b\n")
+	writeDateCSV(t, root, "2026-09-06", "b.csv", "id,name\n\"bad\n")
+	st := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, root, st, mem)
+	if _, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "pass1", Date: ptr(date(t, "2026-09-06"))}); err == nil {
+		t.Fatal("malformed b.csv must fail the run")
+	}
+	if mem.Total() != 2 {
+		t.Fatalf("rows after pass1 = %d, want 2 (a.csv only)", mem.Total())
+	}
+
+	// 修正 b.csv（size 变化 → 新身份），a.csv 保持不变走已完成短路。
+	writeDateCSV(t, root, "2026-09-06", "b.csv", "id,name\n3,c\n4,d\n5,e\n")
+	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "pass2", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusSucceeded {
+		t.Fatalf("result = %#v, want Succeeded", res)
+	}
+	if res[0].Records != 5 {
+		t.Fatalf("result records = %d, want 5 (2 stored for a.csv + 3 new)", res[0].Records)
+	}
+	if got := mem.Total(); got != 5 {
+		t.Fatalf("stored rows = %d, want 5", got)
+	}
+}
+
 func TestMissingDirectoryForPastDaySkips(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
@@ -256,6 +356,86 @@ func TestUnstableFilesNotMaterialized(t *testing.T) {
 	}
 	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", date(t, "2026-09-06"), 0); len(incomplete) != 0 {
 		t.Fatalf("unstable date must not be materialized, got %v", incomplete)
+	}
+}
+
+// 零文件探针必须清掉旧进程留下的非成功台账（Running/Failed/Pending），
+// 并标记 Dropped 让观察层退役 UI 行；Succeeded 是历史事实，保留。
+func TestZeroFileProbeDropsStaleLedger(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	key := model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-07")}
+
+	cases := []struct {
+		name    string
+		status  model.Status
+		dropped bool
+	}{
+		{name: "running", status: model.StatusRunning, dropped: true},
+		{name: "failed", status: model.StatusFailed, dropped: true},
+		{name: "succeeded", status: model.StatusSucceeded, dropped: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := state.NewMemory()
+			if ok, err := st.Begin(ctx, key, time.Hour); err != nil || !ok {
+				t.Fatalf("seed begin: ok=%v err=%v", ok, err)
+			}
+			if tc.status != model.StatusRunning {
+				if err := st.End(ctx, key, tc.status, "seed"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e := newExecutor(t, root, st, storage.NewMemory(storage.MemoryOptions{}))
+			res, err := e.Handle(ctx, model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-07"))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res) != 1 || res[0].Status != model.StatusSkipped {
+				t.Fatalf("result = %#v, want Skipped", res)
+			}
+			if res[0].Dropped != tc.dropped {
+				t.Fatalf("Dropped = %v, want %v", res[0].Dropped, tc.dropped)
+			}
+			got, ok, _ := st.StatusOf(ctx, key)
+			if tc.status == model.StatusSucceeded {
+				if !ok || got != model.StatusSucceeded {
+					t.Fatalf("succeeded history lost: %v (found=%v)", got, ok)
+				}
+			} else if ok {
+				t.Fatalf("stale record %s must be dropped, got %s", tc.status, got)
+			}
+		})
+	}
+}
+
+// 旧进程中断留下的 Running 在重探到"文件不稳定"时必须落成 Pending：
+// 保持 Running 会让 UI 永远显示"采集中"，租约还会挡住后续补采。
+func TestUnstableProbeConvertsStaleRunningToPending(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n")
+	ctx := context.Background()
+	key := model.CollectionKey{SourceID: "prod", Date: date(t, "2026-09-06")}
+	st := state.NewMemory()
+	if ok, err := st.Begin(ctx, key, time.Hour); err != nil || !ok {
+		t.Fatalf("seed begin: ok=%v err=%v", ok, err)
+	}
+	e := newExecutor(t, root, st, storage.NewMemory(storage.MemoryOptions{}))
+	e.Source.(*source.Source).StableWindow = 30 * time.Second
+	res, err := e.Handle(ctx, model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != model.StatusPending {
+		t.Fatalf("result = %#v, want Pending", res)
+	}
+	got, ok, _ := st.StatusOf(ctx, key)
+	if !ok || got != model.StatusPending {
+		t.Fatalf("stale running = %v (found=%v), want Pending", got, ok)
+	}
+	incomplete, _ := st.ListIncomplete(ctx, "prod", key.Date, 0)
+	if len(incomplete) != 1 {
+		t.Fatalf("pending date must stay listed for recovery, got %v", incomplete)
 	}
 }
 

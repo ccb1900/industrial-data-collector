@@ -79,10 +79,16 @@ type FileQueryRequest struct {
 	Date     model.CollectionDate
 }
 
-// CollectionQuery reads collection-level state.
+// CollectionQuery reads collection-level state. ListCollections returns the
+// in-memory projection window; ListCollectionsFiltered completes the result
+// from the persisted ledger when history is older than that window.
 type CollectionQuery interface {
 	ListCollections(ctx context.Context) ([]CollectionView, error)
+	ListCollectionsFiltered(ctx context.Context, filter CollectionFilter) ([]CollectionView, error)
 	GetCollection(ctx context.Context, key model.CollectionKey) (CollectionView, error)
+	Stats(ctx context.Context) (OverviewStats, error)
+	Trend(ctx context.Context) ([]TrendPoint, error)
+	Attention(ctx context.Context) ([]CollectionView, error)
 }
 
 // SourceQuery reads source-level state.

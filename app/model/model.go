@@ -171,6 +171,11 @@ type CollectionResult struct {
 	Files     []FileResult
 	Records   int64
 	Duration  time.Duration
+	// Dropped reports that a previously materialized record was removed from
+	// the ledger during this probe (no matching files anymore). It lets the
+	// observation layer retire the row without emitting an event for every
+	// never-materialized date.
+	Dropped bool
 }
 
 // CollectionRequested is the application event that tells a collector to work.
@@ -271,6 +276,13 @@ type CollectionState interface {
 	// data missing). A probed date with no files and no expectation leaves
 	// no trace — Drop clears stale records from earlier semantics.
 	Drop(ctx context.Context, key CollectionKey) error
+	// ReclaimRunning closes Running records started before startedBefore —
+	// rows left behind by a previous process. A collector holds a
+	// single-instance lock, so at startup every such row is orphaned: without
+	// this it would wait out the lease and the interrupted date would not be
+	// re-collected. The cutoff keeps collections started by the current
+	// process (e.g. a cron firing during startup) untouched.
+	ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error)
 	Close() error
 }
 

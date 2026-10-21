@@ -96,6 +96,13 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := runtime.On(ctx, events.CollectionDropped, func(dctx context.Context, p events.CollectionDroppedPayload) error {
+		c.model.OnCollectionDropped(p.Key)
+		c.obs.Publish(query.ObservationEvent{Type: "CollectionDropped", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	// Started 锚点：只进观察流、不改读取模型投影——它们标记时间线
 	// 起点（"正在采"），终结事件负责状态本身。
 	if err := runtime.On(ctx, events.CollectionStarted, func(dctx context.Context, p events.CollectionStartedPayload) error {
@@ -147,6 +154,16 @@ func (c *QueryComponent) AttachUnits(units []query.UnitState) error {
 	}
 	c.model.AttachUnits(units)
 	return nil
+}
+
+// SetHistory installs the persisted-ledger reader for dates outside the
+// in-memory projection window. The host calls it after reconciliation with
+// one reader per ledger-backed source; nil keeps the read model self-contained.
+func (c *QueryComponent) SetHistory(h query.HistorySource) {
+	if c.model == nil {
+		return
+	}
+	c.model.SetHistory(h)
 }
 
 // command turns an Application Command into the CollectionRequested Runtime

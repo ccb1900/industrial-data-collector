@@ -67,6 +67,87 @@ func TestMemoryStateFailedCanRetryAndListIncomplete(t *testing.T) {
 	}
 }
 
+// Restart 回收：只终结"进程启动之前"遗留的 Running；本进程刚起跑的
+// 采集与已成功记录保持不变，回收后的日期立刻可被 Begin 认领。
+func TestMemoryStateReclaimRunning(t *testing.T) {
+	st := NewMemory()
+	ctx := context.Background()
+	stale := key("2026-09-06")
+	live := key("2026-09-07")
+	done := key("2026-09-08")
+	if ok, _ := st.Begin(ctx, stale, 24*time.Hour); !ok {
+		t.Fatal("begin stale")
+	}
+	time.Sleep(2 * time.Millisecond)
+	cutoff := time.Now()
+	if ok, _ := st.Begin(ctx, live, 24*time.Hour); !ok {
+		t.Fatal("begin live")
+	}
+	if ok, _ := st.Begin(ctx, done, 24*time.Hour); !ok {
+		t.Fatal("begin done")
+	}
+	if err := st.End(ctx, done, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.ReclaimRunning(ctx, cutoff)
+	if err != nil || n != 1 {
+		t.Fatalf("reclaimed = %d err=%v, want 1", n, err)
+	}
+	status, ok, _ := st.StatusOf(ctx, stale)
+	if !ok || status != model.StatusFailed {
+		t.Fatalf("stale status = %q ok=%v, want Failed", status, ok)
+	}
+	if incomplete, _ := st.ListIncomplete(ctx, "prod", stale.Date, 24*time.Hour); len(incomplete) != 1 {
+		t.Fatalf("reclaimed row must be planned again, got %v", incomplete)
+	}
+	if ok, _ := st.Begin(ctx, stale, 24*time.Hour); !ok {
+		t.Fatal("reclaimed row must be claimable immediately")
+	}
+	if status, _, _ := st.StatusOf(ctx, live); status != model.StatusRunning {
+		t.Fatalf("live run was reclaimed: %q", status)
+	}
+	if status, _, _ := st.StatusOf(ctx, done); status != model.StatusSucceeded {
+		t.Fatalf("succeeded row was touched: %q", status)
+	}
+}
+
+func TestFileStateReclaimRunningPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "collection-state.json")
+	ctx := context.Background()
+	k := key("2026-09-06")
+	first, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := first.Begin(ctx, k, 24*time.Hour); !ok {
+		t.Fatal("begin")
+	}
+	// 新进程装载：Running 原样恢复，直到启动回收把它落成 Failed。
+	second, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, ok, _ := second.StatusOf(ctx, k); !ok || status != model.StatusRunning {
+		t.Fatalf("restored status = %q ok=%v, want Running", status, ok)
+	}
+	if n, err := second.ReclaimRunning(ctx, time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("reclaimed = %d err=%v", n, err)
+	}
+	third, err := NewFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok, _ := third.StatusOf(ctx, k)
+	if !ok || status != model.StatusFailed {
+		t.Fatalf("reclaimed status did not persist: %q ok=%v", status, ok)
+	}
+	recs, _ := third.CollectionRecords(ctx, "prod")
+	if len(recs) != 1 || recs[0].Note != interruptedNote {
+		t.Fatalf("reclaim note = %+v", recs)
+	}
+}
+
 func TestFileStatePersistsAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "state.json")
 	first, err := NewFile(path)

@@ -82,7 +82,12 @@ Recovery is planned at every trigger, in the collector application layer
 
 1. **Known incomplete** collection rows (Failed, Pending, stale Running) are
    claimed again. A `Pending` row usually means the date directory did not
-   exist yet (late export) and is rechecked.
+   exist yet (late export) and is rechecked. At startup the host first
+   reclaims every Running row started before this process: the
+   single-instance lock guarantees such rows are orphans from a previous
+   run, so they are closed as Failed with the note `collection interrupted
+   by process restart` and immediately scheduled again — not left Running
+   for the 24h lease.
 2. **Calendar gaps** are synthesized from the last succeeded business date
    through the target date, so a machine that was off for two days collects
    both missed days plus yesterday on the next trigger — one Runtime Event,
@@ -696,7 +701,7 @@ legacy   骨架：数据表实际行数=5  注册表 records=0  注册表行数=
 
 | Situation | Behavior |
 | --- | --- |
-| File still being written | Stable-window discovery (`file_stable_window_seconds`) skips it; a later trigger picks it up. |
+| File still being written | Stable-window discovery (`file_stable_window_seconds`) holds the whole date `Pending` — stable siblings are not finalized either, so nothing is skipped as Succeeded; the next trigger collects the batch once every candidate is stable. |
 | File changes between discovery and read | Identity (size+mtime) mismatch fails the read as `source changed`; retried as a new identity later. |
 | Machine off for days | Calendar-gap planning + `catchup_days` window; oldest day first. |
 | Date directory does not exist yet | Collection stays `Pending` and is rechecked on later triggers. |

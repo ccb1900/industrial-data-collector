@@ -95,6 +95,24 @@ func TestObservationSubscribePublishAndFeed(t *testing.T) {
 	}
 }
 
+// Drop 事件必须把行从投影中退役：零文件探针清掉旧 Running 后，UI 不能
+// 继续显示一条永远不会执行的"采集中"。
+func TestOnCollectionDroppedRetiresRow(t *testing.T) {
+	ctx := context.Background()
+	m := NewReadModel()
+	k := key("src-a", "2026-09-06")
+	m.OnFileFailed(k, file("src-a", "/a.csv", "a.csv"), model.Metadata{}, 0, "boom")
+	if _, err := m.GetCollection(ctx, k); err != nil {
+		t.Fatalf("row must exist before drop: %v", err)
+	}
+	m.OnCollectionDropped(k)
+	if _, err := m.GetCollection(ctx, k); err == nil {
+		t.Fatal("dropped row must disappear from the projection")
+	}
+	// 未知键的 Drop 是 no-op。
+	m.OnCollectionDropped(key("src-a", "2026-09-07"))
+}
+
 // 重启投影不得复活已修复的失败：持久层里同一文件身份既有失败账条目、
 // 又有完成记录时（旧版本成功清账不变量缺失留下的孤儿），完成的实事
 // 覆盖过期的失败——成功实例上不允许数出失败文件。

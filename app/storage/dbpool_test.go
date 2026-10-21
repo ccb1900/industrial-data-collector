@@ -31,7 +31,7 @@ func TestSharedPoolRefcountLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	poolMu.Lock()
-	p, shared := pools[poolKey{"sqlite", dsn}]
+	p, shared := pools[poolKey{driver: "sqlite", dsn: dsn}]
 	poolMu.Unlock()
 	if !shared || p.refs != 2 {
 		t.Fatalf("pool refs = %d, want 2 shared entries (found=%v)", p.refs, shared)
@@ -51,7 +51,7 @@ func TestSharedPoolRefcountLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	poolMu.Lock()
-	_, still := pools[poolKey{"sqlite", dsn}]
+	_, still := pools[poolKey{driver: "sqlite", dsn: dsn}]
 	poolMu.Unlock()
 	if !still {
 		t.Fatal("pool must survive while one user remains")
@@ -61,7 +61,7 @@ func TestSharedPoolRefcountLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	poolMu.Lock()
-	_, alive := pools[poolKey{"sqlite", dsn}]
+	_, alive := pools[poolKey{driver: "sqlite", dsn: dsn}]
 	poolMu.Unlock()
 	if alive {
 		t.Fatal("pool must be closed after the last release")
@@ -110,7 +110,7 @@ func TestSharedPoolConcurrentAcquire(t *testing.T) {
 	}
 	wg.Wait()
 	poolMu.Lock()
-	p, ok := pools[poolKey{"sqlite", dsn}]
+	p, ok := pools[poolKey{driver: "sqlite", dsn: dsn}]
 	poolMu.Unlock()
 	if !ok || p.refs != n {
 		t.Fatalf("refs = %d, want %d", p.refs, n)
@@ -121,7 +121,7 @@ func TestSharedPoolConcurrentAcquire(t *testing.T) {
 		}
 	}
 	poolMu.Lock()
-	_, alive := pools[poolKey{"sqlite", dsn}]
+	_, alive := pools[poolKey{driver: "sqlite", dsn: dsn}]
 	poolMu.Unlock()
 	if alive {
 		t.Fatal("pool must close after all releases")

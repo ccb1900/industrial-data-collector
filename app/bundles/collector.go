@@ -55,23 +55,16 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					"kind": "stats",
 					"items": []any{
-						map[string]any{"label": "数据源", "query": "sources", "op": "count"},
-						map[string]any{"label": "待处理", "query": "collections", "op": "count", "warn": true,
-							"filter": map[string]any{"key": "status", "in": []any{"Failed", "Pending"}}},
-						map[string]any{"label": "累计记录", "query": "collections", "op": "sum", "field": "records"},
-						map[string]any{"label": "失败文件", "query": "collections", "op": "sum", "field": "filesFailed", "warn": true},
+						map[string]any{"label": "数据源", "query": "overview-stats", "op": "sum", "field": "sources"},
+						map[string]any{"label": "待处理", "query": "overview-stats", "op": "sum", "field": "pending", "warn": true},
+						map[string]any{"label": "累计记录", "query": "overview-stats", "op": "sum", "field": "records"},
+						map[string]any{"label": "失败文件", "query": "overview-stats", "op": "sum", "field": "filesFailed", "warn": true},
 					},
 				},
 				map[string]any{
-					"kind": "table", "title": "需要处理（失败 / 等待数据）", "query": "collections", "pageSize": 8,
-					// 命中任一即上榜：失败/等待中的采集，或带失败文件但整体
-					// 已成功的采集（部分成功也要能找到是哪些文件失败）。
-					"filter": map[string]any{
-						"anyOf": []any{
-							map[string]any{"key": "status", "in": []any{"Failed", "Pending"}},
-							map[string]any{"key": "filesFailed", "gt": 0},
-						},
-					},
+					// 服务端已按"失败/等待中，或带失败文件"筛好并保持源/日期
+					// 顺序，表格只负责分页展示。
+					"kind": "table", "title": "需要处理（失败 / 等待数据）", "query": "overview-attention", "pageSize": 8,
 					"columns": []any{
 						map[string]any{"key": "sourceId", "title": "数据源"},
 						map[string]any{"key": "date", "title": "采集日期"},
@@ -81,7 +74,7 @@ func consoleRows() []extconfig.ComponentConfig {
 					},
 				},
 				map[string]any{
-					"kind": "trend", "title": "按日采集量", "query": "collections", "dateKey": "date",
+					"kind": "trend", "title": "按日采集量", "query": "overview-trend", "dateKey": "date",
 					"series": []any{
 						map[string]any{"key": "records", "label": "采集"},
 						map[string]any{"key": "filesFailed", "label": "失败"},
@@ -119,7 +112,8 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "status", "title": "状态"},
 					},
 					"detailViews": []any{
-						map[string]any{"kind": "calendar", "title": "采集状态日历", "query": "collections"},
+						map[string]any{"kind": "calendar", "title": "采集状态日历", "query": "collections",
+							"params": map[string]any{"sourceId": "$focus.sourceId"}},
 						map[string]any{
 							"kind": "kv", "title": "当日采集详情", "query": "collection",
 							"params": map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
@@ -153,7 +147,7 @@ func consoleRows() []extconfig.ComponentConfig {
 						},
 						map[string]any{
 							"kind": "table", "title": "数据样本（按采集顺序）", "query": "rows",
-							"params":   map[string]any{"sourceId": "$focus.sourceId", "limit": "5"},
+							"params":   map[string]any{"sourceId": "$focus.sourceId", "limit": "5", "sample": "1"},
 							"pageSize": 5, "hideWhenEmpty": true,
 						},
 					},

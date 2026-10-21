@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -87,6 +88,18 @@ type Executor struct {
 func (e *Executor) observe(f func(o Observer)) {
 	if e.Observer != nil {
 		f(e.Observer)
+	}
+}
+
+// endState 必须在作业 ctx 已取消时也能落账：Running 行会被 Begin 的 24h
+// 租约和 ListIncomplete 同时挡住，只有进程重启才会回收。终态写入用一个
+// 脱钩的短超时 ctx，失败只记日志（不能覆盖真正要返回的采集错误）。
+func (e *Executor) endState(ctx context.Context, key model.CollectionKey, status model.Status, note string) {
+	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := e.State.End(endCtx, key, status, note); err != nil {
+		e.Config.withDefaults().Logger.Warn("end collection state failed",
+			"key", key.String(), "status", string(status), "error", err.Error())
 	}
 }
 
@@ -201,7 +214,13 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		case errs.Is(err, errs.ErrNotFound):
 			// 文件不存在 = 无数据 = 不物化。没有实例、没有重试、没有
 			// 告警——"没有"就是没有。这不是失败，只是当天没有数据。
-			_ = e.State.Drop(ctx, key)
+			// 非 Succeeded 的旧记录（旧进程留下的 Running/Failed、孤儿
+			// 失败账）不再是证据：清掉并通知观察层退役 UI 行；Succeeded
+			// 是历史事实，即使上游已删除目录也保留。
+			if st, existed, sErr := e.State.StatusOf(ctx, key); sErr == nil && !(existed && st == model.StatusSucceeded) {
+				result.Dropped = existed
+				_ = e.State.Drop(ctx, key)
+			}
 			result.Status = model.StatusSkipped
 			result.Error = "no data for this date"
 			return result
@@ -210,6 +229,11 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			// 终态化会把晚到文件永久丢失。
 			result.Status = model.StatusPending
 			result.Error = fmt.Sprintf("files inside stable window: %v", err)
+			// 旧进程中断留下的 Running 必须落成 Pending：否则重启后
+			// 那一行永远停在 Running，Begin 的租约还会挡住后续重试。
+			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok && st == model.StatusRunning {
+				e.endState(ctx, key, model.StatusPending, "waiting for files to become stable")
+			}
 			cfg.Logger.Warn("files unstable; will re-probe next trigger", "key", key.String())
 			return result
 		default:
@@ -221,15 +245,19 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 				result.Error = fmt.Sprintf("begin state: %v", berr)
 				return result
 			} else if ok {
-				_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+				e.endState(ctx, key, model.StatusFailed, result.Error)
 			}
 			cfg.Logger.Error("source list failed", "key", key.String(), "error", result.Error)
 			return result
 		}
 	}
 	if len(files) == 0 {
-		if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok &&
-			(st == model.StatusSkipped || st == model.StatusPending) {
+		// 没有任何候选文件 = 该日期没有数据（或文件已被上游删除）。
+		// 非 Succeeded 的旧记录（Running/Failed/Pending，以及只有失败账的
+		// 孤儿键）不再是证据：Drop 掉整份台账，并通知观察层退役 UI 行。
+		// Succeeded 是历史事实，append 模式重触发时保留。
+		if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && !(ok && st == model.StatusSucceeded) {
+			result.Dropped = ok
 			_ = e.State.Drop(ctx, key)
 		}
 		result.Status = model.StatusSkipped
@@ -251,9 +279,15 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	e.observe(func(o Observer) { o.CollectionStarted(ctx, key) })
 	defer func() {
 		if result.Status == model.StatusRunning {
-			result.Status = model.StatusFailed
-			result.Error = "unfinished collection"
-			_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+			status := model.StatusFailed
+			note := "unfinished collection"
+			if ctx.Err() != nil {
+				status = model.StatusPending
+				note = "collection canceled; will re-probe"
+			}
+			result.Status = status
+			result.Error = note
+			e.endState(ctx, key, status, note)
 		}
 	}()
 
@@ -263,9 +297,9 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		// 串行：发现顺序，取消即中止（原语义）。
 		for i := range files {
 			if err := ctx.Err(); err != nil {
-				result.Status = model.StatusFailed
-				result.Error = err.Error()
-				_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+				result.Status = model.StatusPending
+				result.Error = "collection canceled; will re-probe"
+				e.endState(ctx, key, model.StatusPending, result.Error)
 				return result
 			}
 			fr := collectOne(i)
@@ -313,9 +347,9 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			result.Records += fr.Records
 		}
 		if err := ctx.Err(); err != nil {
-			result.Status = model.StatusFailed
-			result.Error = err.Error()
-			_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+			result.Status = model.StatusPending
+			result.Error = "collection canceled; will re-probe"
+			e.endState(ctx, key, model.StatusPending, result.Error)
 			return result
 		}
 	}
@@ -324,12 +358,18 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	if len(failErrs) > 0 {
 		result.Status = model.StatusFailed
 		result.Error = errors.Join(failErrs...).Error()
-		_ = e.State.End(ctx, key, model.StatusFailed, result.Error)
+		status := model.StatusFailed
+		note := result.Error
+		if ctx.Err() != nil {
+			status = model.StatusPending
+			note = "collection canceled; will re-probe: " + note
+		}
+		e.endState(ctx, key, status, note)
 		cfg.Logger.Error("collection failed", "key", key.String(), "error", result.Error, "records", result.Records, "duration", result.Duration)
 		return result
 	}
 	result.Status = model.StatusSucceeded
-	_ = e.State.End(ctx, key, model.StatusSucceeded, "")
+	e.endState(ctx, key, model.StatusSucceeded, "")
 	cfg.Logger.Info("collection completed", "key", key.String(), "files", len(result.Files), "records", result.Records, "duration", result.Duration)
 	return result
 }
@@ -339,6 +379,31 @@ func (e *Executor) collectFileTracked(ctx context.Context, key model.CollectionK
 	fr := e.collectFile(ctx, key, file)
 	e.observe(func(o Observer) { o.FileDone(ctx, key, &fr) })
 	return fr
+}
+
+// completedRecordCount 取回已完成文件的持久化行数。查不到时返回 0，
+// 不因读模型展示失败而把整次采集判失败。
+func (e *Executor) completedRecordCount(ctx context.Context, key model.CollectionKey, file model.FileIdentity) int64 {
+	// 取消路径同样要取到行数：否则 FileDone 带 0 又会把读模型覆盖成 0。
+	readCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		readCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+	}
+	recs, err := e.State.FileRecords(readCtx, key)
+	if err != nil {
+		e.Config.withDefaults().Logger.Warn("read completed file record count failed",
+			"key", key.String(), "file", file.Name, "error", err.Error())
+		return 0
+	}
+	id := file.Identity()
+	for i := range recs {
+		if recs[i].File.Identity() == id {
+			return recs[i].Records
+		}
+	}
+	return 0
 }
 
 func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, file *model.FileIdentity) model.FileResult {
@@ -362,6 +427,10 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 	if done {
 		cfg.Logger.Debug("file already processed", "key", key.String(), "file", file.Name)
 		fr.Status = model.StatusSucceeded
+		// 已完成的文件在重试/append 触发时会被重新扫到。带 0 发
+		// FileCompleted 会把读模型里的真实行数覆盖成 0（重启投影才恢复），
+		// 所以这里取回持久化行数，保持事件载荷与台账一致。
+		fr.Records = e.completedRecordCount(ctx, key, *file)
 		return fr
 	}
 	cfg.Logger.Info("file started", "key", key.String(), "file", file.Name)
@@ -453,7 +522,8 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 	// MarkFileCompleted 之后不可行——FileCompleted 守卫会让"已成功未
 	// 备份"的文件被永久短路。
 	if cfg.BackupDir != "" {
-		if err := appbackup.File(cfg.BackupDir, string(key.SourceID), key.Date.String(), *file); err != nil {
+		dateDir := filepath.Join(e.Source.Root(), key.Date.String())
+		if err := appbackup.File(cfg.BackupDir, string(key.SourceID), key.Date.String(), dateDir, *file); err != nil {
 			fr.Status = model.StatusFailed
 			fr.Error = err.Error()
 			cfg.Logger.Error("file backup failed", "key", key.String(), "file", file.Name, "error", fr.Error)

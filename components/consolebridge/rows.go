@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"strconv"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
@@ -13,6 +14,13 @@ import (
 
 	appstorage "gocordis-csv-collector/app/storage"
 	storageplugin "gocordis-csv-collector/components/storage"
+)
+
+const (
+	// 控制台查询必须有界：hub 用基础上下文调用处理器，客户端刷新并不会
+	// 取消服务端工作，没有超时的慢 COUNT 会一直占着连接。
+	rowsQueryTimeout    = 20 * time.Second
+	storageQueryTimeout = 10 * time.Second
 )
 
 // RowsComponent exposes the typed table sink's read side as the "rows"
@@ -37,6 +45,8 @@ func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	unStorage, err := hubRegistry.RegisterQuery("storage", "console-rows", func(ctx context.Context, _ url.Values) (any, *hub.Error) {
+		ctx, cancel := context.WithTimeout(ctx, storageQueryTimeout)
+		defer cancel()
 		// Flat key/value shape across every registered sink: connectivity is
 		// any-connected, and row counts merge per physical table name.
 		out := map[string]any{"connected": false}
@@ -69,19 +79,21 @@ func (c *RowsComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	un, err := hubRegistry.RegisterQuery("rows", "console-rows", func(ctx context.Context, params url.Values) (any, *hub.Error) {
+		ctx, cancel := context.WithTimeout(ctx, rowsQueryTimeout)
+		defer cancel()
 		limit, _ := strconv.Atoi(params.Get("limit"))
 		offset, _ := strconv.Atoi(params.Get("offset"))
 		filters := map[string]string{}
 		for k, vs := range params {
 			switch k {
-			case "sourceId", "date", "limit", "offset":
+			case "sourceId", "date", "limit", "offset", "sample":
 				continue
 			}
 			if len(vs) > 0 {
 				filters[k] = vs[0]
 			}
 		}
-		page, qerr := querySinks(ctx, params.Get("sourceId"), params.Get("date"), limit, offset, filters)
+		page, qerr := querySinks(ctx, params.Get("sourceId"), params.Get("date"), limit, offset, filters, params.Get("sample") != "1")
 		if qerr != nil {
 			return nil, &hub.Error{Code: "error", Message: qerr.Error()}
 		}
@@ -112,7 +124,7 @@ func NewConsoleRows(cc config.ComponentConfig) (*RowsComponent, error) {
 // querySinks routes a rows query across the registered sinks: a matching
 // sourceID narrows to that source's sink(s), an empty sourceID aggregates
 // every sink (one query per physical table, merged into one page).
-func querySinks(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (appstorage.RowsPage, error) {
+func querySinks(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string, withTotal bool) (appstorage.RowsPage, error) {
 	sinks := storageplugin.DefaultSinks().Snapshot()
 	if sourceID != "" {
 		matched := sinks[:0:0]
@@ -142,7 +154,13 @@ func querySinks(ctx context.Context, sourceID, date string, limit, offset int, f
 	sinks = unique
 	page := appstorage.RowsPage{Columns: []string{}, Rows: [][]any{}}
 	for _, sink := range sinks {
-		p, err := sink.Rows.QueryRows(ctx, sourceID, date, limit, offset, filters)
+		var p appstorage.RowsPage
+		var err error
+		if withTotal {
+			p, err = sink.Rows.QueryRows(ctx, sourceID, date, limit, offset, filters)
+		} else {
+			p, err = sink.Rows.QueryRowsSample(ctx, sourceID, date, limit, offset, filters)
+		}
 		if err != nil {
 			return page, err
 		}
