@@ -16,14 +16,23 @@ import (
 	"gocordis-csv-collector/app/model"
 )
 
+// Path 返回备份副本在本机的位置：<root>/<sourceID>/<date>/<rel>。它与 File
+// 用同一套相对路径规则，所以读取方（行列一致性校验）算出的路径就是写入方
+// 落下的那个；root 为空表示本源没有备份。只算路径，不接触文件系统。
+func Path(root, sourceID, date, baseDir string, file model.FileIdentity) string {
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, safeSegment(sourceID), date, relativePath(baseDir, file))
+}
+
 // File 把 file.Path 复制到 root/<sourceID>/<date>/<rel>。rel 由 baseDir
 // （源上的日期目录）与 file.Path 计算，保留子目录；算不出来（扁平布局、
 // 文件名日期布局、路径不在 baseDir 下）时退回文件名。目标已存在且
 // size、mtime 都与源一致时视为已备份，直接返回。
 func File(root, sourceID, date, baseDir string, file model.FileIdentity) error {
-	rel := relativePath(baseDir, file)
-	dir := filepath.Join(root, safeSegment(sourceID), date, filepath.Dir(rel))
-	dst := filepath.Join(root, safeSegment(sourceID), date, rel)
+	dst := Path(root, sourceID, date, baseDir, file)
+	dir := filepath.Dir(dst)
 	if st, err := os.Stat(dst); err == nil && st.Size() == file.Size && sameModTime(st.ModTime(), file.ModTime) {
 		return nil // 已备份：size+mtime 匹配即跳过（幂等）
 	}

@@ -74,24 +74,24 @@ func TestExpandFleetReferenceIntegrity(t *testing.T) {
 	}
 	sinks, formats, groups, machines := base()
 	formats[0].Sink = "nope"
-	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown sink") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "未知 sink") {
 		t.Fatalf("missing sink: %v", err)
 	}
 	sinks, formats, groups, machines = base()
 	groups[0].Formats = []string{"ghost"}
-	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown format") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "未知格式") {
 		t.Fatalf("missing format: %v", err)
 	}
 	sinks, formats, groups, machines = base()
 	machines[0].Group = "ghost"
-	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "unknown format group") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "未知格式组") {
 		t.Fatalf("missing group: %v", err)
 	}
 	// 日期归因：机台 path 与 match 都没有日期记号 → 拒绝。
 	sinks, formats, groups, machines = base()
 	formats[0].Match = "x.csv"
 	machines[0].Path = `\\h\data`
-	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "date token") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, nil); err == nil || !strings.Contains(err.Error(), "日期记号") {
 		t.Fatalf("no date attribution: %v", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestExpandFleetMachineSchedule(t *testing.T) {
 	}
 	// 引用不存在的调度 → 响亮失败。
 	machines[1].Schedule = "ghost"
-	if _, _, err := expandFleet(d, sinks, formats, groups, machines, schedules); err == nil || !strings.Contains(err.Error(), "unknown schedule") {
+	if _, _, err := expandFleet(d, sinks, formats, groups, machines, schedules); err == nil || !strings.Contains(err.Error(), "未知调度") {
 		t.Fatalf("unknown schedule: %v", err)
 	}
 }
@@ -259,7 +259,7 @@ func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"files_per_source", "max_parallel_sources", "backup_dir", "backup_keep_days"} {
+	for _, k := range []string{"files_per_source", "max_parallel_sources", "backup_dir", "backup_keep_days", "verify_after_collect"} {
 		if _, present := out[0].Config[k]; present {
 			t.Fatalf("%s must be omitted when default, got %#v", k, out[0].Config[k])
 		}
@@ -275,6 +275,25 @@ func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 	if out[0].Config["files_per_source"] != 8 || out[0].Config["max_parallel_sources"] != 6 ||
 		out[0].Config["backup_dir"] != "../backup" || out[0].Config["backup_keep_days"] != 30 {
 		t.Fatalf("cfg = %#v", out[0].Config)
+	}
+	// 校验开关是 bool：只有显式写了才下发，且 false 必须真的能下发。
+	off := false
+	d.VerifyAfterCollect = &off
+	out, _, err = expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["verify_after_collect"]; got != false {
+		t.Fatalf("verify_after_collect = %#v, want explicit false downsent", got)
+	}
+	on := true
+	d.VerifyAfterCollect = &on
+	out, _, err = expandFleet(d, sinks, formats, groups, machines, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].Config["verify_after_collect"]; got != true {
+		t.Fatalf("verify_after_collect = %#v, want true", got)
 	}
 }
 

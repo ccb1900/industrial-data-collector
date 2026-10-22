@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +28,10 @@ type collectionEntry struct {
 	startedAt time.Time
 	files     map[string]*fileEntry
 	ended     time.Time
+	// checks holds the latest consistency verdict per file identity. It rides
+	// on the collection entry so a dropped or windowed-out row takes its
+	// verdicts with it.
+	checks map[string]model.FileCheck
 }
 
 type fileEntry struct {
@@ -165,6 +170,89 @@ func (m *ReadModel) OnCollectionDropped(key model.CollectionKey) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.collections, key)
+}
+
+// OnChecksVerified records this process's fresh verdicts for one collection.
+// A check never changes the collection's own status: it is a statement about
+// the stored rows, and the operator decides what to do about it.
+func (m *ReadModel) OnChecksVerified(key model.CollectionKey, checks []model.FileCheck) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entry(key)
+	for _, c := range checks {
+		if e.checks == nil {
+			e.checks = make(map[string]model.FileCheck)
+		}
+		e.checks[c.File.Identity()] = c
+	}
+}
+
+// ListChecks implements CheckQuery: the latest verdict per collected file,
+// newest business date first. A date outside the projection window is read
+// from the ledger on demand, the same way the file list is.
+func (m *ReadModel) ListChecks(ctx context.Context, f model.CheckFilter) ([]model.FileCheck, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	var out []model.FileCheck
+	inWindow := false
+	for key, e := range m.collections {
+		if len(e.checks) == 0 {
+			continue
+		}
+		if f.SourceID != "" && key.SourceID != f.SourceID {
+			continue
+		}
+		if !f.Date.IsZero() {
+			if !key.Date.Equal(f.Date) {
+				continue
+			}
+			inWindow = true
+		}
+		for _, c := range e.checks {
+			if f.Matches(c) {
+				out = append(out, c)
+			}
+		}
+	}
+	h := m.history
+	m.mu.Unlock()
+
+	// 指定了单日而窗口里没有判定：那一日在窗口外，向台账回读。
+	// 无日期的列表只呈现窗口内的判定——跨窗口的全量校验清单没有可依据
+	// 的分页语义，宁缺毋滥。
+	if !inWindow && !f.Date.IsZero() && f.SourceID != "" && h != nil && h.Covers(f.SourceID) {
+		older, err := h.Checks(ctx, model.CollectionKey{SourceID: f.SourceID, Date: f.Date})
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range older {
+			if f.Matches(c) {
+				out = append(out, c)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if !a.Key.Date.Equal(b.Key.Date) {
+			return a.Key.Date.After(b.Key.Date)
+		}
+		if a.File.Path != b.File.Path {
+			return a.File.Path < b.File.Path
+		}
+		return a.File.Identity() < b.File.Identity()
+	})
+	if f.Offset > 0 {
+		if f.Offset >= len(out) {
+			return []model.FileCheck{}, nil
+		}
+		out = out[f.Offset:]
+	}
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out, nil
 }
 
 // ListCollections implements CollectionQuery. It returns the in-memory
@@ -335,7 +423,7 @@ func (m *ReadModel) GetCollection(ctx context.Context, key model.CollectionKey) 
 			return v, nil
 		}
 	}
-	return CollectionView{}, errs.Sourcef(errs.ErrNotFound, "collection %s not found", key)
+	return CollectionView{}, errs.Sourcef(errs.ErrNotFound, "未找到 %s 的采集记录", key)
 }
 
 func (m *ReadModel) allViewsLocked() []CollectionView {
@@ -378,6 +466,16 @@ func (m *ReadModel) collectionViewLocked(key model.CollectionKey) CollectionView
 			v.FilesFailed++
 		}
 	}
+	for _, c := range e.checks {
+		if c.Status == model.CheckMismatch {
+			v.ChecksMismatch++
+		}
+	}
+	// 校验不一致要能被看见：采集状态仍是采集自己的结论（校验不改状态），
+	// 但一次"成功"如果与文件对不上，空白的"原因"会让它看起来没有问题。
+	if v.ChecksMismatch > 0 && v.Note == "" {
+		v.Note = fmt.Sprintf("行列校验不一致：%d 个文件与库中数据不符", v.ChecksMismatch)
+	}
 	return v
 }
 
@@ -408,7 +506,7 @@ func (m *ReadModel) GetSource(ctx context.Context, id model.SourceID) (SourceVie
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.sources[id]; !ok {
-		return SourceView{}, errs.Sourcef(errs.ErrNotFound, "source %q not found", id)
+		return SourceView{}, errs.Sourcef(errs.ErrNotFound, "未找到数据源 %q", id)
 	}
 	return sourceViewLocked(m.sources[id]), nil
 }
@@ -518,8 +616,10 @@ func (m *ReadModel) Trend(ctx context.Context) ([]TrendPoint, error) {
 	return out, nil
 }
 
-// Attention implements CollectionQuery: failed/pending collections plus any
-// collection with failed files, in source/date order.
+// Attention implements CollectionQuery: failed/pending collections, any
+// collection with failed files, and any collection whose consistency check
+// found a mismatch — all of them need an operator, none of them is retried
+// automatically.
 func (m *ReadModel) Attention(ctx context.Context) ([]CollectionView, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -530,24 +630,36 @@ func (m *ReadModel) Attention(ctx context.Context) ([]CollectionView, error) {
 		if err != nil {
 			return nil, err
 		}
+		m.overlayWindow(out)
+		// 台账的 attention 只认状态与失败文件；判定活在投影窗口里，所以
+		// 窗口内的行还要补上台账没有的（校验不一致的"成功"日期就是这种）。
+		present := make(map[string]struct{}, len(out))
+		for _, v := range out {
+			present[v.SourceID+"\x00"+v.Date] = struct{}{}
+		}
 		for _, v := range views {
-			if h.Covers(model.SourceID(v.SourceID)) {
+			if !needsAttention(v) {
 				continue
 			}
-			if v.Status == StatusFailed || v.Status == StatusPending || v.FilesFailed > 0 {
-				out = append(out, v)
+			if _, ok := present[v.SourceID+"\x00"+v.Date]; ok {
+				continue
 			}
+			out = append(out, v)
 		}
 		sortViews(out)
 		return out, nil
 	}
 	out := make([]CollectionView, 0, 16)
 	for _, v := range views {
-		if v.Status == StatusFailed || v.Status == StatusPending || v.FilesFailed > 0 {
+		if needsAttention(v) {
 			out = append(out, v)
 		}
 	}
 	return out, nil
+}
+
+func needsAttention(v CollectionView) bool {
+	return v.Status == StatusFailed || v.Status == StatusPending || v.FilesFailed > 0 || v.ChecksMismatch > 0
 }
 
 // ListFailures implements FailureQuery: the merged file-failure view of one
@@ -588,8 +700,9 @@ func (m *ReadModel) ListFailures(ctx context.Context, sourceID model.SourceID) (
 
 // AttachUnits projects durable unit state into the read model: sources,
 // collection records (including Pending and post-restart history), completed
-// files, and the failure ledger. It is idempotent — a later attach replaces
-// the projected fields — and live events keep updating on top of it.
+// files, the failure ledger and the consistency verdicts. It is idempotent — a
+// later attach replaces the projected fields — and live events keep updating on
+// top of it.
 func (m *ReadModel) AttachUnits(units []UnitState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -639,6 +752,13 @@ func (m *ReadModel) AttachUnits(units []UnitState) {
 			e.files[f.File.Identity()] = &fileEntry{
 				file: f.File, records: f.Records, status: StatusSucceeded,
 			}
+		}
+		for _, c := range u.Checks {
+			e := m.entry(c.Key)
+			if e.checks == nil {
+				e.checks = make(map[string]model.FileCheck)
+			}
+			e.checks[c.File.Identity()] = c
 		}
 	}
 }

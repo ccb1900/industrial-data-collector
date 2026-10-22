@@ -5,33 +5,35 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 )
 
-// Source error classes. Collector logic never parses raw OS or database error
-// strings; components map lower-level errors into these classes.
+// 错误分类：采集主流程不解析原始 OS/数据库报错文本，组件把底层错误映射到这些
+// 类别。类名会被拼进每条对外报错（"类名: 明细"），所以用中文；机器侧判定走
+// errs.Is(ErrXxx) 与 hub 的 code 字段，不依赖这里的文本。
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrPermissionDenied   = errors.New("permission denied")
-	ErrUnavailable        = errors.New("resource unavailable")
-	ErrTimeout            = errors.New("operation timed out")
-	ErrIO                 = errors.New("io error")
-	ErrSourceChanged      = errors.New("source changed while reading")
-	ErrFileUnstable       = errors.New("file not stable")
-	ErrInvalidEncoding    = errors.New("invalid CSV encoding")
-	ErrMalformedCSV       = errors.New("malformed CSV")
-	ErrInvalidFile        = errors.New("invalid file identity")
-	ErrInvalidConfig      = errors.New("invalid application configuration")
-	ErrConfiguration      = errors.New("configuration failure")
-	ErrDependency         = errors.New("dependency failure")
-	ErrStorageConnection  = errors.New("storage connection error")
-	ErrStorageTimeout     = errors.New("storage timeout")
-	ErrStorageAuth        = errors.New("storage authentication error")
-	ErrStorageConstraint  = errors.New("storage constraint error")
-	ErrStorageTransient   = errors.New("storage transient error")
-	ErrStoragePermanent   = errors.New("storage permanent error")
-	ErrMetadataExtraction = errors.New("metadata extraction error")
-	ErrCancelled          = errors.New("operation cancelled")
+	ErrNotFound           = errors.New("未找到")
+	ErrPermissionDenied   = errors.New("权限不足")
+	ErrUnavailable        = errors.New("资源不可用")
+	ErrTimeout            = errors.New("操作超时")
+	ErrIO                 = errors.New("读写错误")
+	ErrSourceChanged      = errors.New("读取期间源文件已变化")
+	ErrFileUnstable       = errors.New("文件尚未稳定")
+	ErrInvalidEncoding    = errors.New("CSV 编码无效")
+	ErrMalformedCSV       = errors.New("CSV 格式无效")
+	ErrInvalidFile        = errors.New("文件标识无效")
+	ErrInvalidConfig      = errors.New("应用配置无效")
+	ErrConfiguration      = errors.New("配置错误")
+	ErrDependency         = errors.New("依赖不可用")
+	ErrStorageConnection  = errors.New("存储连接错误")
+	ErrStorageTimeout     = errors.New("存储超时")
+	ErrStorageAuth        = errors.New("存储认证错误")
+	ErrStorageConstraint  = errors.New("存储约束冲突")
+	ErrStorageTransient   = errors.New("存储临时故障")
+	ErrStoragePermanent   = errors.New("存储永久故障")
+	ErrMetadataExtraction = errors.New("元数据提取错误")
+	ErrCancelled          = errors.New("操作已取消")
 )
 
 // SourceError attaches an application error class to an underlying error.
@@ -40,7 +42,23 @@ type SourceError struct {
 	Err   error
 }
 
-func (e *SourceError) Error() string   { return fmt.Sprintf("%v: %v", e.Class, e.Err) }
+func (e *SourceError) Error() string {
+	detail := ""
+	if e.Err != nil {
+		detail = e.Err.Error()
+	}
+	class := ""
+	if e.Class != nil {
+		class = e.Class.Error()
+	}
+	if class == "" || detail == "" {
+		return class + detail
+	}
+	if strings.HasPrefix(detail, class) {
+		return detail
+	}
+	return class + ": " + detail
+}
 func (e *SourceError) Unwrap() []error { return []error{e.Class, e.Err} }
 
 func Is(err error, target error) bool { return errors.Is(err, target) }
@@ -59,19 +77,19 @@ func ClassifySourceError(path string, err error) error {
 	// ERROR_BAD_NETPATH（UNC 路径不可达）归入 fs.ErrNotExist——顺序颠倒
 	// 会把掉线当成"路径不存在"，过期日被终态化为无数据，永不补采。
 	if networkUnavailable(err) {
-		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
+		return Sourcef(ErrUnavailable, "路径 %q: %w", path, err)
 	}
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) {
-		return Sourcef(ErrNotFound, "path %q: %w", path, err)
+		return Sourcef(ErrNotFound, "路径 %q: %w", path, err)
 	}
 	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
-		return Sourcef(ErrPermissionDenied, "path %q: %w", path, err)
+		return Sourcef(ErrPermissionDenied, "路径 %q: %w", path, err)
 	}
 	if errors.Is(err, syscall.ENETDOWN) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
-		return Sourcef(ErrUnavailable, "path %q: %w", path, err)
+		return Sourcef(ErrUnavailable, "路径 %q: %w", path, err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return Sourcef(ErrTimeout, "path %q: %w", path, err)
+		return Sourcef(ErrTimeout, "路径 %q: %w", path, err)
 	}
-	return Sourcef(ErrIO, "path %q: %w", path, err)
+	return Sourcef(ErrIO, "路径 %q: %w", path, err)
 }

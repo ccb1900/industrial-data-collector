@@ -64,12 +64,13 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					// 服务端已按"失败/等待中，或带失败文件"筛好并保持源/日期
 					// 顺序，表格只负责分页展示。
-					"kind": "table", "title": "需要处理（失败 / 等待数据）", "query": "overview-attention", "pageSize": 8,
+					"kind": "table", "title": "需要处理（失败 / 等待数据 / 校验不一致）", "query": "overview-attention", "pageSize": 8,
 					"columns": []any{
 						map[string]any{"key": "sourceId", "title": "数据源"},
 						map[string]any{"key": "date", "title": "采集日期"},
 						map[string]any{"key": "status", "title": "状态"},
 						map[string]any{"key": "filesFailed", "title": "失败文件"},
+						map[string]any{"key": "checksMismatch", "title": "校验不一致"},
 						map[string]any{"key": "note", "title": "原因"},
 					},
 				},
@@ -99,13 +100,16 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "strategy", "title": "策略"},
 						map[string]any{"key": "expr", "title": "Cron / 时刻"},
 						map[string]any{"key": "next", "title": "下次触发"},
-						map[string]any{"key": "target", "title": "目标组"},
+						map[string]any{"key": "target", "title": "调度名"},
 					},
 				},
 				map[string]any{
 					"kind": "master-detail", "query": "sources", "pageSize": 30, "focusKey": "id",
 					"rowActions": []any{
-						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.id"}},
+						// date 绑定日历选中日：选中 10-14 就采 10-14，不再
+						// 永远落到服务端默认调度日（未选日时省略该参数，
+						// 服务端按默认执行，前端会给出提示）。
+						map[string]any{"label": "采集", "command": "trigger", "args": map[string]any{"sourceId": "$row.id", "date": "$focus.date"}},
 					},
 					"columns": []any{
 						map[string]any{"key": "name", "title": "数据源"},
@@ -122,6 +126,28 @@ func consoleRows() []extconfig.ComponentConfig {
 								map[string]any{"key": "records", "label": "记录数"},
 								map[string]any{"key": "filesCompleted", "label": "完成文件"},
 								map[string]any{"key": "filesFailed", "label": "失败文件"},
+								map[string]any{"key": "checksMismatch", "label": "校验不一致文件"},
+							},
+						},
+						map[string]any{
+							// 采集后行列一致性校验的逐文件结论：文件行数 / 解析行数 /
+							// 库中行数三方并排，不一致就是数据在链路上丢了或多了。
+							// 不设 hideWhenEmpty：校验是采集的一部分，没结论也要让这一栏出现。
+							"kind": "table", "title": "行列一致性校验（逐文件）", "query": "verifications",
+							"params":   map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date"},
+							"pageSize": 10,
+							"columns": []any{
+								map[string]any{"key": "name", "title": "文件"},
+								map[string]any{"key": "status", "title": "结论"},
+								map[string]any{"key": "fileRows", "title": "文件行"},
+								map[string]any{"key": "parsedRows", "title": "解析行"},
+								map[string]any{"key": "dbRows", "title": "库中行"},
+								map[string]any{"key": "fileCols", "title": "文件列"},
+								map[string]any{"key": "storedCols", "title": "库列"},
+								map[string]any{"key": "raggedRows", "title": "残缺行"},
+								map[string]any{"key": "unmapped", "title": "未映射列"},
+								map[string]any{"key": "note", "title": "说明"},
+								map[string]any{"key": "checkedAt", "title": "校验时间"},
 							},
 						},
 						map[string]any{
@@ -146,8 +172,10 @@ func consoleRows() []extconfig.ComponentConfig {
 							},
 						},
 						map[string]any{
+							// 样本跟随日历选中日：与同屏的文件明细、当日详情保持
+							// 同一天的口径，避免"日历在 14 号、样本却是别的批次"。
 							"kind": "table", "title": "数据样本（按采集顺序）", "query": "rows",
-							"params":   map[string]any{"sourceId": "$focus.sourceId", "limit": "5", "sample": "1"},
+							"params":   map[string]any{"sourceId": "$focus.sourceId", "date": "$focus.date", "limit": "5", "sample": "1"},
 							"pageSize": 5, "hideWhenEmpty": true,
 						},
 					},
@@ -172,6 +200,8 @@ func consoleRows() []extconfig.ComponentConfig {
 					},
 					// 不声明 columns：列头来自响应自身的表结构（typed sink 的
 					// columnar page），任何业务的库表都无需改此页面。
+					// 溯源/技术列默认收起，列设置里可随时唤回。
+					"hideColumns": []any{"file_id", "row_number"},
 				},
 				map[string]any{
 					// 不声明 fields：渲染整个应答对象——每张暴露表的行数。
@@ -191,8 +221,8 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					"kind": "form", "title": "添加机台", "command": "fleet.machine.add", "submitLabel": "添加",
 					"fields": []any{
-						map[string]any{"key": "no", "label": "机台号"},
-						map[string]any{"key": "path", "label": "路径"},
+						map[string]any{"key": "no", "label": "机台号", "required": true},
+						map[string]any{"key": "path", "label": "路径（UNC，如 \\\\host\\share）", "required": true},
 						map[string]any{"key": "ip", "label": "IP"},
 						map[string]any{"key": "group", "label": "格式组"},
 						map[string]any{"key": "since", "label": "投产日(YYYY-MM-DD)"},
@@ -202,9 +232,9 @@ func consoleRows() []extconfig.ComponentConfig {
 				map[string]any{
 					"kind": "form", "title": "添加调度", "command": "fleet.schedule.add", "submitLabel": "添加",
 					"fields": []any{
-						map[string]any{"key": "name", "label": "名称"},
-						map[string]any{"key": "cron", "label": "Cron"},
-						map[string]any{"key": "time", "label": "每日时刻 HH:MM"},
+						map[string]any{"key": "name", "label": "名称", "required": true},
+						map[string]any{"key": "cron", "label": "Cron（与每日时刻二选一）"},
+						map[string]any{"key": "time", "label": "每日时刻 HH:MM（与 Cron 二选一）"},
 					},
 				},
 				map[string]any{
@@ -217,7 +247,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "schedule", "title": "调度"},
 					},
 					"rowActions": []any{
-						map[string]any{"label": "删除", "command": "fleet.machine.remove", "args": map[string]any{"no": "$row.no"}},
+						map[string]any{"label": "删除", "command": "fleet.machine.remove", "danger": true,
+							"confirm": "删除后机台 {no} 及其路径立即从期望配置回滚，关联源将停止采集。",
+							"args":    map[string]any{"no": "$row.no"}},
 					},
 				},
 				map[string]any{
@@ -228,7 +260,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "time", "title": "时刻"},
 					},
 					"rowActions": []any{
-						map[string]any{"label": "删除", "command": "fleet.schedule.remove", "args": map[string]any{"name": "$row.name"}},
+						map[string]any{"label": "删除", "command": "fleet.schedule.remove", "danger": true,
+							"confirm": "引用调度 {name} 的机台将失去采集节奏，删除立即生效。",
+							"args":    map[string]any{"name": "$row.name"}},
 					},
 				},
 				map[string]any{
@@ -240,7 +274,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "sink", "title": "sink"},
 					},
 					"rowActions": []any{
-						map[string]any{"label": "删除", "command": "fleet.format.remove", "args": map[string]any{"name": "$row.name"}},
+						map[string]any{"label": "删除", "command": "fleet.format.remove", "danger": true,
+							"confirm": "匹配格式 {name} 的文件将不再入库，删除立即生效。",
+							"args":    map[string]any{"name": "$row.name"}},
 					},
 				},
 				map[string]any{
@@ -250,7 +286,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "formats", "title": "包含格式"},
 					},
 					"rowActions": []any{
-						map[string]any{"label": "删除", "command": "fleet.group.remove", "args": map[string]any{"name": "$row.name"}},
+						map[string]any{"label": "删除", "command": "fleet.group.remove", "danger": true,
+							"confirm": "组 {name} 内的格式引用将失效，删除立即生效。",
+							"args":    map[string]any{"name": "$row.name"}},
 					},
 				},
 				map[string]any{
@@ -262,7 +300,9 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"key": "file_table", "title": "文件登记表"},
 					},
 					"rowActions": []any{
-						map[string]any{"label": "删除", "command": "fleet.sink.remove", "args": map[string]any{"name": "$row.name"}},
+						map[string]any{"label": "删除", "command": "fleet.sink.remove", "danger": true,
+							"confirm": "写入 sink {name} 的格式将失去目标表，删除立即生效。",
+							"args":    map[string]any{"name": "$row.name"}},
 					},
 				},
 				map[string]any{
@@ -271,7 +311,8 @@ func consoleRows() []extconfig.ComponentConfig {
 				},
 			},
 			"actions": []any{
-				map[string]any{"label": "恢复 TOML", "command": "fleet.reset"},
+				map[string]any{"label": "恢复 TOML", "command": "fleet.reset", "danger": true,
+					"confirm": "放弃 SQLite 中的全部控制台改动，回到 TOML 文件内容；此操作不可撤销。"},
 			},
 		}),
 		bundle.Row("ui-panel-logs", "ui-panel", map[string]any{
@@ -294,7 +335,9 @@ func consoleRows() []extconfig.ComponentConfig {
 		}),
 		bundle.Row("ui-panel-event-feed", "ui-panel", map[string]any{
 			"panel_id": "event-feed",
-			"pages":    []any{"overview"},
+			// 采集页也要有实时事件：手动触发后原地看到 Started/Completed，
+			// 而不是切回概览页确认。
+			"pages":    []any{"overview", "collect"},
 			"title":    "事件流",
 			"position": "bottom",
 			"renderer": "event-feed",

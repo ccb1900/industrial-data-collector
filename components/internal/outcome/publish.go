@@ -81,6 +81,17 @@ func PublishCollectionResult(ctx context.Context, emitCtx *runtime.Context, res 
 	}
 }
 
+// PublishChecksVerified 发布一次采集的行列一致性判定。判定不改采集状态，
+// 所以它不进 Succeeded/Failed 那条链路，只作为观察证据发布。
+func PublishChecksVerified(ctx context.Context, emitCtx *runtime.Context, key model.CollectionKey, checks []model.FileCheck, triggeredBy string) {
+	if emitCtx == nil || len(checks) == 0 {
+		return
+	}
+	_ = event.Serial(ctx, emitCtx, events.CollectionVerified, events.CollectionVerifiedPayload{
+		Key: key, Checks: checks, TriggeredBy: triggeredBy,
+	})
+}
+
 // Publish emits file and collection outcome events for one collection result.
 // Handlers observe through the Application Query Adapter; this function never
 // depends on an observer. 即时链路请用 Publish*Started/FileResult/Result 细

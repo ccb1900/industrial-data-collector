@@ -48,6 +48,9 @@ type MemoryState struct {
 	// failedFiles is the local failure ledger: one record per failed file per
 	// collection, cleared when the file later completes.
 	failedFiles map[string]map[string]failedFileRecord
+	// checks holds the latest consistency verdict per (collection, file). Like
+	// the failure ledger it is evidence, not work: nothing retries it.
+	checks map[string]map[string]model.FileCheck
 	// appendMode disables the collection-level succeeded guard: every trigger
 	// re-opens the collection (watch/change-triggered sources record many
 	// snapshots under one business date). File-level dedup still applies.
@@ -73,6 +76,7 @@ func NewMemory() *MemoryState {
 		collections: make(map[string]collectionRecord),
 		files:       make(map[string]map[string]fileRecord),
 		failedFiles: make(map[string]map[string]failedFileRecord),
+		checks:      make(map[string]map[string]model.FileCheck),
 	}
 }
 
@@ -155,6 +159,7 @@ func (s *MemoryState) migratePreInstance() (purged, converted int) {
 			delete(s.collections, k)
 			delete(s.files, k)
 			delete(s.failedFiles, k)
+			delete(s.checks, k)
 			purged++
 		case model.StatusPending:
 			rec.Status = model.StatusFailed
@@ -183,6 +188,7 @@ func (s *MemoryState) Drop(ctx context.Context, key model.CollectionKey) error {
 	delete(s.collections, ck)
 	delete(s.files, ck)
 	delete(s.failedFiles, ck)
+	delete(s.checks, ck)
 	return nil
 }
 
@@ -438,6 +444,27 @@ type memorySnapshot struct {
 	Collections []collectionRecordJSON
 	Files       []fileRecordJSON
 	FailedFiles []failedFileRecordJSON
+	Checks      []fileCheckRecordJSON
+}
+
+type fileCheckRecordJSON struct {
+	SourceID   model.SourceID
+	Date       model.CollectionDate
+	Path       string
+	Name       string
+	Size       int64
+	ModTime    time.Time
+	Hash       string
+	Status     model.CheckStatus
+	FileRows   int64
+	ParsedRows int64
+	DBRows     int64
+	FileCols   int
+	StoredCols int
+	RaggedRows int64
+	Unmapped   []string
+	Note       string
+	CheckedAt  time.Time
 }
 
 type failedFileRecordJSON struct {
@@ -529,6 +556,29 @@ func snapshot(s *MemoryState) memorySnapshot {
 	sort.Slice(out.FailedFiles, func(i, j int) bool {
 		return out.FailedFiles[i].FailedAt.Before(out.FailedFiles[j].FailedAt)
 	})
+	for _, m := range s.checks {
+		for _, rec := range m {
+			out.Checks = append(out.Checks, fileCheckRecordJSON{
+				SourceID: rec.Key.SourceID,
+				Date:     rec.Key.Date,
+				Path:     rec.File.Path,
+				Name:     rec.File.Name,
+				Size:     rec.File.Size,
+				ModTime:  rec.File.ModTime,
+				Hash:     rec.File.Hash,
+				Status:   rec.Status,
+				FileRows: rec.FileRows, ParsedRows: rec.ParsedRows, DBRows: rec.DBRows,
+				FileCols: rec.FileCols, StoredCols: rec.StoredCols, RaggedRows: rec.RaggedRows,
+				Unmapped: rec.Unmapped, Note: rec.Note, CheckedAt: rec.CheckedAt,
+			})
+		}
+	}
+	sort.Slice(out.Checks, func(i, j int) bool {
+		if !out.Checks[i].Date.Equal(out.Checks[j].Date) {
+			return out.Checks[i].Date.Before(out.Checks[j].Date)
+		}
+		return out.Checks[i].Path < out.Checks[j].Path
+	})
 	return out
 }
 
@@ -560,6 +610,21 @@ func restore(s *MemoryState, snap memorySnapshot) {
 		}
 		s.failedFiles[ck][file.Identity()] = failedFileRecord{
 			Key: k, File: file, Error: f.Error, FailedAt: f.FailedAt, Attempts: f.Attempts,
+		}
+	}
+	s.checks = make(map[string]map[string]model.FileCheck)
+	for _, c := range snap.Checks {
+		k := model.CollectionKey{SourceID: c.SourceID, Date: c.Date}
+		file := model.FileIdentity{SourceID: c.SourceID, Path: c.Path, Name: c.Name, Size: c.Size, ModTime: c.ModTime, Hash: c.Hash}
+		ck := stateKey(k)
+		if s.checks[ck] == nil {
+			s.checks[ck] = make(map[string]model.FileCheck)
+		}
+		s.checks[ck][file.Identity()] = model.FileCheck{
+			Key: k, File: file, Status: c.Status,
+			FileRows: c.FileRows, ParsedRows: c.ParsedRows, DBRows: c.DBRows,
+			FileCols: c.FileCols, StoredCols: c.StoredCols, RaggedRows: c.RaggedRows,
+			Unmapped: c.Unmapped, Note: c.Note, CheckedAt: c.CheckedAt,
 		}
 	}
 }

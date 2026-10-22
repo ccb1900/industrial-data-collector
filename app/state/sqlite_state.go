@@ -105,6 +105,7 @@ func (s *SQLiteState) Drop(ctx context.Context, key model.CollectionKey) error {
 	for _, stmt := range []string{
 		`DELETE FROM state_files WHERE source_id = ? AND date = ?`,
 		`DELETE FROM state_failures WHERE source_id = ? AND date = ?`,
+		`DELETE FROM state_checks WHERE source_id = ? AND date = ?`,
 		`DELETE FROM state_collections WHERE source_id = ? AND date = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, string(key.SourceID), key.Date.String()); err != nil {

@@ -145,7 +145,7 @@ func (s *Source) now() time.Time {
 // UNC 改写成 unix 路径，归一化后的形状认不出宿主。本地路径放行。
 func checkHostGate(rawRoot string) error {
 	if h := hostgate.HostOf(rawRoot); h != "" && !hostgate.Reachable(context.Background(), h) {
-		return errs.Sourcef(errs.ErrUnavailable, "unc host %q unreachable (probed tcp/445)", h)
+		return errs.Sourcef(errs.ErrUnavailable, "UNC 主机 %q 不可达（已探测 tcp/445）", h)
 	}
 	return nil
 }
@@ -244,7 +244,7 @@ func (s *Source) List(ctx context.Context, req model.ListRequest) ([]model.FileI
 	// 会把日期记成 Succeeded，同一批里仍在拷贝的文件之后永远进不来
 	// （Begin 会挡住 Succeeded 日期）。宁可整轮 Pending，等全部稳定后一次采全。
 	if unstable > 0 {
-		return nil, errs.Sourcef(errs.ErrFileUnstable, "%d file(s) inside the stable window", unstable)
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "%d 个文件仍在稳定窗口内", unstable)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
@@ -313,11 +313,11 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 		return nil, errs.ClassifySourceError(path, err)
 	}
 	if info.IsDir() {
-		return nil, errs.Sourcef(errs.ErrNotFound, "dated filename %q is a directory", path)
+		return nil, errs.Sourcef(errs.ErrNotFound, "按日期路径读到的 %q 是目录，不是文件", path)
 	}
 	// 服务器时钟偏斜（mtime 在未来）不算不稳定，同 List 走查的约定。
 	if delta := s.now().Sub(info.ModTime()); s.StableWindow > 0 && delta >= 0 && delta < s.StableWindow {
-		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q is still being written", path)
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "文件 %q 仍在写入（稳定窗口内）", path)
 	}
 	info2, err := os.Stat(path)
 	if err != nil {
@@ -326,7 +326,7 @@ func (s *Source) listDatedFilename(ctx context.Context, date model.CollectionDat
 	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
 		// 两次 stat 之间在变：显式不稳定，让执行器保留下次触发重探，
 		// 而不是当成"该日期没有数据"。
-		return nil, errs.Sourcef(errs.ErrFileUnstable, "dated file %q changed while probing", path)
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "文件 %q 在探测期间发生变化", path)
 	}
 	file := model.FileIdentity{
 		SourceID: s.ID(),
@@ -366,13 +366,13 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 		return nil, errs.ClassifySourceError(s.root, err)
 	}
 	if info.IsDir() {
-		return nil, errs.Sourcef(errs.ErrNotFound, "flat source %q is a directory", s.root)
+		return nil, errs.Sourcef(errs.ErrNotFound, "源根路径 %q 是目录，但该源按单文件读取", s.root)
 	}
 	// 服务器时钟偏斜（mtime 在未来）不算不稳定，同 List 走查的约定。
 	if delta := s.now().Sub(info.ModTime()); s.StableWindow > 0 && delta >= 0 && delta < s.StableWindow {
 		// 仍在写入：显式不稳定错误，让执行器保持 Pending 等待——
 		// 折叠成"空文件成功"会把该日期终态化，晚到文件永远丢失。
-		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q is still being written", s.root)
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "文件 %q 仍在写入（稳定窗口内）", s.root)
 	}
 	info2, err := os.Stat(s.root)
 	if err != nil {
@@ -380,7 +380,7 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 	}
 	if info2.Size() != info.Size() || !info2.ModTime().Equal(info.ModTime()) {
 		// 两次 stat 之间在变：显式不稳定（同 listDatedFilename）。
-		return nil, errs.Sourcef(errs.ErrFileUnstable, "flat file %q changed while probing", s.root)
+		return nil, errs.Sourcef(errs.ErrFileUnstable, "文件 %q 在探测期间发生变化", s.root)
 	}
 	file := model.FileIdentity{
 		SourceID: s.ID(),
@@ -427,14 +427,14 @@ func (s *Source) Read(ctx context.Context, file model.FileIdentity) (io.ReadClos
 		return nil, err
 	}
 	if file.Path == "" {
-		return nil, errs.Sourcef(errs.ErrInvalidFile, "empty file path")
+		return nil, errs.Sourcef(errs.ErrInvalidFile, "文件路径为空")
 	}
 	info, err := os.Stat(file.Path)
 	if err != nil {
 		return nil, errs.ClassifySourceError(file.Path, err)
 	}
 	if info.Size() != file.Size || !info.ModTime().Equal(file.ModTime) {
-		return nil, errs.Sourcef(errs.ErrSourceChanged, "%s changed after discovery", file.Path)
+		return nil, errs.Sourcef(errs.ErrSourceChanged, "%s 在发现之后被改动（与采集证据不符）", file.Path)
 	}
 	f, err := os.Open(file.Path)
 	if err != nil {
@@ -447,7 +447,7 @@ func (s *Source) Read(ctx context.Context, file model.FileIdentity) (io.ReadClos
 	}
 	if after.Size() != file.Size || !after.ModTime().Equal(file.ModTime) {
 		_ = f.Close()
-		return nil, errs.Sourcef(errs.ErrSourceChanged, "%s changed during open", file.Path)
+		return nil, errs.Sourcef(errs.ErrSourceChanged, "%s 在打开过程中被改动", file.Path)
 	}
 	return f, nil
 }
@@ -458,7 +458,7 @@ func (s *Source) Close() error { return nil }
 // as ordinary configuration values.
 func ValidateRoot(root string) error {
 	if root == "" {
-		return fmt.Errorf("%w: source root is empty", errs.ErrInvalidConfig)
+		return fmt.Errorf("%w: 源根路径为空", errs.ErrInvalidConfig)
 	}
 	return nil
 }

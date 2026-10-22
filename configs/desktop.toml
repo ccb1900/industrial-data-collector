@@ -21,6 +21,9 @@ date_policy = "yesterday"
 catchup_days = 7
 batch_size = 1000
 file_stable_window_seconds = 0
+# 采集后行列一致性校验默认开启：逐文件复测行/列并与库中结果对照，不一致只登记
+# 判定与告警（不改采集状态）。源目录没有备份副本时校验读原文件本身。
+# verify_after_collect = true
 
 [[sinks]]
 name = "demo-sqlite"

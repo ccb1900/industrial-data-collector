@@ -9,12 +9,14 @@ import (
 )
 
 // ProjectionSnapshot is the batch form of CollectionRecords + FileRecords +
-// ListFileFailures: one durable-ledger read for many sources at once, grouped
-// by source so a unit can assemble its projection without another query.
+// ListFileFailures + ListChecks: one durable-ledger read for many sources at
+// once, grouped by source so a unit can assemble its projection without
+// another query.
 type ProjectionSnapshot struct {
 	Collections map[model.SourceID][]model.CollectionRecord
 	Files       map[model.SourceID][]model.FileRecordView
 	Failures    map[model.SourceID][]model.FileFailure
+	Checks      map[model.SourceID][]model.FileCheck
 }
 
 func newProjectionSnapshot() ProjectionSnapshot {
@@ -22,6 +24,7 @@ func newProjectionSnapshot() ProjectionSnapshot {
 		Collections: make(map[model.SourceID][]model.CollectionRecord),
 		Files:       make(map[model.SourceID][]model.FileRecordView),
 		Failures:    make(map[model.SourceID][]model.FileFailure),
+		Checks:      make(map[model.SourceID][]model.FileCheck),
 	}
 }
 
@@ -48,7 +51,7 @@ func (s *SQLiteState) SnapshotProjection(ctx context.Context, sources []model.So
 	if len(sources) == 0 {
 		return snap, nil
 	}
-	// One read transaction gives the three tables a consistent view even if a
+	// One read transaction gives the four tables a consistent view even if a
 	// collection commits between them.
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -68,6 +71,9 @@ func (s *SQLiteState) SnapshotProjection(ctx context.Context, sources []model.So
 		return snap, err
 	}
 	if err := snapshotFailures(ctx, tx, marks, ids, snap.Failures); err != nil {
+		return snap, err
+	}
+	if err := snapshotChecks(ctx, tx, marks, ids, since, snap.Checks); err != nil {
 		return snap, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -180,4 +186,30 @@ func snapshotFailures(ctx context.Context, tx *sql.Tx, marks string, ids []any, 
 		})
 	}
 	return rows.Err()
+}
+
+// snapshotChecks reads the windowed consistency verdicts of one chunk. Like the
+// collections table it is date-filtered: a verdict is a statement about one
+// business date, and the read model only keeps the recent window in memory.
+func snapshotChecks(ctx context.Context, tx *sql.Tx, marks string, ids []any, since model.CollectionDate, out map[model.SourceID][]model.FileCheck) error {
+	q := `SELECT ` + checkColumns + ` FROM state_checks WHERE source_id IN (` + marks + `)`
+	args := append([]any(nil), ids...)
+	if !since.IsZero() {
+		q += ` AND date >= ?`
+		args = append(args, since.String())
+	}
+	q += ` ORDER BY source_id, date DESC, path, file_id`
+	rows, err := tx.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	list, err := scanChecks(rows)
+	if err != nil {
+		return err
+	}
+	for _, c := range list {
+		out[c.Key.SourceID] = append(out[c.Key.SourceID], c)
+	}
+	return nil
 }

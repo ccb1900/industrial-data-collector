@@ -67,6 +67,10 @@
                 "title": "失败文件"
               },
               {
+                "key": "checksMismatch",
+                "title": "校验不一致"
+              },
+              {
                 "key": "note",
                 "title": "原因"
               }
@@ -74,7 +78,7 @@
             "kind": "table",
             "pageSize": 8,
             "query": "overview-attention",
-            "title": "需要处理（失败 / 等待数据）"
+            "title": "需要处理（失败 / 等待数据 / 校验不一致）"
           },
           {
             "dateKey": "date",
@@ -124,7 +128,7 @@
               },
               {
                 "key": "target",
-                "title": "目标组"
+                "title": "调度名"
               }
             ],
             "kind": "table",
@@ -169,6 +173,10 @@
                   {
                     "key": "filesFailed",
                     "label": "失败文件"
+                  },
+                  {
+                    "key": "checksMismatch",
+                    "label": "校验不一致文件"
                   }
                 ],
                 "kind": "kv",
@@ -178,6 +186,62 @@
                 },
                 "query": "collection",
                 "title": "当日采集详情"
+              },
+              {
+                "columns": [
+                  {
+                    "key": "name",
+                    "title": "文件"
+                  },
+                  {
+                    "key": "status",
+                    "title": "结论"
+                  },
+                  {
+                    "key": "fileRows",
+                    "title": "文件行"
+                  },
+                  {
+                    "key": "parsedRows",
+                    "title": "解析行"
+                  },
+                  {
+                    "key": "dbRows",
+                    "title": "库中行"
+                  },
+                  {
+                    "key": "fileCols",
+                    "title": "文件列"
+                  },
+                  {
+                    "key": "storedCols",
+                    "title": "库列"
+                  },
+                  {
+                    "key": "raggedRows",
+                    "title": "残缺行"
+                  },
+                  {
+                    "key": "unmapped",
+                    "title": "未映射列"
+                  },
+                  {
+                    "key": "note",
+                    "title": "说明"
+                  },
+                  {
+                    "key": "checkedAt",
+                    "title": "校验时间"
+                  }
+                ],
+                "kind": "table",
+                "pageSize": 10,
+                "params": {
+                  "date": "$focus.date",
+                  "sourceId": "$focus.sourceId"
+                },
+                "query": "verifications",
+                "title": "行列一致性校验（逐文件）"
               },
               {
                 "columns": [
@@ -238,6 +302,7 @@
                 "kind": "table",
                 "pageSize": 5,
                 "params": {
+                  "date": "$focus.date",
                   "limit": "5",
                   "sample": "1",
                   "sourceId": "$focus.sourceId"
@@ -253,6 +318,7 @@
             "rowActions": [
               {
                 "args": {
+                  "date": "$focus.date",
                   "sourceId": "$row.id"
                 },
                 "command": "trigger",
@@ -293,6 +359,10 @@
                 "type": "date"
               }
             ],
+            "hideColumns": [
+              "file_id",
+              "row_number"
+            ],
             "kind": "query-table",
             "pageSize": 20,
             "query": "rows",
@@ -314,6 +384,8 @@
         "actions": [
           {
             "command": "fleet.reset",
+            "confirm": "放弃 SQLite 中的全部控制台改动，回到 TOML 文件内容；此操作不可撤销。",
+            "danger": true,
             "label": "恢复 TOML"
           }
         ],
@@ -330,11 +402,13 @@
             "fields": [
               {
                 "key": "no",
-                "label": "机台号"
+                "label": "机台号",
+                "required": true
               },
               {
                 "key": "path",
-                "label": "路径"
+                "label": "路径（UNC，如 \\\\host\\share）",
+                "required": true
               },
               {
                 "key": "ip",
@@ -362,15 +436,16 @@
             "fields": [
               {
                 "key": "name",
-                "label": "名称"
+                "label": "名称",
+                "required": true
               },
               {
                 "key": "cron",
-                "label": "Cron"
+                "label": "Cron（与每日时刻二选一）"
               },
               {
                 "key": "time",
-                "label": "每日时刻 HH:MM"
+                "label": "每日时刻 HH:MM（与 Cron 二选一）"
               }
             ],
             "kind": "form",
@@ -409,6 +484,8 @@
                   "no": "$row.no"
                 },
                 "command": "fleet.machine.remove",
+                "confirm": "删除后机台 {no} 及其路径立即从期望配置回滚，关联源将停止采集。",
+                "danger": true,
                 "label": "删除"
               }
             ],
@@ -438,6 +515,8 @@
                   "name": "$row.name"
                 },
                 "command": "fleet.schedule.remove",
+                "confirm": "引用调度 {name} 的机台将失去采集节奏，删除立即生效。",
+                "danger": true,
                 "label": "删除"
               }
             ],
@@ -471,6 +550,8 @@
                   "name": "$row.name"
                 },
                 "command": "fleet.format.remove",
+                "confirm": "匹配格式 {name} 的文件将不再入库，删除立即生效。",
+                "danger": true,
                 "label": "删除"
               }
             ],
@@ -496,6 +577,8 @@
                   "name": "$row.name"
                 },
                 "command": "fleet.group.remove",
+                "confirm": "组 {name} 内的格式引用将失效，删除立即生效。",
+                "danger": true,
                 "label": "删除"
               }
             ],
@@ -529,6 +612,8 @@
                   "name": "$row.name"
                 },
                 "command": "fleet.sink.remove",
+                "confirm": "写入 sink {name} 的格式将失去目标表，删除立即生效。",
+                "danger": true,
                 "label": "删除"
               }
             ],
@@ -591,7 +676,8 @@
       "Config": {
         "order": 20,
         "pages": [
-          "overview"
+          "overview",
+          "collect"
         ],
         "panel_id": "event-feed",
         "position": "bottom",

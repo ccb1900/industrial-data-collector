@@ -1555,6 +1555,21 @@ func (t *TableStorage) execChunk(ctx context.Context, tx *sql.Tx, stmt string, c
 	return nil
 }
 
+// normalizeDateCell 把 DATE 列跨方言扫描回来的时刻值裁回业务日：
+// SQL Server/PG 的 DATE 列会扫成 time.Time，JSON 后即 RFC3339 字符串，
+// 控制台会把纯日期显示成"日期 00:00:00"。
+func normalizeDateCell(v any) any {
+	switch x := v.(type) {
+	case time.Time:
+		return x.Format("2006-01-02")
+	case string:
+		if len(x) > 10 && (x[4] == '-' || x[4] == '/') && (x[7] == '-' || x[7] == '/') && (x[10] == 'T' || x[10] == ' ') {
+			return x[:10]
+		}
+	}
+	return v
+}
+
 // QueryRows implements RowsQuery.
 func (t *TableStorage) QueryRows(ctx context.Context, sourceID, date string, limit, offset int, filters map[string]string) (RowsPage, error) {
 	return t.queryRows(ctx, sourceID, date, limit, offset, filters, true)
@@ -1665,6 +1680,13 @@ func (t *TableStorage) queryRows(ctx context.Context, sourceID, date string, lim
 	}
 	defer rows.Close()
 	page.Columns = cols
+	dateIdx := -1
+	for i, c := range cols {
+		if strings.EqualFold(c, "collection_date") {
+			dateIdx = i
+			break
+		}
+	}
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -1673,6 +1695,9 @@ func (t *TableStorage) queryRows(ctx context.Context, sourceID, date string, lim
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return page, errs.ClassifyStorageError("scan rows", err)
+		}
+		if dateIdx >= 0 {
+			vals[dateIdx] = normalizeDateCell(vals[dateIdx])
 		}
 		page.Rows = append(page.Rows, vals)
 	}

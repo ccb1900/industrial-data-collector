@@ -35,6 +35,11 @@ type CollectionView struct {
 	FilesCompleted int
 	FilesFailed    int
 	Records        int64
+	// ChecksMismatch counts the files of this collection whose latest
+	// consistency verdict is Mismatch. It is projected from the in-memory
+	// window only: ledger history keeps its verdicts in the checks table,
+	// which the CheckQuery reads per date.
+	ChecksMismatch int
 }
 
 // SourceView is one configured/observed source rendered for UI. Path and

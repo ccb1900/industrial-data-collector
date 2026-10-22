@@ -23,6 +23,7 @@ var (
 	FileQueryKey       = runtime.NewKey[query.FileQuery]("csv.query.files")
 	MetadataQueryKey   = runtime.NewKey[query.MetadataQuery]("csv.query.metadata")
 	FailureQueryKey    = runtime.NewKey[query.FailureQuery]("csv.query.failures")
+	CheckQueryKey      = runtime.NewKey[query.CheckQuery]("csv.query.checks")
 	ObservationKey     = runtime.NewKey[query.Observation]("csv.query.observation")
 	CommandKey         = runtime.NewKey[query.CollectionCommand]("csv.query.command")
 )
@@ -46,6 +47,7 @@ func (c *QueryComponent) Provide() []runtime.Capability {
 		FileQueryKey.Capability(),
 		MetadataQueryKey.Capability(),
 		FailureQueryKey.Capability(),
+		CheckQueryKey.Capability(),
 		ObservationKey.Capability(),
 		CommandKey.Capability(),
 	}
@@ -103,6 +105,13 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := runtime.On(ctx, events.CollectionVerified, func(dctx context.Context, p events.CollectionVerifiedPayload) error {
+		c.model.OnChecksVerified(p.Key, p.Checks)
+		c.obs.Publish(query.ObservationEvent{Type: "CollectionVerified", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	// Started 锚点：只进观察流、不改读取模型投影——它们标记时间线
 	// 起点（"正在采"），终结事件负责状态本身。
 	if err := runtime.On(ctx, events.CollectionStarted, func(dctx context.Context, p events.CollectionStartedPayload) error {
@@ -132,6 +141,9 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := runtime.Provide(ctx, FailureQueryKey, query.FailureQuery(c.model)); err != nil {
+		return nil, err
+	}
+	if err := runtime.Provide(ctx, CheckQueryKey, query.CheckQuery(c.model)); err != nil {
 		return nil, err
 	}
 	if err := runtime.Provide(ctx, ObservationKey, query.Observation(c.obs)); err != nil {

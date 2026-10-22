@@ -136,6 +136,35 @@ func TestFileMissingSource(t *testing.T) {
 	}
 }
 
+// Path 必须与 File 落在同一个位置：校验器据此优先读备份副本，
+// 两个算法一旦漂移，校验就会静默回退去读远端原文件。
+func TestPathMatchesFileDestination(t *testing.T) {
+	day := filepath.Join(t.TempDir(), "2026-09-06")
+	nested := writeFile(t, filepath.Join(day, "line-A", "report.csv"), "x\n")
+	outsider := writeFile(t, filepath.Join(t.TempDir(), "flat.csv"), "y\n")
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		baseDir string
+		file    model.FileIdentity
+	}{
+		{"nested", day, nested},
+		{"outside base dir", day, outsider},
+		{"no base dir", "", nested},
+	} {
+		dst := Path(root, "src", "2026-09-06", tc.baseDir, tc.file)
+		if err := File(root, "src", "2026-09-06", tc.baseDir, tc.file); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if st, err := os.Stat(dst); err != nil || st.IsDir() {
+			t.Fatalf("%s: Path = %q, stat err = %v", tc.name, dst, err)
+		}
+	}
+	if Path("", "src", "2026-09-06", "", nested) != "" {
+		t.Fatal("no backup root must yield no path")
+	}
+}
+
 func TestSafeSegmentRejectsTraversalChars(t *testing.T) {
 	src := writeFile(t, filepath.Join(t.TempDir(), "a.csv"), "x\n")
 	root := t.TempDir()

@@ -8,6 +8,7 @@ package consolebridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -84,6 +85,7 @@ func (c *Component) Inject() []runtime.Dependency {
 		runtime.Requires(queryplugin.SourceQueryKey),
 		runtime.Requires(queryplugin.FileQueryKey),
 		runtime.Requires(queryplugin.FailureQueryKey),
+		runtime.Requires(queryplugin.CheckQueryKey),
 		runtime.Requires(queryplugin.ObservationKey),
 		runtime.Requires(schedulerplugin.CollectionTriggerKey),
 	}
@@ -108,6 +110,10 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	failures, err := runtime.Require(ctx, queryplugin.FailureQueryKey)
+	if err != nil {
+		return nil, err
+	}
+	checks, err := runtime.Require(ctx, queryplugin.CheckQueryKey)
 	if err != nil {
 		return nil, err
 	}
@@ -145,9 +151,20 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			if err != nil {
 				return nil, hubErr(err)
 			}
+			// 近期在动的源排前：千余台机器的部署里，按 id 排序会把有数据
+			// 的源埋进分页深处。"近 7 天有成功采集"来自账本投影，查询失败
+			// 时静默退回默认顺序，绝不让列表因为排序而不可用。
+			recent := recentSucceededSources(ctx, collections)
 			out := make([]uiSource, 0, len(views))
 			for _, v := range views {
-				out = append(out, toUISource(v))
+				if recent[string(v.ID)] {
+					out = append(out, toUISource(v))
+				}
+			}
+			for _, v := range views {
+				if !recent[string(v.ID)] {
+					out = append(out, toUISource(v))
+				}
 			}
 			return out, nil
 		})
@@ -246,6 +263,21 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterQuery("verifications", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
+			filter, ferr := parseCheckFilter(params)
+			if ferr != nil {
+				return nil, ferr
+			}
+			views, err := checks.ListChecks(ctx, filter)
+			if err != nil {
+				return nil, hubErr(err)
+			}
+			return toUIChecks(views), nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
 		return hubRegistry.RegisterQuery("observations", owner, func(ctx context.Context, params url.Values) (any, *hub.Error) {
 			limit := 200
 			if n, perr := strconv.Atoi(params.Get("limit")); perr == nil && n > 0 && n <= 1000 {
@@ -278,8 +310,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 				if g, ok := e["group"].(string); ok {
 					target = strings.TrimPrefix(g, "__sched_")
 				}
+				if target == "" {
+					target = "全部源（手动/广播）"
+				}
 				rows = append(rows, map[string]any{
-					"strategy": strategy,
+					"strategy": strategyLabel(strategy),
 					"expr":     expr,
 					"next":     e["next"],
 					"target":   target,
@@ -292,8 +327,8 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					expr, _ = info["time"].(string)
 				}
 				rows = append(rows, map[string]any{
-					"strategy": strategy, "expr": expr,
-					"next": info["next"], "target": "",
+					"strategy": strategyLabel(strategy), "expr": expr,
+					"next": info["next"], "target": "全部源（手动/广播）",
 				})
 			}
 			return rows, nil
@@ -359,7 +394,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 					if ui.Date != "" {
 						var d model.CollectionDate
 						if err := d.UnmarshalText([]byte(ui.Date)); err != nil {
-							return &hub.Error{Code: "invalid_request", Message: fmt.Sprintf("invalid date %q", ui.Date)}
+							return &hub.Error{Code: "invalid_request", Message: fmt.Sprintf("日期无效：%q", ui.Date)}
 						}
 						req.Date = &d
 					}
@@ -371,6 +406,45 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 			go func() {
 				if err := event.Serial(base, c.emitCtx, events.CollectionRequested, req); err != nil {
 					slog.Warn("trigger rejected", "error", err.Error())
+				}
+			}()
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	// 手动重校验：对某个源的某个业务日重新做一次行列一致性判定。与采集后
+	// 自动校验同一套代码，只是标记 triggeredBy=manual；结果同样进台账与
+	// 观察流，所以这里异步执行、立即返回（进度与判定看事件流）。
+	if err := register(func() (func() error, error) {
+		return hubRegistry.RegisterCommand("verify", owner, func(ctx context.Context, body json.RawMessage) error {
+			var req struct {
+				SourceID string `json:"sourceId"`
+				Date     string `json:"date"`
+			}
+			if len(body) > 0 {
+				if err := json.Unmarshal(body, &req); err != nil {
+					return &hub.Error{Code: "invalid_request", Message: err.Error()}
+				}
+			}
+			key, kerr := collectionKey(req.SourceID, req.Date)
+			if kerr != nil {
+				return kerr
+			}
+			unit := c.unitFor(model.SourceID(req.SourceID))
+			if unit == nil {
+				return &hub.Error{Code: "not_found", Message: fmt.Sprintf("数据源 %q 未部署", req.SourceID)}
+			}
+			if !unit.VerificationActive() {
+				return &hub.Error{Code: "unavailable", Message: fmt.Sprintf("数据源 %q：行列校验未启用（verify_after_collect=false，或本源解析器无法重测行列）", req.SourceID)}
+			}
+			base := c.emitCtx.Context()
+			go func() {
+				runCtx, cancel := context.WithTimeout(base, verifyCommandTimeout)
+				defer cancel()
+				if _, err := unit.VerifyNow(runCtx, key); err != nil {
+					slog.Warn("manual verification failed", "key", key.String(), "error", err.Error())
 				}
 			}()
 			return nil
@@ -423,16 +497,33 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 
 var nextOwner atomic.Int64
 
+// verifyCommandTimeout 与采集后自动校验同一预算：一次校验是一批文件的重测，
+// 超时说明输入面（远端共享目录）已经不正常，不是要等得更久。
+const verifyCommandTimeout = 30 * time.Second
+
+// unitFor resolves the deployed source unit owning a source id; nil when the
+// source is not part of the current configuration.
+func (c *Component) unitFor(id model.SourceID) *sourceunitplugin.SourceUnitComponent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, u := range c.units {
+		if u.SourceID() == string(id) {
+			return u
+		}
+	}
+	return nil
+}
+
 func collectionKey(sourceID, date string) (model.CollectionKey, *hub.Error) {
 	if sourceID == "" {
-		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: "sourceId required"}
+		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: "缺少参数：sourceId"}
 	}
 	if date == "" {
-		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: "date required"}
+		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: "缺少参数：date"}
 	}
 	var d model.CollectionDate
 	if err := d.UnmarshalText([]byte(date)); err != nil {
-		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: fmt.Sprintf("invalid date %q", date)}
+		return model.CollectionKey{}, &hub.Error{Code: "invalid_request", Message: fmt.Sprintf("日期无效：%q", date)}
 	}
 	return model.CollectionKey{SourceID: model.SourceID(sourceID), Date: d}, nil
 }
@@ -447,10 +538,24 @@ func hubErr(err error) *hub.Error {
 		code = "not_found"
 	case errs.Is(err, errs.ErrInvalidConfig):
 		code = "invalid_request"
-	case errs.Is(err, errs.ErrDependency):
+	case errs.Is(err, errs.ErrDependency), errs.Is(err, errs.ErrUnavailable):
 		code = "unavailable"
+	case errs.Is(err, errs.ErrTimeout):
+		code = "timeout"
+	case errs.Is(err, errs.ErrPermissionDenied):
+		code = "forbidden"
 	}
-	return &hub.Error{Code: code, Message: err.Error()}
+	return &hub.Error{Code: code, Message: hubDetail(err)}
+}
+
+// hubDetail 剥掉错误类名前缀：类别已经由 code 字段表达，控制台只显示明细，
+// 否则会出现"未找到: 未找到数据源 …"这种重复。
+func hubDetail(err error) string {
+	var se *errs.SourceError
+	if errors.As(err, &se) && se.Err != nil {
+		return se.Err.Error()
+	}
+	return err.Error()
 }
 
 // NewConsoleBridge creates the component. v0.1 has no required config.

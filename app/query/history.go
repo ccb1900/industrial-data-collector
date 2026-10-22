@@ -26,6 +26,7 @@ type HistorySource interface {
 	Collections(ctx context.Context, f CollectionFilter) ([]CollectionView, error)
 	Collection(ctx context.Context, key model.CollectionKey) (CollectionView, bool, error)
 	Files(ctx context.Context, key model.CollectionKey) ([]FileView, error)
+	Checks(ctx context.Context, key model.CollectionKey) ([]model.FileCheck, error)
 	Stats(ctx context.Context) (OverviewStats, error)
 	Trend(ctx context.Context) ([]TrendPoint, error)
 	Attention(ctx context.Context) ([]CollectionView, error)

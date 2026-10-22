@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite" // register the pure-Go sqlite driver
 
@@ -46,6 +47,28 @@ func TestSQLiteDialectIdempotentWrites(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("rows = %d, want 2 (replay must not duplicate)", n)
+	}
+}
+
+// TestNormalizeDateCell 离线覆盖读侧的日期裁剪：sqlserver/pg 的 DATE 列会扫成
+// time.Time（JSON 后即 RFC3339），必须在存储层就裁回业务日。
+func TestNormalizeDateCell(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{"time", time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC), "2026-10-14"},
+		{"rfc3339", "2026-10-14T00:00:00Z", "2026-10-14"},
+		{"space-form", "2026-10-14 00:00:00 +0000 UTC", "2026-10-14"},
+		{"plain", "2026-10-14", "2026-10-14"},
+		{"nil", nil, nil},
+		{"other-string", "widget-a", "widget-a"},
+	}
+	for _, c := range cases {
+		if got := normalizeDateCell(c.in); got != c.want {
+			t.Errorf("%s: normalizeDateCell(%#v) = %#v, want %#v", c.name, c.in, got, c.want)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ type fakeHistory struct {
 	collections []CollectionView
 	collection  map[string]CollectionView
 	files       map[string][]FileView
+	checks      map[string][]model.FileCheck
 	stats       OverviewStats
 	trend       []TrendPoint
 	attention   []CollectionView
@@ -36,8 +37,12 @@ func (f *fakeHistory) Files(_ context.Context, key model.CollectionKey) ([]FileV
 	return f.files[hkey(key)], nil
 }
 
+func (f *fakeHistory) Checks(_ context.Context, key model.CollectionKey) ([]model.FileCheck, error) {
+	return f.checks[hkey(key)], nil
+}
+
 func (f *fakeHistory) Stats(context.Context) (OverviewStats, error) { return f.stats, nil }
-func (f *fakeHistory) Trend(context.Context) ([]TrendPoint, error) { return f.trend, nil }
+func (f *fakeHistory) Trend(context.Context) ([]TrendPoint, error)  { return f.trend, nil }
 func (f *fakeHistory) Attention(context.Context) ([]CollectionView, error) {
 	return f.attention, nil
 }

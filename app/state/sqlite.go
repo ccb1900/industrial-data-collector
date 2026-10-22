@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 2
 
 // sqliteStore is the process-wide handle shared by every source unit pointing
 // at the same state.db. One *sql.DB per database keeps 1119 sources from
@@ -156,6 +156,30 @@ func ensureSQLiteSchema(db *sql.DB) error {
 			source_id TEXT PRIMARY KEY,
 			imported_at INTEGER NOT NULL
 		)`,
+		// 一致性校验台账：每（源、业务日、文件）留最新一条判定。历史在观测
+		// journal 里，这张表只承担"现在有没有对不上"这一问。
+		`CREATE TABLE IF NOT EXISTS state_checks (
+			source_id TEXT NOT NULL,
+			date TEXT NOT NULL,
+			file_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			name TEXT NOT NULL,
+			size INTEGER NOT NULL DEFAULT 0,
+			mod_time INTEGER NOT NULL DEFAULT 0,
+			hash TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			file_rows INTEGER NOT NULL DEFAULT 0,
+			parsed_rows INTEGER NOT NULL DEFAULT 0,
+			db_rows INTEGER NOT NULL DEFAULT 0,
+			file_cols INTEGER NOT NULL DEFAULT 0,
+			stored_cols INTEGER NOT NULL DEFAULT 0,
+			ragged_rows INTEGER NOT NULL DEFAULT 0,
+			unmapped TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			checked_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (source_id, date, file_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_state_checks_time ON state_checks (source_id, date, status)`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil {

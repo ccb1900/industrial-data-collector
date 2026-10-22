@@ -97,6 +97,15 @@ below are what each row carries (and what a raw `[[components]]` row sets):
   same-group sources respond (empty group = broadcast, e.g. manual
   triggers). Fleet composition writes the synthesized schedule group
   (`__sched_<name>`) for machines that reference a schedule.
+- `verify_after_collect`: bool, default `true`. After a collection succeeds,
+  every file it stored is re-measured (rows and columns) and compared with
+  what the database actually holds for that file; a disagreement is recorded
+  as a `Mismatch` verdict and needs an operator. The re-read prefers the local
+  backup copy (`backup_dir`) and falls back to the source file only when no
+  copy exists. Verification never changes the collection's own status, never
+  enters the retry ledger, and is bounded by a 30-second context — a batch that
+  runs out of time records no verdicts at all. Turning it off is a capacity
+  decision: the check re-reads the day's files for this source.
 
 ## Metadata
 
@@ -401,7 +410,7 @@ contributes the expanded Runtime rows before the Controller reconciles:
 
 | Layer | Declares | Keys |
 |---|---|---|
-| `defaults` | cross-cutting defaults | state_dir, date_policy, catchup_days, batch_size, file_stable_window_seconds, files_per_source (intra-source file concurrency, default 1), max_parallel_sources (process-wide parallel-source gate, default 4), backup_dir, backup_keep_days |
+| `defaults` | cross-cutting defaults | state_dir, date_policy, catchup_days, batch_size, file_stable_window_seconds, files_per_source (intra-source file concurrency, default 1), max_parallel_sources (process-wide parallel-source gate, default 4), backup_dir, backup_keep_days, verify_after_collect (post-collection row/column consistency check, default true; omit to leave the source-unit default in charge) |
 | `[[sinks]]` | connection = credential | name, driver (sqlite/mysql/postgresql/oracle/sqlserver), dsn, file_table, lazy_connect, file_key (store an integer file key instead of repeating `file_id` on every row; keys are generated in-process by a Snowflake generator — see 发号定案 in OPERATIONS.md), file_key_node (0–65535, pins the generator's node id; the generator is a **per-process singleton per registry**, keyed by dialect+driver+dsn+file_table, so this is a registry-level pin: all sources sharing the registry must omit it or pin the same value — conflicting values fail `OpenTable` with `ErrInvalidConfig`; default random per process/registry) |
 | `[[formats]]` | one data file family = one table contract | name, match (file-name signature), table, sink reference, parser (encoding/header/allow_ragged/delimiter/skip_lines), columns (optional; default header auto-mapping), metadata (path/filename rules), layout |
 | `[[format_groups]]` | the collection scope of a machine type | name, formats (references to format names) |

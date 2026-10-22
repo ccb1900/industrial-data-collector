@@ -32,6 +32,9 @@ type FleetDefaults struct {
 	MaxParallelSources int
 	BackupDir          string
 	BackupKeepDays     int
+	// VerifyAfterCollect 覆盖采集后行列一致性校验开关。nil = 不下发，
+	// 源单元维持自己的默认（开启）；显式 false 才是关掉。
+	VerifyAfterCollect *bool
 }
 
 // SinkDef is one database connection in the sink inventory. Connection
@@ -192,15 +195,15 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 		stateType = "file-state"
 	}
 	if stateType != "file-state" && stateType != "sqlite-state" {
-		return nil, nil, fmt.Errorf("defaults: state_type must be file-state or sqlite-state, got %q", stateType)
+		return nil, nil, fmt.Errorf("defaults：state_type 只能是 file-state 或 sqlite-state，当前为 %q", stateType)
 	}
 	sinkByName := map[string]SinkDef{}
 	for _, sk := range sinks {
 		if sk.Name == "" {
-			return nil, nil, fmt.Errorf("sinks: name is required")
+			return nil, nil, fmt.Errorf("sinks：缺少 name")
 		}
 		if _, dup := sinkByName[sk.Name]; dup {
-			return nil, nil, fmt.Errorf("sinks: duplicate sink name %q", sk.Name)
+			return nil, nil, fmt.Errorf("sinks：sink 名称重复：%q", sk.Name)
 		}
 		sinkByName[sk.Name] = sk
 	}
@@ -208,19 +211,19 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	for i := range formats {
 		f := &formats[i]
 		if f.Name == "" {
-			return nil, nil, fmt.Errorf("formats #%d: name is required", i)
+			return nil, nil, fmt.Errorf("formats 第 %d 条：缺少 name", i)
 		}
 		if _, dup := formatByName[f.Name]; dup {
-			return nil, nil, fmt.Errorf("formats: duplicate format name %q", f.Name)
+			return nil, nil, fmt.Errorf("formats：格式名称重复：%q", f.Name)
 		}
 		if f.Match == "" {
-			return nil, nil, fmt.Errorf("format %q: match is required", f.Name)
+			return nil, nil, fmt.Errorf("格式 %q：缺少 match", f.Name)
 		}
 		if f.Sink == "" {
-			return nil, nil, fmt.Errorf("format %q: sink reference is required", f.Name)
+			return nil, nil, fmt.Errorf("格式 %q：缺少 sink 引用", f.Name)
 		}
 		if _, ok := sinkByName[f.Sink]; !ok {
-			return nil, nil, fmt.Errorf("format %q references unknown sink %q", f.Name, f.Sink)
+			return nil, nil, fmt.Errorf("格式 %q 引用了未知 sink %q", f.Name, f.Sink)
 		}
 		f.hasDateToken = hasDateToken(f.Match)
 		f.pattern = patternFromMatch(f.Match)
@@ -230,17 +233,17 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	groupByName := map[string]FormatGroupDef{}
 	for _, g := range groups {
 		if g.Name == "" {
-			return nil, nil, fmt.Errorf("format_groups: name is required")
+			return nil, nil, fmt.Errorf("format_groups：缺少 name")
 		}
 		if _, dup := groupByName[g.Name]; dup {
-			return nil, nil, fmt.Errorf("format_groups: duplicate group name %q", g.Name)
+			return nil, nil, fmt.Errorf("format_groups：组名重复：%q", g.Name)
 		}
 		if len(g.Formats) == 0 {
-			return nil, nil, fmt.Errorf("format group %q: formats is required", g.Name)
+			return nil, nil, fmt.Errorf("格式组 %q：缺少 formats", g.Name)
 		}
 		for _, fname := range g.Formats {
 			if _, ok := formatByName[fname]; !ok {
-				return nil, nil, fmt.Errorf("format group %q references unknown format %q", g.Name, fname)
+				return nil, nil, fmt.Errorf("格式组 %q 引用了未知格式 %q", g.Name, fname)
 			}
 		}
 		groupByName[g.Name] = g
@@ -248,17 +251,17 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	machineSeen := map[string]bool{}
 	for _, m := range machines {
 		if m.No == "" {
-			return nil, nil, fmt.Errorf("machines: no is required")
+			return nil, nil, fmt.Errorf("machines：缺少 no（机台号）")
 		}
 		if machineSeen[m.No] {
-			return nil, nil, fmt.Errorf("machines: duplicate machine no %q", m.No)
+			return nil, nil, fmt.Errorf("machines：机台号重复：%q", m.No)
 		}
 		machineSeen[m.No] = true
 		if m.Path == "" {
-			return nil, nil, fmt.Errorf("machine %q: path is required", m.No)
+			return nil, nil, fmt.Errorf("机台 %q：缺少 path", m.No)
 		}
 		if _, ok := groupByName[m.Group]; !ok {
-			return nil, nil, fmt.Errorf("machine %q references unknown format group %q", m.No, m.Group)
+			return nil, nil, fmt.Errorf("机台 %q 引用了未知格式组 %q", m.No, m.Group)
 		}
 	}
 
@@ -273,7 +276,7 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			if !pathHasTokens && !f.hasDateToken && !flatOK && d.DatePolicy != "specific" {
 				// 滚动策略（yesterday/daily）需要日期记号归因业务日；
 				// specific 策略的日期归属来自策略本身，无需记号。
-				return nil, nil, fmt.Errorf("machine %q + format %q: neither the machine path nor the match carries a date token — the business date cannot be attributed", m.No, fname)
+				return nil, nil, fmt.Errorf("机台 %q + 格式 %q：机台路径和 match 都没有日期记号，无法把文件归到某个业务日", m.No, fname)
 			}
 			cfg := map[string]any{
 				"source_id":                  m.No + "-" + f.Name,
@@ -308,6 +311,9 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 			}
 			if d.BackupKeepDays > 0 {
 				cfg["backup_keep_days"] = d.BackupKeepDays
+			}
+			if d.VerifyAfterCollect != nil {
+				cfg["verify_after_collect"] = *d.VerifyAfterCollect
 			}
 			if f.hasDateToken {
 				cfg["filename_date_layout"] = f.Match
@@ -395,20 +401,20 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 	schedByName := map[string]ScheduleDef{}
 	for i, sc := range schedules {
 		if sc.Name == "" {
-			return nil, nil, fmt.Errorf("schedules #%d: name is required", i)
+			return nil, nil, fmt.Errorf("schedules 第 %d 条：缺少 name", i)
 		}
 		if sc.Cron == "" && sc.Time == "" {
-			return nil, nil, fmt.Errorf("schedule %q: cron or time is required", sc.Name)
+			return nil, nil, fmt.Errorf("调度 %q：cron 与每日时刻至少填一个", sc.Name)
 		}
 		if _, dup := schedByName[sc.Name]; dup {
-			return nil, nil, fmt.Errorf("schedules: duplicate schedule name %q", sc.Name)
+			return nil, nil, fmt.Errorf("schedules：调度名重复：%q", sc.Name)
 		}
 		schedByName[sc.Name] = sc
 	}
 	for _, m := range machines {
 		if m.Schedule != "" {
 			if _, ok := schedByName[m.Schedule]; !ok {
-				return nil, nil, fmt.Errorf("machine %q references unknown schedule %q", m.No, m.Schedule)
+				return nil, nil, fmt.Errorf("机台 %q 引用了未知调度 %q", m.No, m.Schedule)
 			}
 		}
 	}
@@ -477,7 +483,7 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 		if raw == nil {
 			return d, nil
 		}
-		return d, fmt.Errorf("defaults must be a table ([defaults])")
+		return d, fmt.Errorf("defaults 必须是表（[defaults]）")
 	}
 	d.StateDir, _ = m["state_dir"].(string)
 	d.StateType, _ = m["state_type"].(string)
@@ -504,6 +510,9 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 	if v, ok := m["backup_keep_days"].(int64); ok {
 		d.BackupKeepDays = int(v)
 	}
+	if v, ok := m["verify_after_collect"].(bool); ok {
+		d.VerifyAfterCollect = &v
+	}
 	return d, nil
 }
 
@@ -513,13 +522,13 @@ func parseSinks(raw any) ([]SinkDef, error) {
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("sinks must be an array of tables ([[sinks]])")
+		return nil, fmt.Errorf("sinks 必须是表数组（[[sinks]]）")
 	}
 	out := make([]SinkDef, 0, len(rows))
 	for i, r := range rows {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("sinks #%d must be a table", i)
+			return nil, fmt.Errorf("sinks 第 %d 条必须是表", i)
 		}
 		sk := SinkDef{}
 		sk.Name, _ = m["name"].(string)
@@ -544,7 +553,7 @@ func parseSinks(raw any) ([]SinkDef, error) {
 				x := n
 				sk.FileKeyNode = &x
 			default:
-				return nil, fmt.Errorf("sinks #%d: file_key_node must be an integer", i)
+				return nil, fmt.Errorf("sinks 第 %d 条：file_key_node 必须是整数", i)
 			}
 		}
 		sk.HeaderCheck, _ = m["header_check"].(string)
@@ -552,13 +561,13 @@ func parseSinks(raw any) ([]SinkDef, error) {
 			sk.ExtraRows = &v
 		}
 		if sk.Name == "" || sk.Driver == "" {
-			return nil, fmt.Errorf("sinks #%d: name/driver are required", i)
+			return nil, fmt.Errorf("sinks 第 %d 条：缺少 name 或 driver", i)
 		}
 		// 驱动白名单：打错驱动名在启动时响亮失败，而不是等到首采。
 		switch strings.ToLower(sk.Driver) {
 		case "memory", "sqlite", "mysql", "postgresql", "oracle", "sqlserver":
 		default:
-			return nil, fmt.Errorf("sinks #%d: unknown driver %q (memory/sqlite/mysql/postgresql/oracle/sqlserver)", i, sk.Driver)
+			return nil, fmt.Errorf("sinks 第 %d 条：未知 driver %q（可选 memory/sqlite/mysql/postgresql/oracle/sqlserver）", i, sk.Driver)
 		}
 		out = append(out, sk)
 	}
@@ -571,13 +580,13 @@ func parseFormats(raw any) ([]FormatDef, error) {
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("formats must be an array of tables ([[formats]])")
+		return nil, fmt.Errorf("formats 必须是表数组（[[formats]]）")
 	}
 	out := make([]FormatDef, 0, len(rows))
 	for i, r := range rows {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("formats #%d must be a table", i)
+			return nil, fmt.Errorf("formats 第 %d 条必须是表", i)
 		}
 		f := FormatDef{}
 		f.Name, _ = m["name"].(string)
@@ -620,13 +629,13 @@ func parseFormatGroups(raw any) ([]FormatGroupDef, error) {
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("format_groups must be an array of tables")
+		return nil, fmt.Errorf("format_groups 必须是表数组")
 	}
 	out := make([]FormatGroupDef, 0, len(rows))
 	for i, r := range rows {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("format_groups #%d must be a table", i)
+			return nil, fmt.Errorf("format_groups 第 %d 条必须是表", i)
 		}
 		g := FormatGroupDef{}
 		g.Name, _ = m["name"].(string)
@@ -648,13 +657,13 @@ func parseMachines(raw any) ([]MachineDef, error) {
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("machines must be an array of tables ([[machines]])")
+		return nil, fmt.Errorf("machines 必须是表数组（[[machines]]）")
 	}
 	out := make([]MachineDef, 0, len(rows))
 	for i, r := range rows {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("machines #%d must be a table", i)
+			return nil, fmt.Errorf("machines 第 %d 条必须是表", i)
 		}
 		md := MachineDef{}
 		md.No, _ = m["no"].(string)
@@ -682,13 +691,13 @@ func parseSchedules(raw any) ([]ScheduleDef, error) {
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("schedules must be an array of tables ([[schedules]])")
+		return nil, fmt.Errorf("schedules 必须是表数组（[[schedules]]）")
 	}
 	out := make([]ScheduleDef, 0, len(rows))
 	for i, r := range rows {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("schedules #%d must be a table", i)
+			return nil, fmt.Errorf("schedules 第 %d 条必须是表", i)
 		}
 		sd := ScheduleDef{}
 		sd.Name, _ = m["name"].(string)

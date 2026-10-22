@@ -29,7 +29,20 @@ var (
 	// published for rows that actually existed, so the catch-up window's many
 	// never-materialized dates stay out of the event stream.
 	CollectionDropped = runtime.NewEventKey[CollectionDroppedPayload]("collection.dropped")
+
+	// CollectionVerified reports the row/column consistency verdicts of one
+	// collection. It never changes the collection's status: a mismatch is
+	// evidence for an operator, not a retry trigger.
+	CollectionVerified = runtime.NewEventKey[CollectionVerifiedPayload]("collection.verified")
 )
+
+type CollectionVerifiedPayload struct {
+	Key    model.CollectionKey
+	Checks []model.FileCheck
+	// TriggeredBy is "collect" for the automatic post-collection pass and
+	// "manual" for an operator-requested re-check.
+	TriggeredBy string
+}
 
 type CollectionDroppedPayload struct {
 	Key model.CollectionKey

@@ -135,6 +135,14 @@ func (h *ledgerHistory) Files(ctx context.Context, key model.CollectionKey) ([]q
 	return out, nil
 }
 
+func (h *ledgerHistory) Checks(ctx context.Context, key model.CollectionKey) ([]model.FileCheck, error) {
+	reader := h.readers[key.SourceID]
+	if reader == nil {
+		return nil, nil
+	}
+	return reader.CollectionChecks(ctx, key)
+}
+
 func (h *ledgerHistory) Stats(ctx context.Context) (query.OverviewStats, error) {
 	var out query.OverviewStats
 	for _, reader := range h.ledgers {

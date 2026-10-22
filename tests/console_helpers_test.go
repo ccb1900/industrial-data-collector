@@ -58,6 +58,26 @@ type wireCollection struct {
 	FilesCompleted int    `json:"filesCompleted"`
 	FilesFailed    int    `json:"filesFailed"`
 	Records        int64  `json:"records"`
+	ChecksMismatch int    `json:"checksMismatch"`
+}
+
+// wireCheck is one file's consistency verdict as the `verifications` query
+// returns it: the three row counts side by side is the whole point.
+type wireCheck struct {
+	SourceID   string   `json:"sourceId"`
+	Date       string   `json:"date"`
+	Name       string   `json:"name"`
+	Path       string   `json:"path"`
+	Status     string   `json:"status"`
+	FileRows   int64    `json:"fileRows"`
+	ParsedRows int64    `json:"parsedRows"`
+	DBRows     int64    `json:"dbRows"`
+	FileCols   int      `json:"fileCols"`
+	StoredCols int      `json:"storedCols"`
+	RaggedRows int64    `json:"raggedRows"`
+	Unmapped   []string `json:"unmapped"`
+	Note       string   `json:"note"`
+	CheckedAt  string   `json:"checkedAt"`
 }
 
 type wireFile struct {

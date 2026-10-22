@@ -96,6 +96,14 @@ backup_dir = "../backup"   # 副本：<backup_dir>/<机台-格式>/<业务日>/<
                            # 60 台 × 23 格式 × N 天，注意磁盘容量规划
 backup_keep_days = 90
 
+# ---- 采集后行列一致性校验（默认开启）----
+# 每轮采集成功后逐文件复测：文件行/列（真源取上面的备份副本，无副本才回退
+# 原文件）对照库中该文件的行数与列覆盖，对不上就登记 Mismatch、进"需要处理"
+# 清单并记日志，等人工介入——校验不改采集状态，也不进失败重试账。
+# 关掉只应是容量决策：校验会把当天该源的文件再读一遍（单轮上限 30s，超时不
+# 落判定，不会拖住采集）。
+# verify_after_collect = true
+
 # 中心库：SQL Server（go-mssqldb 驱动）。URL 格式
 # sqlserver://user:pass@host:port?database=name
 [[sinks]]

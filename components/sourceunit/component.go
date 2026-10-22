@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"dynamic-runtime/extensions/config"
@@ -66,9 +67,15 @@ type SourceUnitComponent struct {
 	filesPerSource        int
 	backupDir             string
 	backupKeepDays        int
+	verifyAfterCollect    bool
 	logger                *slog.Logger
 
 	emitCtx *runtime.Context
+
+	// mu 保护 active：一次激活的校验执行体持有当次 sink 连接，重新装配
+	// 或卸载时必须换掉，不能跨代复用旧连接。
+	mu     sync.Mutex
+	active *checkRunner
 }
 
 type job struct {
@@ -158,6 +165,13 @@ func (c *SourceUnitComponent) Projection(ctx context.Context) (query.UnitState, 
 		return u, err
 	}
 	u.Failures = failures
+	if store, ok := c.stateSvc.(state.CheckStore); ok {
+		checks, err := store.ListChecks(ctx, model.CheckFilter{SourceID: c.sourceID})
+		if err != nil {
+			return u, err
+		}
+		u.Checks = checks
+	}
 	return u, nil
 }
 
@@ -185,6 +199,7 @@ func (c *SourceUnitComponent) ProjectionFromSnapshot(snap state.ProjectionSnapsh
 		Collections:    snap.Collections[c.sourceID],
 		CompletedFiles: snap.Files[c.sourceID],
 		Failures:       snap.Failures[c.sourceID],
+		Checks:         snap.Checks[c.sourceID],
 	}
 }
 
@@ -284,19 +299,30 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 	}
 	c.emitCtx = ctx
 	exec.Observer = outcomeObserver{emitCtx: ctx}
+	verifier := c.newCheckRunner(store)
+	c.setActive(verifier)
+	deactivate := func() {
+		c.mu.Lock()
+		if c.active == verifier {
+			c.active = nil
+		}
+		c.mu.Unlock()
+	}
 	workerCtx, cancel := context.WithCancel(ctx.Context())
 	reqCh := make(chan job, 8)
 	workerDone := make(chan struct{})
-	go c.worker(workerCtx, reqCh, workerDone, exec)
+	go c.worker(workerCtx, reqCh, workerDone, exec, verifier)
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {
 			cancel()
 			<-workerDone
+			deactivate()
 			return nil
 		}, nil
 	}); err != nil {
 		cancel()
 		<-workerDone
+		deactivate()
 		return nil, err
 	}
 	err := runtime.On(ctx, events.CollectionRequested, func(dctx context.Context, req model.CollectionRequested) error {
@@ -329,7 +355,13 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 	return nil, nil
 }
 
-func (c *SourceUnitComponent) worker(ctx context.Context, reqCh <-chan job, done chan<- struct{}, exec *collector.Executor) {
+func (c *SourceUnitComponent) setActive(r *checkRunner) {
+	c.mu.Lock()
+	c.active = r
+	c.mu.Unlock()
+}
+
+func (c *SourceUnitComponent) worker(ctx context.Context, reqCh <-chan job, done chan<- struct{}, exec *collector.Executor, verifier *checkRunner) {
 	defer close(done)
 	for {
 		select {
@@ -342,7 +374,15 @@ func (c *SourceUnitComponent) worker(ctx context.Context, reqCh <-chan job, done
 				parallelism.Finish(runCtx.Err())
 				continue
 			}
-			_, runErr := exec.Handle(runCtx, j.req)
+			results, runErr := exec.Handle(runCtx, j.req)
+			if verifier != nil {
+				// 校验同步跑在采集作业尾部：结局事件已经发布，此刻台账
+				// 与库里的行数就是这次采集留下的事实。它占同一个并发闸，
+				// 不改采集状态、不进失败重试账，超时只丢判定。
+				checkCtx, checkCancel := context.WithTimeout(context.WithoutCancel(runCtx), verifyTimeout)
+				verifier.runResults(checkCtx, results)
+				checkCancel()
+			}
 			parallelism.Release()
 			runCancel()
 			parallelism.Finish(runErr)
@@ -503,6 +543,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	}
 	backupDir := configutil.OptionalString(cc, "backup_dir", "")
 	backupKeepDays := configutil.OptionalInt(cc, "backup_keep_days", 0)
+	// 采集后行列一致性校验默认开启：每次采集完成即重测文件并与库中结果
+	// 对照。关掉它只应是容量决策（备份缺失时校验要二次远端读文件），
+	// 而判定本身是运维证据，不占采集链路。
+	verifyAfterCollect := configutil.OptionalBool(cc, "verify_after_collect", true)
 	if backupKeepDays < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "backup_keep_days must be >= 0")
 	}
@@ -548,6 +592,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		filesPerSource:        filesPerSource,
 		backupDir:             backupDir,
 		backupKeepDays:        backupKeepDays,
+		verifyAfterCollect:    verifyAfterCollect,
 		logger:                logger,
 	}, nil
 }

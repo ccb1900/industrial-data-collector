@@ -92,6 +92,50 @@ func countOf(tbl string) string {
 	return "SELECT COUNT(*) FROM " + quoteIdent("sqlserver", tbl)
 }
 
+// TestRealMSSQLQueryRowsPlainDate：sqlserver 的 collection_date 是 DATE 列，
+// 裸扫回来是 time.Time，JSON 化即 RFC3339，控制台会把纯业务日显示成
+// "2026-09-09 00:00:00"。读侧必须裁回 YYYY-MM-DD，file_key 与 legacy 两条骨架都验。
+func TestRealMSSQLQueryRowsPlainDate(t *testing.T) {
+	ctx := context.Background()
+	for _, fileKey := range []bool{true, false} {
+		f := newMSSQLFix(t)
+		s := openReal(t, f.cfg(fileKey))
+		writeBatch(t, s, "gauge", "2026-09-09", "a.txt", 1, "42.5")
+		page, err := s.QueryRows(ctx, "gauge", "2026-09-09", 10, 0, nil)
+		if err != nil {
+			t.Fatalf("fileKey=%v QueryRows: %v", fileKey, err)
+		}
+		if len(page.Rows) == 0 {
+			t.Fatalf("fileKey=%v QueryRows returned no rows", fileKey)
+		}
+		idx := -1
+		for i, c := range page.Columns {
+			if strings.EqualFold(c, "collection_date") {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("fileKey=%v columns=%v has no collection_date", fileKey, page.Columns)
+		}
+		got, ok := page.Rows[0][idx].(string)
+		if !ok || got != "2026-09-09" {
+			t.Errorf("fileKey=%v collection_date = %#v, want string \"2026-09-09\"", fileKey, page.Rows[0][idx])
+		}
+		// 根因留证：裸扫这张表的 DATE 列回来就是 time.Time（不裁剪即成 RFC3339）。
+		rawTbl := f.table
+		if fileKey {
+			rawTbl = f.fileTable
+		}
+		var raw any
+		if err := s.db.QueryRowContext(ctx, "SELECT collection_date FROM "+quoteIdent("sqlserver", rawTbl)).Scan(&raw); err != nil {
+			t.Fatalf("fileKey=%v raw scan: %v", fileKey, err)
+		}
+		if _, isTime := raw.(time.Time); !isTime {
+			t.Errorf("fileKey=%v 裸扫 collection_date = %T，预期 time.Time（根因已变，请复核裁剪逻辑）", fileKey, raw)
+		}
+	}
+}
+
 func TestRealMSSQLConnect(t *testing.T) {
 	f := newMSSQLFix(t)
 	s := openReal(t, f.cfg(true))

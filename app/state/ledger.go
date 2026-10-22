@@ -53,6 +53,9 @@ type LedgerReader interface {
 	FilteredCollections(ctx context.Context, f CollectionFilter) ([]CollectionSummary, error)
 	CollectionSummary(ctx context.Context, key model.CollectionKey) (CollectionSummary, bool, error)
 	CollectionFiles(ctx context.Context, key model.CollectionKey) ([]model.FileRecordView, []model.FileFailure, error)
+	// CollectionChecks serves the persisted verdicts of one older date, the
+	// same lazy path the file and failure lists take.
+	CollectionChecks(ctx context.Context, key model.CollectionKey) ([]model.FileCheck, error)
 	LedgerStats(ctx context.Context) (LedgerStats, error)
 	LedgerTrend(ctx context.Context) ([]DateTotals, error)
 	LedgerAttention(ctx context.Context) ([]CollectionSummary, error)
