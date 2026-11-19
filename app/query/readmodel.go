@@ -128,6 +128,17 @@ func (m *ReadModel) OnCollectionPending(key model.CollectionKey, note string, at
 	e.ended = at
 }
 
+// OnCollectionSkipped renders an evidenced no-data terminal date in the live
+// projection: Skipped is settled history, never attention.
+func (m *ReadModel) OnCollectionSkipped(key model.CollectionKey, note string, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entry(key)
+	e.status = StatusSkipped
+	e.note = note
+	e.ended = at
+}
+
 // OnCollectionExpired retires a date in the live projection: the ledger said
 // "out of window, no more automatic retries", and the in-memory view must say
 // the same thing in the same run rather than after a restart.

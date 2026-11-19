@@ -33,6 +33,11 @@ type Config struct {
 	Logger *slog.Logger
 	// FilesPerSource 是单源内文件级并发上限（默认 1 = 串行）。
 	FilesPerSource int
+	// NoDataConfirmDays 是"无数据确认"的天数阈值（0 = 关闭，默认）：共享可达
+	// 但同一业务日连续 N 次探不到文件时，把该日终态化为有证据的 Skipped——
+	// 假期/停产不再每晚刷"待探"。关闭时保持实例制语义：不落账、窗口重扫
+	// 每晚再探，晚到文件总能被捡回来。
+	NoDataConfirmDays int
 	// BackupDir 非空时，文件在标记完成前先复制一份到
 	// <BackupDir>/<source_id>/<业务日>/；备份失败即文件失败（严格语义，
 	// 下轮重排重试）。BackupKeepDays>0 时每次采集后清理更早的日期目录。
@@ -134,6 +139,7 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 	if req.Date != nil {
 		target = *req.Date
 	}
+	manual := req.Date != nil
 	// 边界只在这一点检查一次：Planner 之后再加窗口过滤会被下面的 hasTarget
 	// 原样绕过（Plan 没排出 target 时它还会补一个），DatePolicy 里检查则管不到
 	// 手动传入的日期。放在这里，两条入口共用同一条闸。
@@ -160,9 +166,17 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		}
 	}
 
-	keys, err := e.Recovery.Plan(ctx, e.Source.ID(), target)
-	if err != nil {
-		return nil, err
+	var keys []model.CollectionKey
+	if manual {
+		// 手动指定日期的语义是"就采这个日期"：不再顺带规划整个窗口。窗口
+		// 重扫是自动路径（nightly/startup）的职责——把 30 个日期的探测塞进
+		// 一次人工回填，既淹没结果列表，也会把请求日期之前的无数据日期全部
+		// 探一遍（开启 no_data_after_days 时甚至全部终态化）。
+		keys = append(keys, model.CollectionKey{SourceID: e.Source.ID(), Date: target})
+	} else if planned, perr := e.Recovery.Plan(ctx, e.Source.ID(), target); perr != nil {
+		return nil, perr
+	} else {
+		keys = planned
 	}
 	// 生命周期下界：早于 since 的业务日不计划、不物化（显式指定日期的
 	// 手动触发同样遵守——since 是源的存在性事实，不是策略偏好）。
@@ -264,6 +278,31 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			// 非 Succeeded 的旧记录（旧进程留下的 Running/Failed、孤儿
 			// 失败账）不再是证据：清掉并通知观察层退役 UI 行；Succeeded
 			// 是历史事实，即使上游已删除目录也保留。
+			//
+			// 显式开启 no_data_after_days 时，"共享可达但连续 N 次探不到"
+			// 升格为有证据的终态：Skipped 行进台账（所有读取面把 Skipped
+			// 当已结算历史），事件告知投影。计数落台账，重启不清零；
+			// 不可达（ErrUnavailable）走下面 default 分支，绝不参与计数。
+			if cfg.NoDataConfirmDays > 0 {
+				confirmed, perr := e.State.RecordNoDataProbe(ctx, key, cfg.NoDataConfirmDays)
+				if perr != nil {
+					cfg.Logger.Warn("no-data probe accounting failed; treating as unconfirmed",
+						"key", key.String(), "error", perr.Error())
+				} else if confirmed {
+					note := fmt.Sprintf("no data confirmed after %d probes", cfg.NoDataConfirmDays)
+					if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr == nil && ok {
+						if eerr := e.endState(ctx, key, model.StatusSkipped, note); eerr == nil {
+							result.NoDataConfirmed = true
+						}
+					}
+					if result.NoDataConfirmed {
+						result.Status = model.StatusSkipped
+						result.Error = "no data confirmed"
+						return result
+					}
+					// 落账失败：退回不物化路径，下一轮重新计数判定。
+				}
+			}
 			if st, existed, sErr := e.State.StatusOf(ctx, key); sErr == nil && !(existed && st == model.StatusSucceeded) {
 				result.Dropped = existed
 				_ = e.State.Drop(ctx, key)
@@ -296,6 +335,12 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			}
 			cfg.Logger.Error("source list failed", "key", key.String(), "error", result.Error)
 			return result
+		}
+	}
+	if len(files) > 0 && cfg.NoDataConfirmDays > 0 {
+		// 文件出现了（哪怕还没稳定）："连续探不到"的连续性被打断。
+		if rerr := e.State.ResetNoData(ctx, key); rerr != nil {
+			cfg.Logger.Warn("no-data streak reset failed", "key", key.String(), "error", rerr.Error())
 		}
 	}
 	if len(files) == 0 {

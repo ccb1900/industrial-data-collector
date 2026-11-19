@@ -25,6 +25,7 @@ type FleetDefaults struct {
 	DatePolicy          string
 	SpecificDate        string
 	CatchupDays         int
+	NoDataAfterDays     int
 	BatchSize           int
 	StableWindowSeconds int
 	// 并发与备份横切默认（0/空 = 不下发，源单元维持自身默认）。
@@ -285,6 +286,7 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 				"batch_size":                 d.BatchSize,
 				"date_policy":                d.DatePolicy,
 				"catchup_days":               d.CatchupDays,
+				"no_data_after_days":         d.NoDataAfterDays,
 				"file_stable_window_seconds": d.StableWindowSeconds,
 				"state_dir":                  d.StateDir,
 				"state_type":                 stateType,
@@ -493,6 +495,9 @@ func parseFleetDefaults(raw any) (FleetDefaults, error) {
 	}
 	if v, ok := m["catchup_days"].(int64); ok {
 		d.CatchupDays = int(v)
+	}
+	if v, ok := m["no_data_after_days"].(int64); ok {
+		d.NoDataAfterDays = int(v)
 	}
 	if v, ok := m["batch_size"].(int64); ok {
 		d.BatchSize = int(v)

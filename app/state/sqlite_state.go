@@ -343,6 +343,43 @@ func (s *SQLiteState) RecordSources(ctx context.Context) ([]model.SourceID, erro
 	return out, rows.Err()
 }
 
+// RecordNoDataProbe 见 model.CollectionState：UPSERT 累加，两步取回计数
+// （RETURNING 依赖的 SQLite 版本不一，用事务里读写同一行更稳）。
+func (s *SQLiteState) RecordNoDataProbe(ctx context.Context, key model.CollectionKey, confirmAfter int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if confirmAfter <= 0 {
+		return false, nil
+	}
+	now := s.nowTime().UnixNano()
+	if _, err := s.store.db.ExecContext(ctx, `INSERT INTO state_nodata
+		(source_id, date, consecutive, last_probed_at) VALUES (?, ?, 1, ?)
+		ON CONFLICT(source_id, date) DO UPDATE SET
+			consecutive = consecutive + 1,
+			last_probed_at = excluded.last_probed_at`,
+		string(key.SourceID), key.Date.String(), now); err != nil {
+		return false, err
+	}
+	var n int
+	if err := s.store.db.QueryRowContext(ctx, `SELECT consecutive FROM state_nodata
+		WHERE source_id = ? AND date = ?`,
+		string(key.SourceID), key.Date.String()).Scan(&n); err != nil {
+		return false, err
+	}
+	return n >= confirmAfter, nil
+}
+
+func (s *SQLiteState) ResetNoData(ctx context.Context, key model.CollectionKey) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := s.store.db.ExecContext(ctx,
+		`DELETE FROM state_nodata WHERE source_id = ? AND date = ?`,
+		string(key.SourceID), key.Date.String())
+	return err
+}
+
 func (s *SQLiteState) LastCompleted(ctx context.Context, sourceID model.SourceID, before model.CollectionDate) (model.CollectionDate, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return model.CollectionDate{}, false, err

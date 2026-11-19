@@ -429,6 +429,12 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 			return fmt.Errorf("source-unit %q catchup_days must be a non-negative integer", cc.ID)
 		}
 	}
+	if raw, ok := cc.Config["no_data_after_days"]; ok {
+		d, valid := intCfgValue(raw)
+		if !valid || d < 0 {
+			return fmt.Errorf("source-unit %q no_data_after_days must be a non-negative integer (0 = disabled)", cc.ID)
+		}
+	}
 	if raw, ok := cc.Config["lazy_connect"]; ok {
 		if _, valid := boolCfgValue(raw); !valid {
 			return fmt.Errorf("source-unit %q lazy_connect must be a boolean", cc.ID)

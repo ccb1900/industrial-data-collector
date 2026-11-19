@@ -79,7 +79,7 @@ func (b Boundary) IsExpired(target model.CollectionDate) bool // 仅当 WindowDa
 
 **完成定义**：控制台能看到"超期待人工处理"列表；同一列表里的日期永远不会出现在 nightly 计划里（用一个 E2E 断言：跑两轮 trigger，第二轮不重复尝试超期日期）。
 
-## 4. Iteration C — "无数据"需要依据，不能一次 `os.Stat` 定论
+## 4. Iteration C — "无数据"需要依据，不能一次 `os.Stat` 定论 ✅ 已完成
 
 **依据**：`app/collector/executor.go:214-226` 对 `ErrNotFound` 的处理是单次判定即 `Drop` 整份台账并报 `Skipped`；`app/source/source.go:309-314` 一次 `os.Stat` 失败就产出 `ErrNotFound`。`HostGate` 只能证明 445 可达，不能证明当天有生产。
 
@@ -93,12 +93,21 @@ no_data_confirmation = "never"   # 默认：不落终态，每晚重探（现状
 no_data_after_days   = 3
 ```
 **范围**：`app/collector/executor.go`（判定分支）、`app/sourcecomp/fleet.go`（键下发）、`app/config/validate.go`（白名单与取值范围）、`docs/CONFIGURATION.md`、`docs/用户指南.md`。
-**实现要点**：连续计数**必须**来自台账而不是内存（`state_failures.attempts` 已有计数语义可借鉴，`app/state/sqlite.go:150`）；计数条件里"宿主可达"必须复用 `errs.ErrUnavailable` 分类，不许重新探测。
-**验收测试**
-- `TestNoDataTerminalOnlyAfterConfirmedAbsence`：可达但连续 N 天无文件 → 落 `Skipped`；第 N-1 天不落。
-- `TestUnreachableHostNeverBecomesNoData`：`ErrUnavailable` 打断计数，绝不进 `Skipped`。
-- `TestLateFileStillCollectedAfterNoDataDefault`：默认配置下，第 5 天补上的文件被窗口重扫采到。
-- `TestNoDataConfirmationConfigValidation`：非法取值在 `Validate` 阶段响亮失败。
+**实现要点**（落地时的两条修正，写下来防止回退）：
+1. 计数落台账（新表 `state_nodata`，按业务日一行），且 **`Drop` 不得清它**——
+   实现时第一次就把 streak 删在了 ErrNotFound 的 Drop 里，第二次数到 1 永远凑不满
+   N（TestNoDataTerminalOnlyAfterConfirmedAbsence 红出来的）。streak 是探针证据，
+   清它的入口只有"文件出现了"（ResetNoData）。
+2. **手动指定日期改为只采该日期**：此前 req.Date 之外仍会规划整个窗口（ planner
+   锚在 target 上），一次人工回填会顺带把请求日期之前的 30 天全探一遍——开启
+   确认后甚至把它们全部终态化。窗口重扫属于自动路径，手动 = 单日期。
+**验收测试**（已全部落地，`app/collector/nodata_test.go` + `app/state/nodata_test.go`）
+- `TestNoDataTerminalOnlyAfterConfirmedAbsence`（N=2：第一轮只计数，第二轮终态化）。
+- `TestUnreachableHostNeverBecomesNoData`（N=1 的最敏感设置下连续三轮不可达，台账仍是 Failed）。
+- `TestLateFileStillCollectedAfterNoDataDefault`（默认零回归承诺）。
+- `TestLateFileAfterConfirmedSkipNeedsManualBackfill`（取舍两半句：自动轮不探已确认日期；手动回填 Skipped 可重认领且只采该日期）。
+- `TestNoDataStreakIsLedgerEvidence` + `TestFileStateNoDataStreakSurvivesRestart`（三后端 + 重启持久；变异：FileState 忘包 run() → 红）。
+- 配置校验：`no_data_after_days` 负数/非法在 Validate 阶段拒绝（validate.go 与 catchup_days 同款检查）。
 **禁止事项**：不引入"人工确认当天没生产"的审批流（现场没有值班角色前，这是把可靠性推给流程）；不使用生产完成标记文件/清单，除非现场先给出上游契约。
 
 ## 5. Iteration D — 文件级重试节流（退避是过滤器，不是定时器）

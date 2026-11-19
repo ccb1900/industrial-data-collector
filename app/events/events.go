@@ -37,6 +37,12 @@ var (
 	// the exact lie the status exists to remove.
 	CollectionExpired = runtime.NewEventKey[CollectionExpiredPayload]("collection.expired")
 
+	// CollectionSkipped reports an evidenced no-data terminal date: the ledger
+	// row exists (no_data_after_days confirmed), so unlike the never-
+	// materialized "no files" probe this one must reach the projection in the
+	// same pass.
+	CollectionSkipped = runtime.NewEventKey[CollectionSkippedPayload]("collection.skipped")
+
 	// CollectionVerified reports the row/column consistency verdicts of one
 	// collection. It never changes the collection's status: a mismatch is
 	// evidence for an operator, not a retry trigger.
@@ -64,6 +70,12 @@ type CollectionPendingPayload struct {
 type CollectionExpiredPayload struct {
 	Key model.CollectionKey
 	At  time.Time
+}
+
+type CollectionSkippedPayload struct {
+	Key  model.CollectionKey
+	Note string
+	At   time.Time
 }
 
 type CollectionStartedPayload struct {

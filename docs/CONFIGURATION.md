@@ -88,6 +88,15 @@ below are what each row carries (and what a raw `[[components]]` row sets):
 - `date_policy`: `yesterday` (default), `today`, or `specific`.
 - `specific_date`: `YYYY-MM-DD` when policy is `specific`.
 - `batch_size`: rows per Storage batch (default 1000).
+- `no_data_after_days`: non-negative int (default 0, disabled). When set to N,
+  a business date whose share is reachable but which has been probed empty N
+  times in a row is settled as a terminal Skipped ("no data, confirmed").
+  The streak count lives in the ledger and survives restarts; an unreachable
+  host never counts. While disabled (default) an empty date leaves no row and
+  the rolling window re-probes it every night, so late files are always picked
+  up — enabling this trades that automatic late-file recovery for a quiet
+  holiday board; a late file after confirmation comes back only through an
+  explicitly named date (manual trigger / console).
 - `catchup_days`: non-negative int (default 0). Bounds how many calendar
   days one trigger synthesizes as catch-up when no succeeded date exists
   inside the window (first deployment or lost state). See `docs/OPERATIONS.md`.

@@ -65,7 +65,10 @@ type SourceUnitComponent struct {
 	catchupDays           int
 	// sameDay = layout 是 flat（仪表导出：文件本身就是当天的）。它决定
 	// date.Boundary 的截止线：dated 源永远不采今天，flat 源今天就是它的业务日。
-	sameDay            bool
+	sameDay bool
+	// noDataConfirmDays：no_data_after_days 配置。0（默认）= 关闭，保持实例制
+	// 语义（不落账、窗口重扫每晚再探，晚到文件总能被捡回来）。
+	noDataConfirmDays  int
 	since              model.CollectionDate
 	filesPerSource     int
 	backupDir          string
@@ -304,14 +307,15 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		SourceMetadata:    c.staticMetadata,
 		Recovery:          c.planner(),
 		Config: collector.Config{
-			BatchSize:      c.batchSize,
-			Boundary:       c.boundary(),
-			DatePolicy:     c.policy,
-			Since:          c.since,
-			Logger:         c.logger,
-			FilesPerSource: c.filesPerSource,
-			BackupDir:      c.backupDir,
-			BackupKeepDays: c.backupKeepDays,
+			BatchSize:         c.batchSize,
+			Boundary:          c.boundary(),
+			NoDataConfirmDays: c.noDataConfirmDays,
+			DatePolicy:        c.policy,
+			Since:             c.since,
+			Logger:            c.logger,
+			FilesPerSource:    c.filesPerSource,
+			BackupDir:         c.backupDir,
+			BackupKeepDays:    c.backupKeepDays,
 		},
 	}
 	c.emitCtx = ctx
@@ -608,6 +612,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		batchSize:             batch,
 		catchupDays:           catchup,
 		sameDay:               layout == "flat",
+		noDataConfirmDays:     configutil.OptionalInt(cc, "no_data_after_days", 0),
 		filesPerSource:        filesPerSource,
 		backupDir:             backupDir,
 		backupKeepDays:        backupKeepDays,

@@ -179,6 +179,11 @@ type CollectionResult struct {
 	Files     []FileResult
 	Records   int64
 	Duration  time.Duration
+	// NoDataConfirmed reports that this Skipped is an evidenced, settled
+	// no-data (share reachable, N consecutive empty probes): the ledger row
+	// exists, so the projection must show it in the same pass instead of
+	// after a restart.
+	NoDataConfirmed bool
 	// Dropped reports that a previously materialized record was removed from
 	// the ledger during this probe (no matching files anymore). It lets the
 	// observation layer retire the row without emitting an event for every
@@ -291,6 +296,16 @@ type CollectionState interface {
 	// the keys it changed, so the caller can publish the transition instead
 	// of letting the live projection disagree with the ledger.
 	ExpireBeyond(ctx context.Context, sourceID SourceID, before CollectionDate) ([]CollectionKey, error)
+	// RecordNoDataProbe counts one "share reachable but this business date
+	// has no file" probe. The streak lives in the ledger, not in memory: a
+	// restart must not forget how many times a date was probed empty — a
+	// collector restarted daily would otherwise never reach the threshold.
+	// When the streak reaches confirmAfter (>0) it returns true, and keeps
+	// returning true afterwards: settling the date as Skipped is idempotent.
+	RecordNoDataProbe(ctx context.Context, key CollectionKey, confirmAfter int) (bool, error)
+	// ResetNoData clears the no-data streak: files appeared (even if not
+	// stable yet), so "consecutively absent" no longer holds.
+	ResetNoData(ctx context.Context, key CollectionKey) error
 	// ReclaimRunning closes Running records started before startedBefore —
 	// rows left behind by a previous process. A collector holds a
 	// single-instance lock, so at startup every such row is orphaned: without

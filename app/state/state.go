@@ -56,6 +56,15 @@ type MemoryState struct {
 	// snapshots under one business date). File-level dedup still applies.
 	appendMode bool
 	now        func() time.Time
+	// noData 是"共享可达但该业务日探不到文件"的连续计数，按业务日分开。
+	// 它是无数据确认（collector 的 no_data_after_days）的证据：落台账、
+	// 重启不清零——否则每天重启的采集器永远凑不满 N 次。
+	noData map[string]*noDataStreak
+}
+
+type noDataStreak struct {
+	Consecutive int
+	LastAt      time.Time
 }
 
 // failedFileRecord is the persistent evidence of one failed file attempt.
@@ -77,6 +86,7 @@ func NewMemory() *MemoryState {
 		files:       make(map[string]map[string]fileRecord),
 		failedFiles: make(map[string]map[string]failedFileRecord),
 		checks:      make(map[string]map[string]model.FileCheck),
+		noData:      make(map[string]*noDataStreak),
 	}
 }
 
@@ -189,6 +199,8 @@ func (s *MemoryState) Drop(ctx context.Context, key model.CollectionKey) error {
 	delete(s.files, ck)
 	delete(s.failedFiles, ck)
 	delete(s.checks, ck)
+	// 注意：noData 计数不在这里清——它是探针证据（"这个日期被探到过没有"），
+	// 不是台账行。清它的只有两个入口：文件出现（ResetNoData）与从未开启确认。
 	return nil
 }
 
@@ -431,6 +443,38 @@ func (s *MemoryState) ExpireBeyond(ctx context.Context, sourceID model.SourceID,
 	return changed, nil
 }
 
+// RecordNoDataProbe 见 model.CollectionState：按业务日累加，达到阈值后持续
+// 返回 true（终态化是幂等的）。
+func (s *MemoryState) RecordNoDataProbe(ctx context.Context, key model.CollectionKey, confirmAfter int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if confirmAfter <= 0 {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ck := stateKey(key)
+	st := s.noData[ck]
+	if st == nil {
+		st = &noDataStreak{}
+		s.noData[ck] = st
+	}
+	st.Consecutive++
+	st.LastAt = s.nowTime()
+	return st.Consecutive >= confirmAfter, nil
+}
+
+func (s *MemoryState) ResetNoData(ctx context.Context, key model.CollectionKey) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.noData, stateKey(key))
+	return nil
+}
+
 func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceID, until model.CollectionDate, staleAfter time.Duration) ([]model.CollectionKey, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -475,6 +519,14 @@ type memorySnapshot struct {
 	Files       []fileRecordJSON
 	FailedFiles []failedFileRecordJSON
 	Checks      []fileCheckRecordJSON
+	NoData      []noDataStreakJSON
+}
+
+type noDataStreakJSON struct {
+	SourceID    model.SourceID
+	Date        model.CollectionDate
+	Consecutive int
+	LastAt      time.Time
 }
 
 type fileCheckRecordJSON struct {
@@ -609,6 +661,23 @@ func snapshot(s *MemoryState) memorySnapshot {
 		}
 		return out.Checks[i].Path < out.Checks[j].Path
 	})
+	for ck, st := range s.noData {
+		parts := strings.SplitN(ck, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		d, err := parseCollectionDate(parts[1])
+		if err != nil {
+			continue
+		}
+		out.NoData = append(out.NoData, noDataStreakJSON{
+			SourceID: model.SourceID(parts[0]), Date: d,
+			Consecutive: st.Consecutive, LastAt: st.LastAt,
+		})
+	}
+	sort.Slice(out.NoData, func(i, j int) bool {
+		return out.NoData[i].Date.Before(out.NoData[j].Date)
+	})
 	return out
 }
 
@@ -655,6 +724,12 @@ func restore(s *MemoryState, snap memorySnapshot) {
 			FileRows: c.FileRows, ParsedRows: c.ParsedRows, DBRows: c.DBRows,
 			FileCols: c.FileCols, StoredCols: c.StoredCols, RaggedRows: c.RaggedRows,
 			Unmapped: c.Unmapped, Note: c.Note, CheckedAt: c.CheckedAt,
+		}
+	}
+	s.noData = make(map[string]*noDataStreak, len(snap.NoData))
+	for _, nd := range snap.NoData {
+		s.noData[stateKey(model.CollectionKey{SourceID: nd.SourceID, Date: nd.Date})] = &noDataStreak{
+			Consecutive: nd.Consecutive, LastAt: nd.LastAt,
 		}
 	}
 }
@@ -833,6 +908,27 @@ func (s *FileState) ExpireBeyond(ctx context.Context, sourceID model.SourceID, b
 		return nil, err
 	}
 	return changed, nil
+}
+
+// RecordNoDataProbe/ResetNoData 必须在这里过 run()：MemoryState 的同名方法只改
+// 内存，直接用嵌入版本会让"连续探不到"的证据重启清零——每天重启的采集器
+// 永远凑不满 N 次，确认机制形同虚设。
+func (s *FileState) RecordNoDataProbe(ctx context.Context, key model.CollectionKey, confirmAfter int) (bool, error) {
+	var confirmed bool
+	_, _, err := s.run(func() (bool, int64, error) {
+		ok, err := s.MemoryState.RecordNoDataProbe(ctx, key, confirmAfter)
+		if err != nil {
+			return false, 0, err
+		}
+		confirmed = ok
+		// 只要计了数就落盘（confirmAfter<=0 时不会改内存，不落盘）。
+		return confirmAfter > 0, 0, nil
+	})
+	return confirmed, err
+}
+
+func (s *FileState) ResetNoData(ctx context.Context, key model.CollectionKey) error {
+	return s.transact(func() error { return s.MemoryState.ResetNoData(ctx, key) })
 }
 
 func (s *FileState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {

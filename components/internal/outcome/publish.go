@@ -78,6 +78,13 @@ func PublishCollectionResult(ctx context.Context, emitCtx *runtime.Context, res 
 		if res.Dropped {
 			_ = event.Serial(ctx, emitCtx, events.CollectionDropped, events.CollectionDroppedPayload{Key: res.Key})
 		}
+		// 有证据的无数据终态（no_data_after_days 确认）落了台账行：投影必须
+		// 在同一轮看到它，而不是等重启。从未物化的"没有文件"探针仍然不入流。
+		if res.NoDataConfirmed {
+			_ = event.Serial(ctx, emitCtx, events.CollectionSkipped, events.CollectionSkippedPayload{
+				Key: res.Key, Note: res.Error, At: res.EndedAt,
+			})
+		}
 	}
 }
 

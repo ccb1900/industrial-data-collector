@@ -126,6 +126,18 @@ change nothing retries it. The projection is told through
 `collection.expired` in the same pass, so the console and the ledger never
 describe the same date differently while the process is alive.
 
+## Confirmed no-data
+
+By default an empty probe leaves no row and the window re-probes it every
+night — that is what makes late files recoverable. A source may opt in with
+`no_data_after_days = N`: once a date has been probed empty N times in a row
+while the share was reachable, it settles into a terminal Skipped row
+("no data, confirmed") and stops consuming nightly probes. The streak count
+is ledger evidence (survives restarts, per business date); an unreachable host
+is transient Failed and never counts toward it. A Skipped row stays
+re-claimable: naming the date manually collects it, which is also the only
+route a late file has after confirmation.
+
 ## Missing dates
 
 A missing date directory or a missing dated file is classified as NotFound and

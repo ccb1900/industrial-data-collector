@@ -151,6 +151,15 @@ func ensureSQLiteSchema(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_failures_path ON state_failures (source_id, date, path)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_failures_time ON state_failures (source_id, failed_at)`,
+		// 无数据确认证据：连续"可达但探不到"的次数，按业务日计。落表而非
+		// 内存——每天重启的采集器也要能凑满 N 次。
+		`CREATE TABLE IF NOT EXISTS state_nodata (
+			source_id TEXT NOT NULL,
+			date TEXT NOT NULL,
+			consecutive INTEGER NOT NULL DEFAULT 0,
+			last_probed_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (source_id, date)
+		)`,
 		`CREATE TABLE IF NOT EXISTS state_imports (
 			source_id TEXT PRIMARY KEY,
 			imported_at INTEGER NOT NULL
