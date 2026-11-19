@@ -357,6 +357,11 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := register(func() (func() error, error) {
+		return c.registerMachineDays(hubRegistry, owner)
+	}); err != nil {
+		return nil, err
+	}
+	if err := register(func() (func() error, error) {
 		return c.registerFleet(hubRegistry)
 	}); err != nil {
 		return nil, err

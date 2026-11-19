@@ -68,7 +68,12 @@ type SourceUnitComponent struct {
 	sameDay bool
 	// noDataConfirmDays：no_data_after_days 配置。0（默认）= 关闭，保持实例制
 	// 语义（不落账、窗口重扫每晚再探，晚到文件总能被捡回来）。
-	noDataConfirmDays  int
+	noDataConfirmDays int
+	// machineID/formatID：fleet 下发的显式身份（机台号、格式名）。机台×日
+	// 汇总视图按它们聚合；手写 component 不带这两个键时为零值，汇总视图
+	// 会把这类源按 source_id 自成一组，不丢失。
+	machineID          string
+	formatID           string
 	since              model.CollectionDate
 	filesPerSource     int
 	backupDir          string
@@ -100,6 +105,11 @@ func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 // SourceID returns the logical Source identity. It is independent from path
 // and Runtime Component identity.
 func (c *SourceUnitComponent) SourceID() string { return string(c.sourceID) }
+
+// MachineID/FormatID 是 fleet 下发的显式身份（机台号、格式名）。机台×日的
+// 汇总按它们聚合；零值表示该源不是 fleet 生成的（手写 component）。
+func (c *SourceUnitComponent) MachineID() string { return c.machineID }
+func (c *SourceUnitComponent) FormatID() string  { return c.formatID }
 
 // planner 与 boundary 是同一个配置项（catchup_days）的两个视角：窗口内排哪些
 // 业务日、窗口外拒绝什么。两者必须同源，否则控制台显示的"待补采"和真正执行的
@@ -613,6 +623,8 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		catchupDays:           catchup,
 		sameDay:               layout == "flat",
 		noDataConfirmDays:     configutil.OptionalInt(cc, "no_data_after_days", 0),
+		machineID:             configutil.OptionalString(cc, "machine", ""),
+		formatID:              configutil.OptionalString(cc, "format", ""),
 		filesPerSource:        filesPerSource,
 		backupDir:             backupDir,
 		backupKeepDays:        backupKeepDays,

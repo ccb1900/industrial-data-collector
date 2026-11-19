@@ -71,11 +71,14 @@ func TestFleetStoreExpansionEquivalence(t *testing.T) {
 func TestFleetStoreConsoleEditReconciles(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "fleet.toml")
-	cfg := `
+	// state_dir 用绝对 tempdir：相对路径解析到进程当前目录，会读到别的用例
+	// 或上一轮运行留下的台账（本包 TestUncHostGateAggregatesFailures 曾因此
+	// 断言随运行顺序漂移）。
+	cfg := fmt.Sprintf(`
 bundles = ["collector-core", "collector-console"]
 
 [defaults]
-state_dir = "./state"
+state_dir = %q
 date_policy = "specific"
 specific_date = "2026-09-06"
 batch_size = 100
@@ -103,7 +106,7 @@ no = "m1"
 path = "data/YYYYMMDD"
 group = "g"
 schedule = "nightly"
-`
+`, dir)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -289,11 +292,13 @@ func writeFleetConfig(t *testing.T, cfgPath string) {
 
 func writeFleetConfigWithSecret(t *testing.T, cfgPath string) {
 	t.Helper()
-	cfg := `
+	dir := t.TempDir()
+	// 同上：台账落绝对 tempdir，避免跨用例读脏。
+	cfg := fmt.Sprintf(`
 bundles = ["collector-core", "collector-console"]
 
 [defaults]
-state_dir = "./state"
+state_dir = %q
 date_policy = "specific"
 specific_date = "2026-09-06"
 batch_size = 100
@@ -322,7 +327,7 @@ no = "m1"
 path = "data/YYYYMMDD"
 group = "g"
 schedule = "nightly"
-`
+`, dir, dir)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}

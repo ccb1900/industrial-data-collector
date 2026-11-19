@@ -148,3 +148,23 @@ func TestParseTableColumnsAliases(t *testing.T) {
 		t.Fatalf("aliases not decoded: %+v", cols)
 	}
 }
+
+// 机台/格式身份由 fleet 显式下发（"machine"/"format" 键）：机台×日汇总视图
+// 按它们聚合，不靠拆 source_id 前缀。手写 component 不带这两个键时为零值，
+// 汇总视图把这类源按 source_id 自成一组。
+func TestNewSourceUnitMachineAndFormatIdentity(t *testing.T) {
+	c, err := NewSourceUnit(unitCfg(map[string]any{"machine": "m01", "format": "readings"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MachineID() != "m01" || c.FormatID() != "readings" {
+		t.Fatalf("identity = %q/%q, want m01/readings", c.MachineID(), c.FormatID())
+	}
+	bare, err := NewSourceUnit(unitCfg(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare.MachineID() != "" || bare.FormatID() != "" {
+		t.Fatalf("hand-written component must have zero identity, got %q/%q", bare.MachineID(), bare.FormatID())
+	}
+}

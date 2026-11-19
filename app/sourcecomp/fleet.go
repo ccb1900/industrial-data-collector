@@ -280,7 +280,11 @@ func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups [
 				return nil, nil, fmt.Errorf("机台 %q + 格式 %q：机台路径和 match 都没有日期记号，无法把文件归到某个业务日", m.No, fname)
 			}
 			cfg := map[string]any{
-				"source_id":                  m.No + "-" + f.Name,
+				"source_id": m.No + "-" + f.Name,
+				// 机台与格式身份显式下发：机台×日的汇总视图靠它们聚合，
+				// 不靠拆 source_id 前缀（那是显示约定，不是身份）。
+				"machine":                    m.No,
+				"format":                     f.Name,
 				"path":                       root,
 				"pattern":                    f.pattern,
 				"batch_size":                 d.BatchSize,
