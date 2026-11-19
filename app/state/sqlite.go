@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"gocordis-csv-collector/app/model"
 
@@ -219,7 +218,7 @@ func (s *SQLiteState) importLegacy(ctx context.Context) error {
 	// csv-collector open the same ledger concurrently.
 	res, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO state_imports (source_id, imported_at) VALUES (?, ?)`,
-		string(s.sourceID), time.Now().UnixNano())
+		string(s.sourceID), s.nowTime().UnixNano())
 	if err != nil {
 		return fmt.Errorf("state database import: %w", err)
 	}

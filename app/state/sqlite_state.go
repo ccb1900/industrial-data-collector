@@ -20,6 +20,17 @@ type SQLiteState struct {
 	legacyPath string
 	appendMode bool
 	closeOnce  sync.Once
+	// now 是时钟注入点（默认 time.Now），约定与 MemoryState.now 一致。租约、
+	// 孤儿回收、下次重试时间全是时间差判断：不能注入时钟就只能 time.Sleep
+	// 赌调度，那种测试只证明"睡了足够久"，不证明语义。
+	now func() time.Time
+}
+
+func (s *SQLiteState) nowTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // SetAppendMode switches the collection-level guard off: every trigger
@@ -30,7 +41,7 @@ func (s *SQLiteState) Begin(ctx context.Context, key model.CollectionKey, lease 
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	now := time.Now()
+	now := s.nowTime()
 	appendFlag := 0
 	if s.appendMode {
 		appendFlag = 1
@@ -72,7 +83,7 @@ func (s *SQLiteState) End(ctx context.Context, key model.CollectionKey, status m
 	res, err := tx.ExecContext(ctx, `UPDATE state_collections
 		SET status = ?, note = ?, ended_at = ?
 		WHERE source_id = ? AND date = ?`,
-		string(status), note, time.Now().UnixNano(),
+		string(status), note, s.nowTime().UnixNano(),
 		string(key.SourceID), key.Date.String())
 	if err != nil {
 		return err
@@ -162,7 +173,7 @@ func (s *SQLiteState) MarkFileCompleted(ctx context.Context, key model.Collectio
 			completed_at = excluded.completed_at`,
 		string(key.SourceID), key.Date.String(), file.Identity(),
 		file.Path, file.Name, file.Size, toNanos(file.ModTime), file.Hash,
-		records, time.Now().UnixNano()); err != nil {
+		records, s.nowTime().UnixNano()); err != nil {
 		return err
 	}
 	// A completed file retires failure records for the same path: a corrected
@@ -188,7 +199,7 @@ func (s *SQLiteState) MarkFileFailed(ctx context.Context, key model.CollectionKe
 			attempts = state_failures.attempts + 1`,
 		string(key.SourceID), key.Date.String(), file.Identity(),
 		file.Path, file.Name, file.Size, toNanos(file.ModTime), file.Hash,
-		errMsg, time.Now().UnixNano())
+		errMsg, s.nowTime().UnixNano())
 	return err
 }
 
@@ -202,7 +213,7 @@ func (s *SQLiteState) ReclaimRunning(ctx context.Context, startedBefore time.Tim
 	res, err := s.store.db.ExecContext(ctx, `UPDATE state_collections
 		SET status = ?, note = ?, ended_at = ?
 		WHERE source_id = ? AND status = ? AND started_at < ?`,
-		string(model.StatusFailed), interruptedNote, time.Now().UnixNano(),
+		string(model.StatusFailed), interruptedNote, s.nowTime().UnixNano(),
 		string(s.sourceID), string(model.StatusRunning), startedBefore.UnixNano())
 	if err != nil {
 		return 0, err
@@ -357,7 +368,7 @@ func (s *SQLiteState) ListIncomplete(ctx context.Context, sourceID model.SourceI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	threshold := time.Now().Add(-staleAfter).UnixNano()
+	threshold := s.nowTime().Add(-staleAfter).UnixNano()
 	rows, err := s.store.db.QueryContext(ctx, `SELECT source_id, date FROM state_collections
 		WHERE source_id = ? AND date <= ? AND status NOT IN (?, ?)
 		  AND (status <> ? OR started_at <= ?)

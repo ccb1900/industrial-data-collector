@@ -167,24 +167,64 @@ func TestSQLiteStateDropClearsLedger(t *testing.T) {
 	}
 }
 
+// fakeClock 是给状态层的手动时钟：租约、回收、下次重试时间全是时间差判断。
+// 用 time.Sleep 的版本只能证明"睡了那么久"，既慢又证明不了语义——推进一格
+// 就能把 24 小时租约的边界精确压在两侧。
+type fakeClock struct {
+	mu  sync.Mutex
+	cur time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cur
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cur = c.cur.Add(d)
+}
+
+func withClock(t *testing.T, st *SQLiteState, start time.Time) *fakeClock {
+	t.Helper()
+	clk := &fakeClock{cur: start.UTC()}
+	st.now = clk.now
+	return clk
+}
+
 func TestSQLiteStateLeaseExpiry(t *testing.T) {
 	st := openTestSQLite(t, filepath.Join(t.TempDir(), "state.db"), "prod", "")
+	clk := withClock(t, st, time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC))
 	ctx := context.Background()
 	k := key("2026-09-10")
-	if ok, _ := st.Begin(ctx, k, 20*time.Millisecond); !ok {
+	const lease = 24 * time.Hour
+
+	if ok, _ := st.Begin(ctx, k, lease); !ok {
 		t.Fatal("first begin")
 	}
-	if ok, _ := st.Begin(ctx, k, 20*time.Millisecond); ok {
+	if ok, _ := st.Begin(ctx, k, lease); ok {
 		t.Fatal("fresh lease must block")
 	}
-	if incomplete, _ := st.ListIncomplete(ctx, "prod", k.Date, time.Hour); len(incomplete) != 0 {
+	if incomplete, _ := st.ListIncomplete(ctx, "prod", k.Date, lease); len(incomplete) != 0 {
 		t.Fatalf("fresh running lease listed as incomplete: %v", incomplete)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if incomplete, _ := st.ListIncomplete(ctx, "prod", k.Date, 20*time.Millisecond); len(incomplete) != 1 {
+
+	// 租约边界两侧各压一格：差 1 纳秒也还在租约内，刚过就必须可见、可重认领。
+	clk.advance(lease - time.Nanosecond)
+	if ok, _ := st.Begin(ctx, k, lease); ok {
+		t.Fatal("lease one nanosecond shy of expiry must still block")
+	}
+	if incomplete, _ := st.ListIncomplete(ctx, "prod", k.Date, lease); len(incomplete) != 0 {
+		t.Fatalf("lease not yet expired but listed as incomplete: %v", incomplete)
+	}
+
+	clk.advance(2 * time.Nanosecond)
+	if incomplete, _ := st.ListIncomplete(ctx, "prod", k.Date, lease); len(incomplete) != 1 {
 		t.Fatalf("stale running lease not listed: %v", incomplete)
 	}
-	if ok, _ := st.Begin(ctx, k, 20*time.Millisecond); !ok {
+	if ok, _ := st.Begin(ctx, k, lease); !ok {
 		t.Fatal("stale lease must be reclaimable")
 	}
 }
@@ -197,11 +237,13 @@ func TestSQLiteStateReclaimRunning(t *testing.T) {
 	stale := key("2026-09-06")
 	live := key("2026-09-07")
 	done := key("2026-09-08")
+	clk := withClock(t, st, time.Date(2026, 9, 7, 2, 0, 0, 0, time.UTC))
 	if ok, _ := st.Begin(ctx, stale, 24*time.Hour); !ok {
 		t.Fatal("begin stale")
 	}
-	time.Sleep(2 * time.Millisecond)
-	cutoff := time.Now()
+	clk.advance(time.Minute)
+	cutoff := clk.now()
+	clk.advance(time.Minute)
 	if ok, _ := st.Begin(ctx, live, 24*time.Hour); !ok {
 		t.Fatal("begin live")
 	}
