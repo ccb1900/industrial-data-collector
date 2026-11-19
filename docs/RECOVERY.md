@@ -71,10 +71,28 @@ was never picked up again. Dates without a row are now indistinguishable from
 "never probed", which is exactly what they are: they get probed again, every
 night, until they are collected or they leave the window.
 
-The cost is known and accepted: with a 30-day window every source probes up to
-30 dates per run instead of 1-3. The UNC host gate still short-circuits an
-offline machine to a single Failed row per pass, so downtime does not become a
-failure flood.
+The cost is known, accepted, and measured rather than guessed. Reproduce with:
+
+```text
+go test ./app/collector -run '^$' -bench Rescan -benchtime 15x
+```
+
+Measured on this machine (local disk, memory sink — no real database involved):
+
+| nightly shape, 30-day window, one source | cost |
+| --- | --- |
+| all 30 dates have files, memory state | 3.2 ms |
+| all 30 dates have files, sqlite-state (what laser_prod runs) | 11.1 ms |
+| all 30 dates missing (shutdown/holiday night) | 0.15 ms |
+
+Per business date that is ~0.4 ms with the SQLite ledger, so a fleet of 60
+machines x 15 formats (900 sources) cold-starts in about 10 s of CPU serial,
+and an all-missing night costs a few hundredths of a second. The leg this
+number does not contain is the SMB round-trip: on a live share each probe is a
+network stat, so the honest site figure is `900 x 30 x stat_latency`, which
+only the plant floor can measure. The UNC host gate still short-circuits an
+offline machine to a single Failed row per pass, so a dead share costs one
+probe, not 30 - downtime never becomes a failure flood.
 
 ## Date boundary
 

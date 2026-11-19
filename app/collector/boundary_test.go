@@ -171,3 +171,56 @@ func TestHandleRetiresBeyondWindowDatesAndAnnouncesThem(t *testing.T) {
 		t.Errorf("observers never told about the retirement: %v", obs.snapshot())
 	}
 }
+
+// TestWindowRescanWorkIsBoundedToTheWindow 断言的是"做了多少活"，不是"花了多少
+// 时间"——后者会随机器抖，只能用来读数字（见 BenchmarkNightlyWindowRescan），
+// 不能用来当门禁。
+func TestWindowRescanWorkIsBoundedToTheWindow(t *testing.T) {
+	root := t.TempDir()
+	// 30 天窗口里 15 天有文件、15 天没有（停机 + 假期混合的最常见形态）。
+	for i := 0; i < 30; i++ {
+		day := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format("2006-01-02")
+		if i%2 == 0 {
+			continue
+		}
+		writeDateCSV(t, root, day, "a.csv", "id,name\n1,a\n")
+	}
+	e, st := frozenExecutor(t, root, datepolicy.Policy{Type: datepolicy.PolicyYesterday}, 30)
+	ctx := context.Background()
+
+	first, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 窗口 = [2026-10-20, 2026-11-18]，共 30 天：一次都不能少，一天都不能多。
+	if len(first) != 30 {
+		t.Fatalf("first pass probed %d dates, want exactly the 30-day window", len(first))
+	}
+	var collected int
+	for _, r := range first {
+		if r.Status == model.StatusSucceeded {
+			collected++
+		}
+	}
+	if collected != 15 {
+		t.Errorf("collected %d dates, want the 15 that have files", collected)
+	}
+
+	// 第二轮必须什么都不做：已成功的日期不再探测。这条断言是"重扫"不被误解成
+	// "每晚把窗口全采一遍"的唯一防线。
+	second, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 15 {
+		t.Fatalf("second pass probed %d dates, want only the 15 fileless holes", len(second))
+	}
+	for _, r := range second {
+		if r.Status == model.StatusSucceeded {
+			t.Errorf("a date already succeeded got collected again: %s", r.Key.Date)
+		}
+	}
+	if recs, _ := st.CollectionRecords(ctx, "prod"); len(recs) != 15 {
+		t.Errorf("ledger rows = %d, want 15 (无数据日期不留行)", len(recs))
+	}
+}
