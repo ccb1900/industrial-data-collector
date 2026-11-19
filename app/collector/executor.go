@@ -104,12 +104,25 @@ func (e *Executor) observe(f func(o Observer)) {
 func (e *Executor) endState(ctx context.Context, key model.CollectionKey, status model.Status, note string) error {
 	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := e.State.End(endCtx, key, status, note); err != nil {
-		e.Config.withDefaults().Logger.Warn("end collection state failed",
-			"key", key.String(), "status", string(status), "error", err.Error())
-		return err
+	cfg := e.Config.withDefaults()
+	// 瞬时失败（SQLITE_BUSY、杀软短暂持句柄）必须先重试再下结论：放弃一次
+	// 50ms 就能好的写入，行会停在 Running，而 24h 租约同时挡住 ListIncomplete
+	// 与 Begin——一个 busy 就此变成"这一整天不再被重试"。
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-endCtx.Done():
+			}
+		}
+		if err = e.State.End(endCtx, key, status, note); err == nil {
+			return nil
+		}
+		cfg.Logger.Warn("end collection state failed",
+			"key", key.String(), "status", string(status), "attempt", attempt+1, "error", err.Error())
 	}
-	return nil
+	return err
 }
 
 func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([]model.CollectionResult, error) {

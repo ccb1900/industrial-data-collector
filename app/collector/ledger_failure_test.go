@@ -58,3 +58,46 @@ func TestCollectorSucceededNotReportedWhenLedgerWriteFails(t *testing.T) {
 		t.Errorf("committed rows = %d, want 2 (write happened, only the ledger failed)", got)
 	}
 }
+
+// flakyEndState 模拟一次瞬时台账写失败（SQLITE_BUSY、杀软短暂持句柄），第二次
+// 就成功——这正是现网最常见的那一类。
+type flakyEndState struct {
+	*state.MemoryState
+	failedOnce bool
+}
+
+func (f *flakyEndState) End(ctx context.Context, key model.CollectionKey, status model.Status, note string) error {
+	if !f.failedOnce {
+		f.failedOnce = true
+		return errors.New("database is locked")
+	}
+	return f.MemoryState.End(ctx, key, status, note)
+}
+
+// TestCollectorRetriesTransientLedgerWriteFailure 守的是上一条测试的另一半：
+// 台账写失败要区分"瞬时"与"真的写不进去"。瞬时失败如果直接放弃，行会停在
+// Running——24 小时租约同时挡住 ListIncomplete 与 Begin，于是一个 50ms 的
+// busy 变成这一整天不再被重试。判失败只解决了"不说谎"，没解决"还干不干活"。
+func TestCollectorRetriesTransientLedgerWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-09-06", "a.csv", "id,name\n1,a\n2,b\n")
+	base := state.NewMemory()
+	st := &flakyEndState{MemoryState: base}
+	e := newExecutor(t, root, base, storage.NewMemory(storage.MemoryOptions{}))
+	e.State = st
+	e.Recovery = recovery.Planner{State: st}
+
+	results, err := e.Handle(context.Background(), model.CollectionRequested{
+		Reason: "test", Date: ptr(date(t, "2026-09-06")),
+	})
+	if err != nil {
+		t.Fatalf("a transient ledger failure must not fail the collection: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != model.StatusSucceeded {
+		t.Fatalf("result = %#v, want Succeeded after retry", results)
+	}
+	got, existed, err := base.StatusOf(context.Background(), results[0].Key)
+	if err != nil || !existed || got != model.StatusSucceeded {
+		t.Fatalf("ledger after retry = (%q, existed=%v, err=%v), want Succeeded — 停在 Running 就等于被租约冻住一整天", got, existed, err)
+	}
+}
