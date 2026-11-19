@@ -301,7 +301,7 @@ batch_size = 100
 [[sinks]]
 name = "db"
 driver = "sqlite"
-dsn = "./state/collect.db"
+dsn = "%s/state/collect.db"
 
 [[formats]]
 name = "readings"
@@ -335,11 +335,16 @@ schedule = "nightly"
 func TestUncHostGateAggregatesFailures(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "unc.toml")
-	cfg := `
+	// state_dir 与 dsn 必须是绝对路径：写成 "./state" 时它们解析到进程当前
+	// 目录，于是这个用例会读到上一个用例（或上一轮运行）留下的台账——
+	// "只该有一条 Failed" 的断言被别人的历史污染，结果随运行顺序和运行日期
+	// 变化。本包其余用例都用绝对 tempdir。
+	stateDir := filepath.Join(dir, "state")
+	cfg := fmt.Sprintf(`
 bundles = ["collector-core", "collector-console"]
 
 [defaults]
-state_dir = "./state"
+state_dir = %q
 date_policy = "yesterday"
 catchup_days = 31
 since = "2026-09-01"
@@ -348,7 +353,7 @@ batch_size = 100
 [[sinks]]
 name = "db"
 driver = "sqlite"
-dsn = "./state/collect.db"
+dsn = %q
 
 [[formats]]
 name = "readings"
@@ -370,7 +375,7 @@ path = '\\127.0.0.1\share\YYYYMM'
 group = "g"
 schedule = "nightly"
 since = "2026-09-01"
-`
+`, stateDir, filepath.Join(stateDir, "collect.db"))
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +429,13 @@ since = "2026-09-01"
 		}
 		t.Fatalf("failed instances = %d %v, want exactly 1 (host-gate aggregation)", len(failed), got)
 	}
-	if failed[0].Key.Date.String() != "2026-09-01" {
-		t.Fatalf("failed date = %s, want 2026-09-01 (first planned date)", failed[0].Key.Date.String())
+	// 首个计划日 = max(since, 昨天-(catchup_days-1))：写死某一天等于把测试
+	// 绑在日历上——它在 2026-10-02 前后是绿的，之后每天都是红的。
+	wantFirst := time.Now().AddDate(0, 0, -31).Format("2006-01-02")
+	if wantFirst < "2026-09-01" {
+		wantFirst = "2026-09-01"
+	}
+	if failed[0].Key.Date.String() != wantFirst {
+		t.Fatalf("failed date = %s, want %s (first planned date)", failed[0].Key.Date.String(), wantFirst)
 	}
 }
