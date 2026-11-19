@@ -25,6 +25,10 @@ var (
 	ErrInvalidFile        = errors.New("文件标识无效")
 	ErrInvalidConfig      = errors.New("应用配置无效")
 	ErrConfiguration      = errors.New("配置错误")
+	// ErrDateBoundary 是业务日越界：今天/未来日期进入自动采集，或自动目标早于
+	// 补采窗口首日。它既不是"未找到"也不是配置无效——报出去要让现场一眼看出是
+	// 日期口径问题，而不是设备或文件出了故障。
+	ErrDateBoundary = errors.New("业务日期越界")
 	ErrDependency         = errors.New("依赖不可用")
 	ErrStorageConnection  = errors.New("存储连接错误")
 	ErrStorageTimeout     = errors.New("存储超时")

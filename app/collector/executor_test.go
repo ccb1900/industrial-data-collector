@@ -268,23 +268,40 @@ func TestSinceClampsPlanning(t *testing.T) {
 	}
 }
 
+// TestMissingDirectoryTodayNotMaterialized 的前提变了。原来它验的是"探今天，
+// 目录还没出现 → 不物化"；现在 dated 源根本不许探今天（date.Boundary 在 Handle
+// 入口就拒），所以"不物化"由入口拒绝直接保证，强度更高。这里两侧都钉住：
+// dated 源 → 边界拒绝且台账无行；same-day 源（仪表导出）→ 真的去探，目录未出现
+// 时仍然不物化（文件晚到后下次触发重探即得，预期缺失由窗口内的重扫负责）。
 func TestMissingDirectoryTodayNotMaterialized(t *testing.T) {
 	root := t.TempDir()
 	st := state.NewMemory()
 	mem := storage.NewMemory(storage.MemoryOptions{})
 	e := newExecutor(t, root, st, mem)
-	// 实例制：今天的目录未出现 = 无证据，不物化（文件晚到后下次触发
-	// 重探即得；预期缺失由巡检在窗口内负责）。
 	today := model.NewCollectionDate(time.Now())
+
 	res, err := e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(today)})
+	if !errs.Is(err, errs.ErrDateBoundary) {
+		t.Fatalf("dated source must refuse today outright, got err=%v res=%#v", err, res)
+	}
+	if len(res) != 0 {
+		t.Errorf("refused request must produce no results: %#v", res)
+	}
+	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 0 {
+		t.Fatalf("missing date must not be materialized, got %v", incomplete)
+	}
+
+	// same-day 源：仍然不物化，但走的是"探了、没有证据"这条路。
+	e.Config.Boundary.SameDay = true
+	res, err = e.Handle(context.Background(), model.CollectionRequested{Reason: "watch", Date: ptr(today)})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("same-day source must probe today: %v", err)
 	}
 	if len(res) != 1 || res[0].Status != model.StatusSkipped {
 		t.Fatalf("result = %#v, want Skipped (log-only)", res)
 	}
 	if incomplete, _ := st.ListIncomplete(context.Background(), "prod", today, 0); len(incomplete) != 0 {
-		t.Fatalf("missing date must not be materialized, got %v", incomplete)
+		t.Fatalf("same-day missing directory must not be materialized, got %v", incomplete)
 	}
 }
 

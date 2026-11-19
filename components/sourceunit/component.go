@@ -63,12 +63,15 @@ type SourceUnitComponent struct {
 	group                 string
 	header                bool
 	catchupDays           int
-	since                 model.CollectionDate
-	filesPerSource        int
-	backupDir             string
-	backupKeepDays        int
-	verifyAfterCollect    bool
-	logger                *slog.Logger
+	// sameDay = layout 是 flat（仪表导出：文件本身就是当天的）。它决定
+	// date.Boundary 的截止线：dated 源永远不采今天，flat 源今天就是它的业务日。
+	sameDay            bool
+	since              model.CollectionDate
+	filesPerSource     int
+	backupDir          string
+	backupKeepDays     int
+	verifyAfterCollect bool
+	logger             *slog.Logger
 
 	emitCtx *runtime.Context
 
@@ -95,6 +98,17 @@ func (c *SourceUnitComponent) Provide() []runtime.Capability { return nil }
 // and Runtime Component identity.
 func (c *SourceUnitComponent) SourceID() string { return string(c.sourceID) }
 
+// planner 与 boundary 是同一个配置项（catchup_days）的两个视角：窗口内排哪些
+// 业务日、窗口外拒绝什么。两者必须同源，否则控制台显示的"待补采"和真正执行的
+// 会是两份口径。
+func (c *SourceUnitComponent) planner() recovery.Planner {
+	return recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays}
+}
+
+func (c *SourceUnitComponent) boundary() date.Boundary {
+	return date.Boundary{WindowDays: c.catchupDays, SameDay: c.sameDay}
+}
+
 // MemoryStore returns the in-memory sink when this Source unit uses
 // memory-storage (nil for SQL-backed components).
 func (c *SourceUnitComponent) MemoryStore() *storage.MemoryStore { return c.mem }
@@ -113,7 +127,10 @@ func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionK
 	if err != nil {
 		return nil, err
 	}
-	planner := recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays}
+	if err := c.boundary().Check(target); err != nil {
+		return nil, err
+	}
+	planner := c.planner()
 	keys, err := planner.Plan(ctx, c.sourceID, target)
 	if err != nil {
 		return nil, err
@@ -285,11 +302,11 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		State:             c.stateSvc,
 		MetadataExtractor: c.metadataExtractor,
 		SourceMetadata:    c.staticMetadata,
-		Recovery:          recovery.Planner{State: c.stateSvc, CatchupDays: c.catchupDays},
+		Recovery:          c.planner(),
 		Config: collector.Config{
 			BatchSize:      c.batchSize,
+			Boundary:       c.boundary(),
 			DatePolicy:     c.policy,
-			CatchupDays:    c.catchupDays,
 			Since:          c.since,
 			Logger:         c.logger,
 			FilesPerSource: c.filesPerSource,
@@ -424,7 +441,8 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q: %v", cc.ID, err)
 	}
 	var src *source.Source
-	if configutil.OptionalString(cc, "layout", "dated") == "flat" {
+	layout := configutil.OptionalString(cc, "layout", "dated")
+	if layout == "flat" {
 		// The path IS one single file (e.g. a watch-triggered instrument
 		// export): no date directory, no pattern; content-hash dedup decides
 		// whether a rewrite is actually new data.
@@ -434,7 +452,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		src.Flat = true
 		src.Hash = configutil.OptionalBool(cc, "dedupe_content_hash", true)
 	} else {
-		if l := configutil.OptionalString(cc, "layout", "dated"); l != "dated" {
+		if layout != "dated" {
 			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q layout must be dated or flat", cc.ID)
 		}
 		src = source.New(sourceID, root, pattern,
@@ -589,6 +607,7 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		policy:                policy,
 		batchSize:             batch,
 		catchupDays:           catchup,
+		sameDay:               layout == "flat",
 		filesPerSource:        filesPerSource,
 		backupDir:             backupDir,
 		backupKeepDays:        backupKeepDays,

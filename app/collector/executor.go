@@ -22,11 +22,10 @@ import (
 type Config struct {
 	BatchSize  int
 	DatePolicy datepolicy.Policy
-	// CatchupDays bounds how many calendar days one trigger reaches back when
-	// the state chain has no recent success (first deployment or lost state).
-	// Zero keeps the previous behavior: gaps are synthesized only from the
-	// last succeeded business date.
-	CatchupDays int
+	// Boundary 是业务日的硬边界，Handle 入口校验一次，内部不再重复判断：
+	// 自动采集不越过 Cutoff（dated 源就是昨天），未来日期任何路径都不许，
+	// 自动目标早于补采窗口首日同样拒绝。零值 = 只禁未来。
+	Boundary datepolicy.Boundary
 	// Since 是源的生命周期下界：早于它的业务日不计划、不物化。
 	// 零值 = 无下界。
 	Since  model.CollectionDate
@@ -93,14 +92,21 @@ func (e *Executor) observe(f func(o Observer)) {
 
 // endState 必须在作业 ctx 已取消时也能落账：Running 行会被 Begin 的 24h
 // 租约和 ListIncomplete 同时挡住，只有进程重启才会回收。终态写入用一个
-// 脱钩的短超时 ctx，失败只记日志（不能覆盖真正要返回的采集错误）。
-func (e *Executor) endState(ctx context.Context, key model.CollectionKey, status model.Status, note string) {
+// 脱钩的短超时 ctx。
+//
+// 返回错误时调用方必须改变结论：台账没记下这次终结，报成功就是把一个持久化
+// 台账里根本不存在的业务日当成已完成——planner 不再排它，Begin 的成功守卫
+// 拒绝重开。数据库写入是幂等的，判失败、下轮重放比判成功安全。非成功的终态
+// 没有这个风险（结论本来就是失败），调用方只记日志。
+func (e *Executor) endState(ctx context.Context, key model.CollectionKey, status model.Status, note string) error {
 	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := e.State.End(endCtx, key, status, note); err != nil {
 		e.Config.withDefaults().Logger.Warn("end collection state failed",
 			"key", key.String(), "status", string(status), "error", err.Error())
+		return err
 	}
+	return nil
 }
 
 func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([]model.CollectionResult, error) {
@@ -111,6 +117,14 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 	}
 	if req.Date != nil {
 		target = *req.Date
+	}
+	// 边界只在这一点检查一次：Planner 之后再加窗口过滤会被下面的 hasTarget
+	// 原样绕过（Plan 没排出 target 时它还会补一个），DatePolicy 里检查则管不到
+	// 手动传入的日期。放在这里，两条入口共用同一条闸。
+	if err := cfg.Boundary.Check(target); err != nil {
+		cfg.Logger.Error("collection refused by date boundary",
+			"source", e.Source.ID(), "target", target.String(), "error", err.Error())
+		return nil, err
 	}
 
 	keys, err := e.Recovery.Plan(ctx, e.Source.ID(), target)
@@ -232,7 +246,7 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			// 旧进程中断留下的 Running 必须落成 Pending：否则重启后
 			// 那一行永远停在 Running，Begin 的租约还会挡住后续重试。
 			if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && ok && st == model.StatusRunning {
-				e.endState(ctx, key, model.StatusPending, "waiting for files to become stable")
+				_ = e.endState(ctx, key, model.StatusPending, "waiting for files to become stable")
 			}
 			cfg.Logger.Warn("files unstable; will re-probe next trigger", "key", key.String())
 			return result
@@ -245,7 +259,7 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 				result.Error = fmt.Sprintf("begin state: %v", berr)
 				return result
 			} else if ok {
-				e.endState(ctx, key, model.StatusFailed, result.Error)
+				_ = e.endState(ctx, key, model.StatusFailed, result.Error)
 			}
 			cfg.Logger.Error("source list failed", "key", key.String(), "error", result.Error)
 			return result
@@ -287,7 +301,7 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			}
 			result.Status = status
 			result.Error = note
-			e.endState(ctx, key, status, note)
+			_ = e.endState(ctx, key, status, note)
 		}
 	}()
 
@@ -299,7 +313,7 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			if err := ctx.Err(); err != nil {
 				result.Status = model.StatusPending
 				result.Error = "collection canceled; will re-probe"
-				e.endState(ctx, key, model.StatusPending, result.Error)
+				_ = e.endState(ctx, key, model.StatusPending, result.Error)
 				return result
 			}
 			fr := collectOne(i)
@@ -349,7 +363,7 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		if err := ctx.Err(); err != nil {
 			result.Status = model.StatusPending
 			result.Error = "collection canceled; will re-probe"
-			e.endState(ctx, key, model.StatusPending, result.Error)
+			_ = e.endState(ctx, key, model.StatusPending, result.Error)
 			return result
 		}
 	}
@@ -364,12 +378,19 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			status = model.StatusPending
 			note = "collection canceled; will re-probe: " + note
 		}
-		e.endState(ctx, key, status, note)
+		_ = e.endState(ctx, key, status, note)
 		cfg.Logger.Error("collection failed", "key", key.String(), "error", result.Error, "records", result.Records, "duration", result.Duration)
 		return result
 	}
 	result.Status = model.StatusSucceeded
-	e.endState(ctx, key, model.StatusSucceeded, "")
+	if err := e.endState(ctx, key, model.StatusSucceeded, ""); err != nil {
+		// 成功没落账就不是成功：数据行已提交，下轮按幂等重放补齐台账。
+		result.Status = model.StatusFailed
+		result.Error = fmt.Sprintf("record succeeded: %v", err)
+		cfg.Logger.Error("collection succeeded but the ledger write failed; reporting failure for replay",
+			"key", key.String(), "records", result.Records, "error", result.Error)
+		return result
+	}
 	cfg.Logger.Info("collection completed", "key", key.String(), "files", len(result.Files), "records", result.Records, "duration", result.Duration)
 	return result
 }
