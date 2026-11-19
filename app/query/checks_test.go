@@ -189,3 +189,42 @@ func TestAttentionOverlaysWindowMismatchOntoLedger(t *testing.T) {
 		t.Fatalf("attention = %v, want ledger row + failed day + mismatch day, no duplicates", keys)
 	}
 }
+
+// TestExpiredIsNotAttentionButMismatchIs 钉住"待处理"这一列的语义边界：超期不是
+// 待处理（系统不会再试，混在里面只会淹没真正看一眼的东西），校验不一致仍然是
+// 待处理（数据已入库却对不上，得人去看）。投影还必须当场改口——台账说 Expired 而
+// 事件驱动的内存视图还在说 Failed，等于同一件事两句话。
+func TestExpiredIsNotAttentionButMismatchIs(t *testing.T) {
+	ctx := context.Background()
+	m := NewReadModel()
+	expired := key("src", "2026-04-01")
+	mismatch := key("src", "2026-05-01")
+
+	m.OnCollectionFailed(expired, "device offline")
+	if v, err := m.GetCollection(ctx, expired); err != nil || v.Status != StatusFailed {
+		t.Fatalf("before retirement: %+v err=%v", v, err)
+	}
+	m.OnCollectionExpired(expired, time.Now())
+	if v, err := m.GetCollection(ctx, expired); err != nil || v.Status != StatusExpired {
+		t.Fatalf("after retirement: %+v err=%v", v, err)
+	}
+
+	m.OnFileCompleted(mismatch, file("src", "/s/b.csv", "b.csv"), model.NewMetadata(), 5)
+	m.OnCollectionCompleted(mismatch, time.Now())
+	m.OnChecksVerified(mismatch, []model.FileCheck{verdict(mismatch, "b.csv", model.CheckMismatch, "rows: file 5, stored 4")})
+
+	views, err := m.Attention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dates := map[string]string{}
+	for _, v := range views {
+		dates[v.Date] = v.Status
+	}
+	if _, bad := dates["2026-04-01"]; bad {
+		t.Errorf("expired date must not sit in 待处理: %v", dates)
+	}
+	if dates["2026-05-01"] != StatusSucceeded {
+		t.Errorf("a succeeded date with a row mismatch must stay actionable, got %v", dates)
+	}
+}

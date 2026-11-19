@@ -59,6 +59,10 @@ func consoleRows() []extconfig.ComponentConfig {
 						map[string]any{"label": "待处理", "query": "overview-stats", "op": "sum", "field": "pending", "warn": true},
 						map[string]any{"label": "累计记录", "query": "overview-stats", "op": "sum", "field": "records"},
 						map[string]any{"label": "失败文件", "query": "overview-stats", "op": "sum", "field": "filesFailed", "warn": true},
+						// 超期 = 已离开自动补采窗口、系统不会再自己试的日期。
+						// 它必须和"待处理"分开显示：一个是"去看一眼"，一个是
+						// "必须由人指定日期回填"。混在一起等于把后者藏起来。
+						map[string]any{"label": "超期未采", "query": "overview-stats", "op": "sum", "field": "expired", "warn": true},
 					},
 				},
 				map[string]any{

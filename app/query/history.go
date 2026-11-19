@@ -38,6 +38,11 @@ type OverviewStats struct {
 	Pending     int
 	Records     int64
 	FilesFailed int
+	// Expired counts business dates that left the automatic catch-up window.
+	// Kept out of Pending on purpose: Pending asks "look, the system will try
+	// again", Expired asks "someone must name a date". Same number column,
+	// opposite job.
+	Expired int
 }
 
 // TrendPoint is one day of the console overview trend.

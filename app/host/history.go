@@ -153,6 +153,7 @@ func (h *ledgerHistory) Stats(ctx context.Context) (query.OverviewStats, error) 
 		out.Pending += stats.Pending
 		out.Records += stats.Records
 		out.FilesFailed += stats.FilesFailed
+		out.Expired += stats.Expired
 	}
 	return out, nil
 }

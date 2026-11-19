@@ -63,8 +63,10 @@ func TestParseCollectionFilterHoldsDates(t *testing.T) {
 }
 
 func TestStatsRow(t *testing.T) {
-	got := statsRow(query.OverviewStats{Sources: 3, Pending: 4, Records: 135, FilesFailed: 2})
-	want := overviewStatsRow{Sources: 3, Pending: 4, Records: 135, FilesFailed: 2}
+	got := statsRow(query.OverviewStats{Sources: 3, Pending: 4, Records: 135, FilesFailed: 2, Expired: 7})
+	// Expired 必须单独成数：pending 的含义是"系统还会再试"，超期恰恰是"不会了"。
+	// 把它并进 pending，等于把"必须由人指定日期"这类问题从看板上抹掉。
+	want := overviewStatsRow{Sources: 3, Pending: 4, Records: 135, FilesFailed: 2, Expired: 7}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}

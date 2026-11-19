@@ -8,7 +8,7 @@ CollectionState records:
 source_id, collection_date, status, started_at, ended_at, error/note
 ```
 
-Statuses are Pending, Running, Succeeded, Failed and Skipped. A Succeeded
+Statuses are Pending, Running, Succeeded, Failed, Skipped and Expired. A Succeeded
 collection is never re-entered. Failed and Pending rows can be claimed again.
 Running rows are recoverable after their lease expires (24h by default,
 `Planner.Lease`), which handles an abnormal process exit without falsely
@@ -92,6 +92,21 @@ downstream re-decides it:
 The gate lives at the entry rather than inside the planner because `Handle`
 appends the target whenever the plan did not include it; a filter placed only
 in the planner is bypassed there.
+
+## Retirement: Expired
+
+A business date that is still unfinished when it leaves the catch-up window
+becomes Expired. Each run performs one bounded sweep
+(`CollectionState.ExpireBeyond`) anchored on the current cutoff, not on the
+date the run happens to target, so a manual backfill of a six-month-old date
+does not silently re-define the automatic window.
+
+The row is kept. Expired is not a cleanup, it is a hand-off: "the system no
+longer attempts this by itself; a human must name the date". That is also why
+it is not left as Failed - Failed reads as "will be retried", and after this
+change nothing retries it. The projection is told through
+`collection.expired` in the same pass, so the console and the ledger never
+describe the same date differently while the process is alive.
 
 ## Missing dates
 

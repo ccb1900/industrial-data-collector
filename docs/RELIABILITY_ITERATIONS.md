@@ -46,7 +46,15 @@
 - `app/model/model.go`：`StatusExpired Status = "Expired"`（终态，非成功）。
 - `app/state/sqlite.go`：`sqliteSchemaVersion` +1，迁移里把 `date < 窗口首日` 的 `Failed/Pending/Running` 归类为 `Expired` 的动作**不做**（状态由读侧派生，见下），只加索引 `idx_state_collections_status_date`。
 - `app/state/sqlite_state.go:356-366`、`app/state/state.go:407-439`：`ListIncomplete` 显式排除 `StatusExpired`。
-- 派生优先于存储：`app/query/readmodel.go`、`app/state/ledger.go` 在装配视图时，把"窗口外且未完成"显示为 `Expired`，**不要**为此每晚回写一遍台账（写侧一旦开始改历史状态，崩溃语义立刻复杂化）。
+- **已实现，且推翻本条上一版的决定**：不做读侧派生，改做一次有界的写侧扫描
+  `CollectionState.ExpireBeyond(sourceID, before)`，由 `Handle` 每轮调用一次。
+  理由（写在这里，避免下一个人再翻回来）：读侧派生要求"窗口天数"进入
+  `app/query` 与 `components/consolebridge`——实测这两处对窗口一无所知
+  （grep `catchupDays|Boundary` 为空），要么把每源配置灌进读模型，要么在 7 个
+  状态过滤器里各算一遍窗口；两者都比"一次带返回值的 UPDATE"更容易分叉。
+  写侧只做一次、只碰 `Failed/Pending`、幂等（第二轮返回空集，测试已钉），
+  并且必须发 `collection.expired` 事件——投影是事件驱动的，不发事件就是
+  台账说"不再自动重试"而控制台继续说"失败，待重试"。
 - `components/consolebridge`：新增一个 hub 查询 `overview-expired`（照 `overview-attention` 的注册方式，`components/consolebridge/component.go:214` 附近）。
 
 **接口**

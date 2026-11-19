@@ -121,11 +121,13 @@ type overviewStatsRow struct {
 	Pending     int   `json:"pending"`
 	Records     int64 `json:"records"`
 	FilesFailed int   `json:"filesFailed"`
+	Expired     int   `json:"expired"`
 }
 
 func statsRow(s query.OverviewStats) overviewStatsRow {
 	return overviewStatsRow{
 		Sources: s.Sources, Pending: s.Pending, Records: s.Records, FilesFailed: s.FilesFailed,
+		Expired: s.Expired,
 	}
 }
 

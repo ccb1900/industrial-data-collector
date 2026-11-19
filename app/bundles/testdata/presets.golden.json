@@ -1,6 +1,8 @@
 {
   "collector-console": [
     {
+      "ID": "ui-page-overview",
+      "Type": "ui-page",
       "Config": {
         "actions": [
           {
@@ -41,6 +43,13 @@
               {
                 "field": "filesFailed",
                 "label": "失败文件",
+                "op": "sum",
+                "query": "overview-stats",
+                "warn": true
+              },
+              {
+                "field": "expired",
+                "label": "超期未采",
                 "op": "sum",
                 "query": "overview-stats",
                 "warn": true
@@ -98,11 +107,11 @@
           }
         ]
       },
-      "Enabled": null,
-      "ID": "ui-page-overview",
-      "Type": "ui-page"
+      "Enabled": null
     },
     {
+      "ID": "ui-page-collect",
+      "Type": "ui-page",
       "Config": {
         "description": "以源为中心的运营台：选源 → 日历选日期 → 当日任务、文件、失败与数据样本都在这一屏。",
         "icon": "profile",
@@ -328,11 +337,11 @@
           }
         ]
       },
-      "Enabled": null,
-      "ID": "ui-page-collect",
-      "Type": "ui-page"
+      "Enabled": null
     },
     {
+      "ID": "ui-page-data",
+      "Type": "ui-page",
       "Config": {
         "description": "类型化入库数据的分页查询：列由响应自适应，换存储换业务无需改页面。",
         "icon": "search",
@@ -375,11 +384,11 @@
           }
         ]
       },
-      "Enabled": null,
-      "ID": "ui-page-data",
-      "Type": "ui-page"
+      "Enabled": null
     },
     {
+      "ID": "ui-page-config",
+      "Type": "ui-page",
       "Config": {
         "actions": [
           {
@@ -629,11 +638,11 @@
           }
         ]
       },
-      "Enabled": null,
-      "ID": "ui-page-config",
-      "Type": "ui-page"
+      "Enabled": null
     },
     {
+      "ID": "ui-panel-logs",
+      "Type": "ui-panel",
       "Config": {
         "order": 25,
         "pages": [
@@ -668,11 +677,11 @@
           }
         ]
       },
-      "Enabled": null,
-      "ID": "ui-panel-logs",
-      "Type": "ui-panel"
+      "Enabled": null
     },
     {
+      "ID": "ui-panel-event-feed",
+      "Type": "ui-panel",
       "Config": {
         "order": 20,
         "pages": [
@@ -684,37 +693,37 @@
         "renderer": "event-feed",
         "title": "事件流"
       },
-      "Enabled": null,
-      "ID": "ui-panel-event-feed",
-      "Type": "ui-panel"
+      "Enabled": null
     }
   ],
   "collector-core": [
     {
-      "Config": null,
-      "Enabled": null,
       "ID": "console-bridge",
-      "Type": "console-bridge"
+      "Type": "console-bridge",
+      "Config": null,
+      "Enabled": null
     },
     {
-      "Config": null,
-      "Enabled": null,
       "ID": "console-rows",
-      "Type": "console-rows"
+      "Type": "console-rows",
+      "Config": null,
+      "Enabled": null
     },
     {
-      "Config": null,
-      "Enabled": null,
       "ID": "query-provider",
-      "Type": "query-provider"
-    },
-    {
+      "Type": "query-provider",
       "Config": null,
-      "Enabled": null,
-      "ID": "ui",
-      "Type": "ui"
+      "Enabled": null
     },
     {
+      "ID": "ui",
+      "Type": "ui",
+      "Config": null,
+      "Enabled": null
+    },
+    {
+      "ID": "plugin-explorer",
+      "Type": "plugin-explorer",
       "Config": {
         "icon": "block",
         "order": 40,
@@ -722,9 +731,7 @@
         "route": "/plugins",
         "title": "插件"
       },
-      "Enabled": null,
-      "ID": "plugin-explorer",
-      "Type": "plugin-explorer"
+      "Enabled": null
     }
   ]
 }
