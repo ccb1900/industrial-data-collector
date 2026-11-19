@@ -1,3 +1,9 @@
+== 硬门禁：go build ==
+PASS  go build ./...
+== 硬门禁：go vet ==
+PASS  go vet ./...
+== 硬门禁：go test ==
+PASS  go test ./...
 == CLI 标志 ==
 PASS  web-ui -config
 PASS  web-ui -addr
@@ -26,28 +32,25 @@ PASS  proc 方法 ack-alarm
 PASS  manifest backend
 PASS  manifest client
 == webui 端点 ==
-PASS  端点 /api/ui/pages
-PASS  端点 /api/ui/panels
-PASS  端点 /api/ui/client-modules
-PASS  端点 /api/plugins/control
-PASS  端点 /api/plugins/install
-PASS  端点 /api/plugins/removed
-PASS  端点 /api/plugins/uninstall
-PASS  端点 /api/meta
-PASS  端点 /api/fleet
-PASS  端点 /api/stream
-PASS  GET /api/query/<名>
-PASS  POST /api/command/<名>
-PASS  同源挂载 /client-modules/
+SKIP  端点 /api/ui/pages（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/ui/panels（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/ui/client-modules（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/plugins/control（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/plugins/install（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/plugins/removed（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/plugins/uninstall（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/meta（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/fleet（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  端点 /api/stream（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  webui 端点（9 条）（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
 == 状态集 ==
 PASS  状态 Pending
 PASS  状态 Running
 PASS  状态 Succeeded
 PASS  状态 Failed
 PASS  状态 Skipped
-PASS  UI 词：等待数据
-PASS  UI 词：无数据
-PASS  UI 词：成功
+PASS  状态 Expired
+SKIP  UI 词（3 条）（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
 == 日期策略与采集模式 ==
 PASS  date_policy yesterday
 PASS  date_policy today
@@ -82,44 +85,41 @@ PASS  配置键 expose_console
 PASS  配置键 lazy_connect
 PASS  配置键 metadata_source
 PASS  配置键 layout
-PASS  配置键 no_data_grace_hours
+PASS  配置键 date_dir_layout
+PASS  配置键 filename_date_layout
+PASS  四层展开函数
+PASS  机台清单解析
+PASS  sink 引用完整性
 PASS  脱敏哨兵
 PASS  explorer 投影脱敏
 == 组件类型（manifest 自描述）==
-PASS  components/source/manifest.toml
-PASS  components/parser/manifest.toml
 PASS  components/watchtrigger/manifest.toml
 PASS  components/storage/manifest.toml
-PASS  components/state/manifest.toml
 PASS  components/scheduler/manifest.toml
-PASS  components/collector/manifest.toml
 PASS  components/metadata/manifest.toml
 PASS  components/query/manifest.toml
 PASS  components/ui-contrib/manifest.toml
 PASS  components/consolebridge/manifest.toml
 PASS  components/sourceunit/manifest.toml
 PASS  components/config/manifest.toml
-PASS  manifest 类型总数 = 27（实际 27）
+PASS  manifest 类型总数 = 20（实际 20）
 PASS  pluginmeta 聚合存在
 PASS  validate 聚合引用
 == 页面与面板（collector-console 预设）==
 PASS  页面 overview
-PASS  页面 collections
-PASS  页面 sources
+PASS  页面 collect
 PASS  页面 data
-PASS  无独立文件页（主从合并）
+PASS  采集页为主从视图
+PASS  采集页含状态日历
 PASS  面板 logs
 PASS  面板 event-feed
-PASS  面板 failures
-PASS  面板 collection-detail
-PASS  详情面板绑定 collections
+PASS  失败账本面板已并入采集页
+PASS  详情右面板已并入采集页
 PASS  页面图标声明
 == 目录与脚本 ==
 PASS  路径 configs/desktop.toml
-PASS  路径 configs/example.toml
-PASS  路径 configs/windows-task.toml
-PASS  路径 data/production
-PASS  路径 data/quality
+PASS  路径 configs/laser.toml
+PASS  路径 configs/unc-machines.toml
 PASS  路径 plugins/alarm-demo/manifest.toml
 PASS  路径 plugins/alarm-demo/main.go
 PASS  路径 plugins/alarm-demo/src/ui.tsx
@@ -127,29 +127,14 @@ PASS  路径 scripts/build-console.sh
 PASS  路径 scripts/install-plugin.sh
 PASS  路径 docs/用户指南.md
 PASS  路径 docs/开发者指南.md
+PASS  desktop 引用演示数据目录
+PASS  desktop 引用质检数据目录
 PASS  补丁文件格式 version
 == go-cordis 框架扩展与设施 ==
-PASS  go-cordis extensions/broker
-PASS  go-cordis extensions/bundle
-PASS  go-cordis extensions/config
-PASS  go-cordis extensions/configwatch
-PASS  go-cordis extensions/console
-PASS  go-cordis extensions/event
-PASS  go-cordis extensions/hmr
-PASS  go-cordis extensions/loader
-PASS  go-cordis extensions/observe
-PASS  go-cordis extensions/patch
-PASS  go-cordis extensions/registry
-PASS  go-cordis extensions/scheduler
-PASS  go-cordis extensions/watch
-PASS  logstore 扩展
-PASS  procplugin 扩展
-PASS  plugin-kit
-PASS  ComposeDocument
-PASS  patch.ApplyPatches
-PASS  渲染器注册表
-PASS  投影 seam
-PASS  客户端模块加载
+SKIP  go-cordis 框架（13 个 extensions 目录）（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  logstore/procplugin/plugin-kit（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  ComposeDocument / patch.ApplyPatches（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
+SKIP  Console 源码 seam（3 条）（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
 
-结果: PASS=141 FAIL=0
+结果: PASS=107 FAIL=0 SKIP=16
 文档与代码一致 ✔
