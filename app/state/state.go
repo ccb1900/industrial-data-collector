@@ -404,6 +404,33 @@ func (s *MemoryState) StatusOf(_ context.Context, key model.CollectionKey) (mode
 	return rec.Status, true, nil
 }
 
+// ExpireBeyond 把已经离开自动窗口的未完成记录转成 Expired：记录一条不删，
+// 只是不再自动重试。Succeeded/Skipped/Expired 原样不动——它们是事实，不是活。
+func (s *MemoryState) ExpireBeyond(ctx context.Context, sourceID model.SourceID, before model.CollectionDate) ([]model.CollectionKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var changed []model.CollectionKey
+	for ck, rec := range s.collections {
+		if rec.Key.SourceID != sourceID || !rec.Key.Date.Before(before) {
+			continue
+		}
+		switch rec.Status {
+		case model.StatusFailed, model.StatusPending:
+		default:
+			continue
+		}
+		rec.Status = model.StatusExpired
+		rec.Note = "自动补采窗口外，停止自动重试；需按日期手动回填"
+		s.collections[ck] = rec
+		changed = append(changed, rec.Key)
+	}
+	sort.Slice(changed, func(i, j int) bool { return changed[i].Date.Before(changed[j].Date) })
+	return changed, nil
+}
+
 func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceID, until model.CollectionDate, staleAfter time.Duration) ([]model.CollectionKey, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -418,7 +445,10 @@ func (s *MemoryState) ListIncomplete(ctx context.Context, sourceID model.SourceI
 		// planner re-derives calendar gaps each run anyway, so genuinely
 		// late deliveries inside the window are still attempted — they just
 		// never appear as "plan" tasks while absent.
-		if rec.Key.SourceID != sourceID || rec.Status == model.StatusSucceeded || rec.Status == model.StatusSkipped {
+		if rec.Key.SourceID != sourceID ||
+			rec.Status == model.StatusSucceeded ||
+			rec.Status == model.StatusSkipped ||
+			rec.Status == model.StatusExpired {
 			continue
 		}
 		if rec.Key.Date.After(until) {
@@ -784,6 +814,25 @@ func (s *FileState) MarkFileFailed(ctx context.Context, key model.CollectionKey,
 	return s.transact(func() error {
 		return s.MemoryState.MarkFileFailed(ctx, key, file, errMsg)
 	})
+}
+
+// ExpireBeyond 必须在这里也过一遍 run()：MemoryState 的同名方法是改内存的，
+// 直接用嵌入版本会让退役只活在内存里、重启就回到 Failed——那是 U2 修过的同一类
+// 错误，换了个方法名而已。
+func (s *FileState) ExpireBeyond(ctx context.Context, sourceID model.SourceID, before model.CollectionDate) ([]model.CollectionKey, error) {
+	var changed []model.CollectionKey
+	_, _, err := s.run(func() (bool, int64, error) {
+		keys, err := s.MemoryState.ExpireBeyond(ctx, sourceID, before)
+		if err != nil {
+			return false, 0, err
+		}
+		changed = keys
+		return len(keys) > 0, int64(len(keys)), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return changed, nil
 }
 
 func (s *FileState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {

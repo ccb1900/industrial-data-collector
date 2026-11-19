@@ -150,6 +150,14 @@ const (
 	// is permanent (time is irreversible), which is a different fact from
 	// "not collected yet" (Pending). Skipped rows are not retried.
 	StatusSkipped Status = "Skipped"
+	// StatusExpired is a TERMINAL, NOT-successful outcome for an unfinished
+	// business date that has left the automatic catch-up window: the work is
+	// still owed, but the system no longer attempts it by itself. The row is
+	// kept on purpose — it is the durable evidence that a date was missed —
+	// and only an explicitly named date (console / csv-collector) brings it
+	// back into play. Expired is deliberately not Failed: "Failed" means
+	// "another pass will try this", and after 68fa9aa nothing does.
+	StatusExpired Status = "Expired"
 )
 
 // FileResult reports the outcome of one input file.
@@ -276,6 +284,13 @@ type CollectionState interface {
 	// data missing). A probed date with no files and no expectation leaves
 	// no trace — Drop clears stale records from earlier semantics.
 	Drop(ctx context.Context, key CollectionKey) error
+	// ExpireBeyond retires unfinished records older than the automatic
+	// catch-up window: Failed/Pending (and lease-expired Running) rows with
+	// date < before become Expired. Succeeded/Skipped/Expired rows are left
+	// alone — history and terminal no-data are facts, not work. It returns
+	// the keys it changed, so the caller can publish the transition instead
+	// of letting the live projection disagree with the ledger.
+	ExpireBeyond(ctx context.Context, sourceID SourceID, before CollectionDate) ([]CollectionKey, error)
 	// ReclaimRunning closes Running records started before startedBefore —
 	// rows left behind by a previous process. A collector holds a
 	// single-instance lock, so at startup every such row is orphaned: without

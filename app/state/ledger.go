@@ -34,6 +34,11 @@ type LedgerStats struct {
 	Pending     int
 	Records     int64
 	FilesFailed int
+	// Expired counts unfinished business dates that left the automatic
+	// catch-up window. They are deliberately NOT inside Pending: Pending is
+	// "the system will try again", Expired is "someone has to name the date".
+	// Two different asks, so two different numbers.
+	Expired int
 }
 
 // DateTotals is one trend bucket.
@@ -197,8 +202,10 @@ func (s *SQLiteState) LedgerStats(ctx context.Context) (LedgerStats, error) {
 	err := s.store.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM state_collections WHERE status IN (?, ?)),
 		(SELECT COALESCE(SUM(record_count), 0) FROM state_files),
-		(SELECT COUNT(*) FROM state_failures)`,
-		string(model.StatusFailed), string(model.StatusPending)).Scan(&out.Pending, &out.Records, &out.FilesFailed)
+		(SELECT COUNT(*) FROM state_failures),
+		(SELECT COUNT(*) FROM state_collections WHERE status = ?)`,
+		string(model.StatusFailed), string(model.StatusPending),
+		string(model.StatusExpired)).Scan(&out.Pending, &out.Records, &out.FilesFailed, &out.Expired)
 	if err != nil {
 		return LedgerStats{}, err
 	}

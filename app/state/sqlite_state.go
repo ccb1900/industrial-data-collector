@@ -364,16 +364,71 @@ func (s *SQLiteState) LastCompleted(ctx context.Context, sourceID model.SourceID
 	return d, true, nil
 }
 
+// ExpireBeyond 见 model.CollectionState：窗口外的 Failed/Pending 转 Expired，
+// 保留记录、停止自动重试。返回被改动的键，调用方据此发事件——否则实时投影会
+// 继续显示"失败，待重试"，而规划再也不会碰它。
+func (s *SQLiteState) ExpireBeyond(ctx context.Context, sourceID model.SourceID, before model.CollectionDate) ([]model.CollectionKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT date FROM state_collections
+		WHERE source_id = ? AND date < ? AND status IN (?, ?)
+		ORDER BY date`, string(sourceID), before.String(),
+		string(model.StatusFailed), string(model.StatusPending))
+	if err != nil {
+		return nil, err
+	}
+	var changed []model.CollectionKey
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		d, err := parseCollectionDate(date)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		changed = append(changed, model.CollectionKey{SourceID: sourceID, Date: d})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(changed) == 0 {
+		return nil, tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE state_collections
+		SET status = ?, note = ?, ended_at = ?
+		WHERE source_id = ? AND date < ? AND status IN (?, ?)`,
+		string(model.StatusExpired), "自动补采窗口外，停止自动重试；需按日期手动回填",
+		s.nowTime().UnixNano(), string(sourceID), before.String(),
+		string(model.StatusFailed), string(model.StatusPending)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return changed, nil
+}
+
 func (s *SQLiteState) ListIncomplete(ctx context.Context, sourceID model.SourceID, until model.CollectionDate, staleAfter time.Duration) ([]model.CollectionKey, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	threshold := s.nowTime().Add(-staleAfter).UnixNano()
 	rows, err := s.store.db.QueryContext(ctx, `SELECT source_id, date FROM state_collections
-		WHERE source_id = ? AND date <= ? AND status NOT IN (?, ?)
+		WHERE source_id = ? AND date <= ? AND status NOT IN (?, ?, ?)
 		  AND (status <> ? OR started_at <= ?)
 		ORDER BY date, source_id`, string(sourceID), until.String(),
-		string(model.StatusSucceeded), string(model.StatusSkipped),
+		string(model.StatusSucceeded), string(model.StatusSkipped), string(model.StatusExpired),
 		string(model.StatusRunning), threshold)
 	if err != nil {
 		return nil, err
