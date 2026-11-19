@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,3 +255,82 @@ func TestUnstableProbeBreaksNoDataStreak(t *testing.T) {
 		t.Fatal("an unconfirmed absence must not materialize a ledger row")
 	}
 }
+
+// flatAppendSource 是 flat + 内容哈希去重的源：内容不变时 List 返回
+// ErrNoNewContent（"文件在、内容没变"）。
+type flatAppendSource struct {
+	id model.SourceID
+	f  model.FileIdentity
+}
+
+func (s *flatAppendSource) ID() model.SourceID { return s.id }
+func (s *flatAppendSource) Root() string       { return "/flat" }
+func (s *flatAppendSource) List(_ context.Context, _ model.ListRequest) ([]model.FileIdentity, error) {
+	return []model.FileIdentity{s.f}, nil
+}
+func (s *flatAppendSource) Read(_ context.Context, f model.FileIdentity) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("v=1\n")), nil
+}
+func (s *flatAppendSource) Close() error { return nil }
+
+// TestNoNewContentNeverCountsAsNoData：append 模式下内容未变的触发是"已采过"
+// 的证明——它不能计入无数据确认，更不能把一条 Succeeded 翻成 Skipped。
+// 审查第二轮抓到的正是这个洞：去重后的空清单被当成"连续探不到"。
+func TestNoNewContentNeverCountsAsNoData(t *testing.T) {
+	base := state.NewMemory()
+	mem := storage.NewMemory(storage.MemoryOptions{})
+	e := newExecutor(t, t.TempDir(), base, mem)
+	f := model.FileIdentity{SourceID: "prod", Path: "/flat/export.csv", Name: "export.csv"}
+	e.Source = &flatAppendSource{id: "prod", f: f}
+	now := func() time.Time { return time.Date(2026, 11, 19, 3, 0, 0, 0, time.UTC) }
+	e.Config.Now = now
+	e.Config.DatePolicy = datepolicy.Policy{Type: datepolicy.PolicyYesterday, Now: now}
+	e.Config.Boundary = datepolicy.Boundary{Now: now, WindowDays: 1, SameDay: false}
+	e.Recovery = recovery.Planner{State: base, CatchupDays: 1, Now: now}
+	base.SetAppendMode() // watch 触发的 flat 源：append 模式重开成功日期
+	e.Config.NoDataConfirmDays = 1
+	ctx := context.Background()
+	day := date(t, "2026-11-18")
+	key := model.CollectionKey{SourceID: "prod", Date: day}
+
+	// 第一轮：真实采集成功（append 模式 + 内容哈希由 flatAppendSource 不去重，
+	// 这里用显式脚本源分两段模拟"先有数据"）。
+	if _, err := e.Handle(ctx, model.CollectionRequested{Reason: "watch"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, existed, _ := base.StatusOf(ctx, key); !existed || got != model.StatusSucceeded {
+		t.Fatalf("first pass = (%q, existed=%v), want Succeeded", got, existed)
+	}
+
+	// 之后每一轮：内容未变 → ErrNoNewContent → Skipped "no new content"，
+	// 台账保持 Succeeded，绝不翻成 Skipped。
+	for i := 0; i < 3; i++ {
+		e.Source = &noNewContentSource{id: "prod", f: f}
+		results, err := e.Handle(ctx, model.CollectionRequested{Reason: "watch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Status != model.StatusSkipped || results[0].NoDataConfirmed {
+			t.Fatalf("pass %d = %#v, want Skipped (no new content), not confirmed no-data", i, results)
+		}
+	}
+	if got, existed, _ := base.StatusOf(ctx, key); !existed || got != model.StatusSucceeded {
+		t.Fatalf("ledger = (%q, existed=%v), want still Succeeded — 生产中的机台不许被终态化成无数据", got, existed)
+	}
+}
+
+// noNewContentSource 是内容哈希去重命中后的形态：List 返回 ErrNoNewContent。
+type noNewContentSource struct {
+	id model.SourceID
+	f  model.FileIdentity
+}
+
+func (s *noNewContentSource) ID() model.SourceID { return s.id }
+func (s *noNewContentSource) Root() string       { return "/flat" }
+func (s *noNewContentSource) List(context.Context, model.ListRequest) ([]model.FileIdentity, error) {
+	return nil, errs.Sourcef(errs.ErrNoNewContent, "identical content: nothing new to record")
+}
+func (s *noNewContentSource) Read(context.Context, model.FileIdentity) (io.ReadCloser, error) {
+	return nil, errs.Sourcef(errs.ErrNoNewContent, "nothing new")
+}
+func (s *noNewContentSource) Close() error { return nil }

@@ -309,6 +309,13 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	files, err := e.Source.List(ctx, model.ListRequest{SourceID: key.SourceID, Date: key.Date})
 	if err != nil {
 		switch {
+		case errs.Is(err, errs.ErrNoNewContent):
+			// flat 源 + 内容哈希去重："文件在、内容没变"。结果同 Skipped
+			//（不物化、不告警），但不进无数据确认计数、不清任何台账——
+			// append 模式下这是"已采过"的证明，不是"当天没有"。
+			result.Status = model.StatusSkipped
+			result.Error = "no new content (unchanged file)"
+			return result
 		case errs.Is(err, errs.ErrNotFound):
 			// 文件不存在 = 无数据 = 不物化。没有实例、没有重试、没有
 			// 告警——"没有"就是没有。这不是失败，只是当天没有数据。

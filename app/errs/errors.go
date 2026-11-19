@@ -19,12 +19,16 @@ var (
 	ErrTimeout          = errors.New("操作超时")
 	ErrIO               = errors.New("读写错误")
 	ErrSourceChanged    = errors.New("读取期间源文件已变化")
-	ErrFileUnstable     = errors.New("文件尚未稳定")
-	ErrInvalidEncoding  = errors.New("CSV 编码无效")
-	ErrMalformedCSV     = errors.New("CSV 格式无效")
-	ErrInvalidFile      = errors.New("文件标识无效")
-	ErrInvalidConfig    = errors.New("应用配置无效")
-	ErrConfiguration    = errors.New("配置错误")
+	// ErrNoNewContent 是 flat 源（整文件 + 内容哈希去重）的"文件在、内容没变"：
+	// 数据存在且已采过。它不是 NotFound——把去重后的空清单当"没有数据"计数，
+	// 会在 append 模式下把正在生产的机台终态化成"确认无数据"。
+	ErrNoNewContent    = errors.New("无新内容")
+	ErrFileUnstable    = errors.New("文件尚未稳定")
+	ErrInvalidEncoding = errors.New("CSV 编码无效")
+	ErrMalformedCSV    = errors.New("CSV 格式无效")
+	ErrInvalidFile     = errors.New("文件标识无效")
+	ErrInvalidConfig   = errors.New("应用配置无效")
+	ErrConfiguration   = errors.New("配置错误")
 	// ErrDateBoundary 是业务日越界：今天/未来日期进入自动采集，或自动目标早于
 	// 补采窗口首日。它既不是"未找到"也不是配置无效——报出去要让现场一眼看出是
 	// 日期口径问题，而不是设备或文件出了故障。

@@ -220,6 +220,9 @@ func ensureSQLiteSchema(db *sql.DB) error {
 				hasNext = true
 			}
 		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("state database schema: %w", err)
+		}
 		rows.Close()
 		if !hasNext {
 			if _, err := db.Exec(`ALTER TABLE state_failures ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`); err != nil {
@@ -309,6 +312,15 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, snap memorySnapshot) error 
 			(source_id, date, status, started_at, ended_at, note) VALUES (?, ?, ?, ?, ?, ?)`,
 			string(c.SourceID), c.Date.String(), string(c.Status),
 			toNanos(c.StartedAt), toNanos(c.EndedAt), c.Note); err != nil {
+			return fmt.Errorf("state database import: %w", err)
+		}
+	}
+	// 无数据确认的连续计数一并导入：file-state 升级到 sqlite-state 时，
+	// 在途的确认进度不该从零重数（每天重启/迁移的采集器会永远凑不满 N）。
+	for _, nd := range snap.NoData {
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO state_nodata
+			(source_id, date, consecutive, last_probed_at) VALUES (?, ?, ?, ?)`,
+			string(nd.SourceID), nd.Date.String(), nd.Consecutive, toNanos(nd.LastAt)); err != nil {
 			return fmt.Errorf("state database import: %w", err)
 		}
 	}

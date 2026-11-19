@@ -402,7 +402,11 @@ func (s *Source) listFlat(ctx context.Context) ([]model.FileIdentity, error) {
 		s.lastHash[s.root] = sum
 		s.hashMu.Unlock()
 		if unchanged {
-			return nil, nil // identical content: nothing new to record
+			// 内容未变 ≠ 没有数据。返回 ErrNoNewContent 让执行器走"已采过"
+			// 分支：不落账、不进无数据确认计数——append 模式下把去重后的空
+			// 清单计入"连续探不到"，会在 N 次触发后把生产中的机台终态化成
+			// "确认无数据"（审查第二轮抓到）。
+			return nil, errs.Sourcef(errs.ErrNoNewContent, "identical content: nothing new to record")
 		}
 		file.Hash = sum
 	}

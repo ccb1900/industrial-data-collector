@@ -97,6 +97,15 @@ below are what each row carries (and what a raw `[[components]]` row sets):
   up — enabling this trades that automatic late-file recovery for a quiet
   holiday board; a late file after confirmation comes back only through an
   explicitly named date (manual trigger / console).
+- `catchup_days`: **ignored (forced to 0) for `layout = "flat"` sources** — a
+  flat export is same-day data; a window would attribute one export to N
+  business dates and mis-attributed rows are Succeeded, so the retirement
+  sweep never reclaims them. Consequence: a flat source's stale Failed rows
+  are re-planned every trigger by the legacy known-incomplete path until they
+  succeed; they never expire.
+- `no_data_after_days`: for flat + append sources, an unchanged-content probe
+  reports "no new content" and does NOT count toward the confirmation streak —
+  "already collected" is not "no data".
 - `catchup_days`: non-negative int (default 0). Bounds how many calendar
   days one trigger synthesizes as catch-up when no succeeded date exists
   inside the window (first deployment or lost state). See `docs/OPERATIONS.md`.

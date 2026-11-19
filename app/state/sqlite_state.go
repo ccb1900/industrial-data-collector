@@ -95,7 +95,10 @@ func (s *SQLiteState) End(ctx context.Context, key model.CollectionKey, status m
 	if affected == 0 {
 		return fmt.Errorf("collection state %q has not begun", key)
 	}
-	if status == model.StatusSucceeded {
+	if status == model.StatusSucceeded || status == model.StatusSkipped {
+		// 成功清账；确认无数据同样清账——日期已结算，残留的失败条目没有
+		// 任何补救路径（这个日期不会再被自动重试），只会永久抬高
+		// FilesFailed/趋势的失败计数。审计线索在观察流 journal 里。
 		if _, err := tx.ExecContext(ctx, `DELETE FROM state_failures WHERE source_id = ? AND date = ?`,
 			string(key.SourceID), key.Date.String()); err != nil {
 			return err

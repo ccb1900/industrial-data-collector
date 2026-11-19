@@ -148,14 +148,18 @@ func (s *MemoryState) End(ctx context.Context, key model.CollectionKey, status m
 	// 此时仍残留的失败只可能属于本轮清单里已不存在的文件（上游已删除）。
 	// 保留它们会让投影在成功实例上数出失败文件，且成功守卫使其实永无
 	// 清理机会——成功即清账。
-	if status == model.StatusSucceeded {
+	if status == model.StatusSucceeded || status == model.StatusSkipped {
+		// 成功清账；确认无数据同样清账——日期已结算，残留的失败条目没有
+		// 任何补救路径（这个日期不会再被自动重试），只会永久抬高
+		// FilesFailed/趋势的失败计数。审计线索在观察流 journal 里。
 		delete(s.failedFiles, ck)
 	}
 	return nil
 }
 
 // migratePreInstance 迁移旧语义记录（仅限构造期调用，实例尚未发布）：
-//   - Skipped（无数据）→ 清除，连同文件/失败副档——"没有"不是实例；
+//   - Skipped → 原样保留——它从"旧语义遗留"重新成为 Iteration C 的合法
+//     终态（确认无数据），装载清除会让确认结果抹掉、重启后回到每晚重探；
 //   - Pending（等待数据）→ 转 Failed——它是重试证据，转换后仍可被
 //     补采重探（迟到文件由成功覆盖），而不是静默消失；
 //   - Succeeded 记录带失败账 → 清失败账（成功清账不变量的修复：

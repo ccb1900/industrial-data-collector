@@ -200,8 +200,9 @@ func (c *Component) registerMachineDays(reg machineDayRegistrar, owner string) (
 	}))
 }
 
-// machineDayUnits 把源单元集合折成聚合输入。单源读台账失败不拖垮整个视图：
-// 该源缺席即缺席——这本身就是"这台机器这一天不健康"的证据。
+// machineDayUnits 把源单元集合折成聚合输入。单源读台账失败不拖垮整个视图，
+// 但也绝不静默缺席——失败以 ReadError 标记进聚合，压制成"不健康"：第一版
+// 在这里 continue 掉了读失败的源，审查抓到 m1 在缺一个格式时被判健康。
 func (c *Component) machineDayUnits(ctx context.Context) []MachineDayUnit {
 	c.mu.Lock()
 	units := append([]*sourceunitplugin.SourceUnitComponent(nil), c.units...)
@@ -213,6 +214,12 @@ func (c *Component) machineDayUnits(ctx context.Context) []MachineDayUnit {
 		}
 		recs, err := u.Records(ctx)
 		if err != nil {
+			out = append(out, MachineDayUnit{
+				MachineID: u.MachineID(),
+				FormatID:  u.FormatID(),
+				SourceID:  u.SourceID(),
+				ReadError: true,
+			})
 			continue
 		}
 		out = append(out, MachineDayUnit{
