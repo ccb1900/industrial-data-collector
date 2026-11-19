@@ -8,10 +8,15 @@ CollectionState records:
 source_id, collection_date, status, started_at, ended_at, error/note
 ```
 
-Statuses are Pending, Running, Succeeded, and Failed. A Succeeded collection is
-never re-entered. Failed and Pending rows can be claimed again. Running rows
-are recoverable after their lease expires, which handles an abnormal process
-exit without falsely treating a live execution as available.
+Statuses are Pending, Running, Succeeded, Failed and Skipped. A Succeeded
+collection is never re-entered. Failed and Pending rows can be claimed again.
+Running rows are recoverable after their lease expires (24h by default,
+`Planner.Lease`), which handles an abnormal process exit without falsely
+treating a live execution as available. If the terminal write itself fails, the
+collection is reported as Failed rather than Succeeded: rows already committed
+to the database are replayed idempotently, whereas a Succeeded that never
+reached the ledger would freeze the business date (the planner stops planning
+it and the succeeded guard refuses to reopen it).
 
 ## File-level state
 
@@ -39,30 +44,64 @@ worth worrying about. Retries stay trigger-driven: the next
 
 ## Catch-up window
 
-Gaps are synthesized from the last succeeded business date through the
-target date, which recovers days missed while the machine was off.
-`catchup_days` bounds that window when no succeeded date exists (first
-deployment, lost state file): at most N calendar days ending at the target
-are attempted. Known incomplete rows are always attempted regardless of the
-window.
+`catchup_days` is the automatic fault-tolerance window, counted in calendar
+days and ending at the business-date ceiling (yesterday for a dated source,
+today for a same-day export): with `catchup_days = 30` and today 2026-11-19,
+the window is 2026-10-20 through 2026-11-18, both ends included.
+
+The window is simultaneously the range that gets re-planned every day and the
+upper bound for automatic retries. A failure older than the window stops being
+retried automatically but is never deleted — a device that was down for half a
+year must not come back as an uncontrolled historical backfill. Backfilling an
+older date is still possible, by naming the date explicitly (console or
+`csv-collector`). `catchup_days = 0` keeps the legacy behaviour for
+deployments that never declared a window.
 
 ## Gap planner
 
-On startup/manual recovery the planner:
+With a window configured, `Planner.Plan` enumerates the window day by day and
+aligns it against one read of the ledger (`CollectionRecords`): a business date
+enters the plan unless it is Succeeded/Skipped or a Running row still inside
+its lease.
 
-1. reads known incomplete keys through `ListIncomplete`;
-2. reads the last Succeeded business date;
-3. adds every calendar date after the last success through the requested
-   target date.
+That is deliberately not "walk forward from the last success" — which silently
+lost holes. A date whose file had not arrived leaves no ledger row at all, so
+once a later date succeeded, the walk started after the hole and the late file
+was never picked up again. Dates without a row are now indistinguishable from
+"never probed", which is exactly what they are: they get probed again, every
+night, until they are collected or they leave the window.
 
-This discovers dates missed during downtime even when no row was created for
-them.
+The cost is known and accepted: with a 30-day window every source probes up to
+30 dates per run instead of 1-3. The UNC host gate still short-circuits an
+offline machine to a single Failed row per pass, so downtime does not become a
+failure flood.
+
+## Date boundary
+
+`date.Boundary` is checked once, at the entry of `Executor.Handle`, and nothing
+downstream re-decides it:
+
+* a business date after today is refused on every path, manual included;
+* today itself is refused unless the source is a same-day export
+  (`layout = "flat"`, where the file is today's by nature — the flag is derived
+  from the layout, not chosen by the operator);
+* the window bounds what the planner enumerates, not whether a named date is
+  legal, so `date_policy = "specific"` pointing at an old date stays a valid
+  backfill entry.
+
+The gate lives at the entry rather than inside the planner because `Handle`
+appends the target whenever the plan did not include it; a filter placed only
+in the planner is bypassed there.
 
 ## Missing dates
 
-A missing date directory is classified as NotFound by FileSource and left in
-the Pending state instead of being marked Succeeded. A later run rechecks the
-directory.
+A missing date directory or a missing dated file is classified as NotFound and
+materializes nothing: no ledger row, result reported as Skipped. That is a
+"no evidence yet" statement, not a statement that the plant produced nothing
+that day — which is why the window keeps re-probing it. An unreachable share
+is a different class (Unavailable, detected before NotExist because Windows
+maps `ERROR_BAD_NETPATH` onto fs.ErrNotExist) and becomes a retryable Failed
+instance instead.
 
 ## Crash ordering
 

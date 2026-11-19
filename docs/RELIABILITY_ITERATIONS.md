@@ -1,0 +1,185 @@
+# 可靠性重构迭代规范（交给代码 Agent 执行）
+
+版本：2026-11-19。依据 `reliability/p0-window-boundary` 分支（基线 9da9d70）实测与逐文件核对。
+本文件是工单，不是背景材料：**每个迭代一次提交，验收命令必须实跑，任何"已实现"的主张都要能指到一个测试名。**
+
+## 0. 执行者必须先遵守的约束
+
+1. 开工前读 `app/model/model.go`（`CollectionKey`/`Status`/`CollectionState`/`FileIdentity`）、`app/recovery/planner.go`、`docs/RECOVERY.md`。这三个文件定义了任务的粒度和口径。
+2. **不要新增**：调度框架、工作流引擎、消息队列、分布式锁、`DateTask/SourceTask` 这类新实体、`DiscoveryStatus` 这类与 `errs` 并行的第二套分类词汇。业务事实已经存在，多数缺陷是口径分叉而不是缺类型。
+3. 一个决定只活在一个地方。改动日期/窗口语义时，先问"这条规则现在由谁决定、还有谁在重复决定"，把答案写进提交信息。
+4. 每个迭代结束时：`go test ./...` 与 `go test -race ./app/... ./components/... ./tests/...` 必须全绿；新增的测试必须**先在改前跑出红**，并在提交信息里写清红的具体表现。做不到就不要声称修好了。
+5. 提交时**禁止 `git add -A`**。仓库里有未跟踪的现场物（`alarm-demo/`、`data/`、`t.exe`、NTFS `:Zone.Identifier`），按路径逐个 add。
+6. `.git/hooks/post-checkout`、`post-commit` 当前没有可执行位，仓库自带的钩子不会运行；不要以为自己被验证过了。
+
+## 1. 已完成基线（不要重复实施）
+
+| 提交 | 内容 | 守住它的测试 |
+| --- | --- | --- |
+| `55932c3` | 绑定 `sqlserver-storage`；manifest 声明的类型必须真的注册 | `TestDeclaredTypesAreBound` |
+| `c8d44ce` | `FileState` 每次写 = 改内存+落盘原子动作，落盘失败回滚内存 | `TestFileStateFailedBeginLeavesNoPhantomRunning`、`TestFileStateFailedEndKeepsPreviousStatus`、`TestFileStateDropKeepsDiskAndMemoryAgreed` |
+| `68fa9aa` | Planner 全窗口重扫 + 窗口作为重试上界；`date.Boundary` 收到 Handle 入口；台账写失败不得报 Succeeded | `TestPlannerRescansWindowIncludingLedgerHoles`、`TestPlannerStopsRetryingBeyondWindow`、`TestPlannerZeroCatchupKeepsLegacyWalk`、`TestHandleRefusesDatesBeyondTheBoundary`、`TestHandleCollectsYesterdayWithinBoundary`、`TestSameDaySourceCollectsToday`、`TestBoundaryAcrossCalendarEdges`、`TestCollectorSucceededNotReportedWhenLedgerWriteFails`、`TestMissingDirectoryTodayNotMaterialized` |
+| `f0c3736` | `catchup_days` 31 → 30（现场口径 = 含昨天在内 30 个自然日） | `TestBoundaryAnchorsTheWindowOnCutoff` |
+| `5445d92` | 宿主闸 E2E 用例本地隔离 + 日期相对 | `TestUncHostGateAggregatesFailures` |
+
+已经存在、**不要重新做**的能力：SQLite 台账与 JSON 一次性导入（`app/state/sqlite.go:35-38`）、原子认领 UPSERT（`app/state/sqlite_state.go:40-60`）、启动孤儿回收 `ReclaimRunning`（`app/host/host.go:856-876`）、UNC 宿主闸（`internal/hostgate`）、文件不存在 vs 不可达 vs 未稳定的三分类（`app/errs/errors.go:76-84`、`app/collector/executor.go:214-252`）、稳定窗口的 all-or-nothing（`app/source/source.go:243-248`）、业务库真主键 + 重放反连接（`app/storage/table.go:521-528`、`app/storage/multirow.go:116-141`）、行列一致性校验与它进"待处理"的通路（`app/query/readmodel.go:661-663`）。
+
+## 2. 术语表（口径必须一致）
+
+| 术语 | 在本项目的确切含义 |
+| --- | --- |
+| 业务日 business date | `model.CollectionDate`，无小时分量，UTC 规整 |
+| 任务 task | 一个 `CollectionKey = (source_id, business date)`；一个 source = 机台 × 格式，一天一个文件时它就是"一个文件" |
+| 空洞 hole | 台账里没有行、且不等于"无数据"的业务日：没探过或探到但当时没证据 |
+| 窗口 window | `[cutoff-(N-1), cutoff]`，`cutoff` = dated 源为昨天、same-day 源为今天 |
+| 重放 replay | 整文件从第 1 行重新解析写入，靠唯一键挡重复 |
+| 落账 | 写 `state_collections` / `state_files`，与业务库写入不是同一事务 |
+| 待处理 attention | `StatusFailed/StatusPending` 或 `FilesFailed>0` 或 `ChecksMismatch>0` |
+
+## 3. Iteration B — 窗口语义的汇报面：`Expired`
+
+**为什么现在才做**：窗口作为重试上界已经生效（`68fa9aa`），但窗口外的失败记录仍然以 `Failed` 状态躺在台账里，控制台把它显示成"等待重试"，而系统永远不会再自动碰它——**汇报面与执行面说了两句话**。
+
+**目标**：窗口外的未完成记录转为 `Expired`（保留记录、停止自动重试、可查询、可人工回填），不再是"待处理"。
+
+**范围**
+- `app/model/model.go`：`StatusExpired Status = "Expired"`（终态，非成功）。
+- `app/state/sqlite.go`：`sqliteSchemaVersion` +1，迁移里把 `date < 窗口首日` 的 `Failed/Pending/Running` 归类为 `Expired` 的动作**不做**（状态由读侧派生，见下），只加索引 `idx_state_collections_status_date`。
+- `app/state/sqlite_state.go:356-366`、`app/state/state.go:407-439`：`ListIncomplete` 显式排除 `StatusExpired`。
+- 派生优先于存储：`app/query/readmodel.go`、`app/state/ledger.go` 在装配视图时，把"窗口外且未完成"显示为 `Expired`，**不要**为此每晚回写一遍台账（写侧一旦开始改历史状态，崩溃语义立刻复杂化）。
+- `components/consolebridge`：新增一个 hub 查询 `overview-expired`（照 `overview-attention` 的注册方式，`components/consolebridge/component.go:214` 附近）。
+
+**接口**
+```go
+// app/date/boundary.go 已有 Start()；补一个视图侧判定
+func (b Boundary) IsExpired(target model.CollectionDate) bool // 仅当 WindowDays>0 且 target < Start()
+```
+
+**迁移与兼容**：`Expired` 是新增取值，老数据不动；所有排除清单（`app/state/ledger.go:94,130,220,251`、`app/state/projection.go:88`、`app/state/sqlite_state.go:365`）必须同步——**漏一处就是"某台机器的日期凭空消失"**。
+
+**验收测试**
+- `TestExpiredIsVisibleButNotPlanned`（`app/recovery`）：窗口外 Failed → 不进 Plan，但 `CollectionRecords` 仍在。
+- `TestAttentionExcludesExpiredAndIncludesMismatch`（`app/query`）：`Expired` 不进待处理，`ChecksMismatch>0` 进。
+- `TestEveryStatusFilterKnowsExpired`（`app/state`）：用一条 SQL/内存双实现遍历，断言任何"按状态集合"的查询对新状态都有明确归属——用表驱动列出每个查询的期望。
+- `TestLedgerAndProjectionAgreeOnExpired`（`app/state`）：投影窗口内外同一日期的状态字面量一致。
+
+**禁止事项**：不删记录；不为了显示方便把 `Expired` 改名成 `Failed`；不在 `Plan` 里"跳过又写回 Expired"（读侧派生）。
+
+**完成定义**：控制台能看到"超期待人工处理"列表；同一列表里的日期永远不会出现在 nightly 计划里（用一个 E2E 断言：跑两轮 trigger，第二轮不重复尝试超期日期）。
+
+## 4. Iteration C — "无数据"需要依据，不能一次 `os.Stat` 定论
+
+**依据**：`app/collector/executor.go:214-226` 对 `ErrNotFound` 的处理是单次判定即 `Drop` 整份台账并报 `Skipped`；`app/source/source.go:309-314` 一次 `os.Stat` 失败就产出 `ErrNotFound`。`HostGate` 只能证明 445 可达，不能证明当天有生产。
+
+**决策（已定，不要重新讨论）**：
+- 保持 `ErrNotFound → 不落账`（实例制的根，动它等于重写 Collector）；补采窗口重扫已经保证"文件晚到会再探"。
+- 新增**每源可配的终止确认**，默认关闭 = 现状零回归：
+```toml
+# [[formats]] 或 source-unit 配置
+no_data_confirmation = "never"   # 默认：不落终态，每晚重探（现状）
+                               # "after_days"：连续 N 天探不到且宿主可达 → 落一条 Skipped 终态
+no_data_after_days   = 3
+```
+**范围**：`app/collector/executor.go`（判定分支）、`app/sourcecomp/fleet.go`（键下发）、`app/config/validate.go`（白名单与取值范围）、`docs/CONFIGURATION.md`、`docs/用户指南.md`。
+**实现要点**：连续计数**必须**来自台账而不是内存（`state_failures.attempts` 已有计数语义可借鉴，`app/state/sqlite.go:150`）；计数条件里"宿主可达"必须复用 `errs.ErrUnavailable` 分类，不许重新探测。
+**验收测试**
+- `TestNoDataTerminalOnlyAfterConfirmedAbsence`：可达但连续 N 天无文件 → 落 `Skipped`；第 N-1 天不落。
+- `TestUnreachableHostNeverBecomesNoData`：`ErrUnavailable` 打断计数，绝不进 `Skipped`。
+- `TestLateFileStillCollectedAfterNoDataDefault`：默认配置下，第 5 天补上的文件被窗口重扫采到。
+- `TestNoDataConfirmationConfigValidation`：非法取值在 `Validate` 阶段响亮失败。
+**禁止事项**：不引入"人工确认当天没生产"的审批流（现场没有值班角色前，这是把可靠性推给流程）；不使用生产完成标记文件/清单，除非现场先给出上游契约。
+
+## 5. Iteration D — 文件级重试节流（退避是过滤器，不是定时器）
+
+**依据**：`attempts` 落库（`app/state/sqlite.go:150`、`app/state/sqlite_state.go:182-193`）但没有任何调度代码读它；重试完全触发驱动（`docs/RECOVERY.md`）。
+
+**目标**：给失败的**文件**加 `next_attempt_at`，由规划读取做过滤。间隔表：1/5/15/30 分钟、1 小时，之后 6 小时封顶。
+**关键约束（不许违反）**：**不新增定时器**。唯一的时间源仍是现有 nightly/startup/watch/manual 触发；`next_attempt_at` 只是 `Plan`/`collectFile` 前的一个过滤条件。理由：一旦为单个文件建定时任务，就要面对任务的创建/取消/重启泄漏，而这正是本项目刚甩掉的复杂度。
+因此本迭代的实际语义是：夜间任务里"未到期的失败文件本轮跳过"，而不是"到点就醒"。若现场需要分钟级重探，答案是加一条更密的 schedule（日历调度已支持 cron），不是加定时器。
+**范围**：`app/model/model.go`（`FileFailure` 加 `NextAttemptAt`）、`app/state/sqlite.go`（迁移列 `next_attempt_at INTEGER DEFAULT 0`）、`app/state/sqlite_state.go`、`app/state/state.go`、`app/collector/executor.go`（跳过判断 + 记录时按 attempts 计算下一次）、`app/query`（展示"下次重试"）。
+**接口**
+```go
+// app/collector 或 app/model：唯一一处退避表
+func NextAttempt(attempts int, now time.Time) time.Time
+```
+**验收测试**
+- `TestNextAttemptBackoffTable`：表驱动钉死 1/5/15/30/60/360 分钟。
+- `TestFileNotRetriedBeforeNextAttemptWithinSameRun`：同一轮内两次触发，第二次不重复啃失败文件。
+- `TestBackoffSurvivesRestart`：落盘后重启，`next_attempt_at` 保持。
+- `TestBackoffDoesNotExtendWindowDeadline`：退避不把 30 天截止推后（超期就超期）。
+**禁止事项**：不做 goroutine 级重试循环；不把退避塞进 scheduler 组件。
+
+## 6. Iteration E — 机台 × 日 汇总（派生只读，不是新实体）
+
+**依据**：`state_collections` 主键是 `(source_id, date)`（`app/state/sqlite.go:116-124`）；`source_id` 已经是"机台 × 格式"，所以"A、AB 成功，ABC 失败只重试 ABC"早就由 `FileCompleted` 守卫 + 每格式一源实现（`app/collector/executor.go:420-435`）。**缺的只是"这台机器这天齐不齐"的视图**：`source_group` 这个概念在 state 里根本不存在（只在 fleet 配置与 UI 分组里）。
+**范围**：`app/state/ledger.go`（按 group 聚合的查询）、`app/query/readmodel.go`、`components/consolebridge`（概览一行一机台）、`app/sourcecomp/fleet.go`（把 group 落到源元数据，供 state 侧读取——只加派生所需的映射，**不要**建 group 表）。
+**目标定义**：机台日 = 该机台当天所有格式都 Succeeded 或有明确 `Skipped`（Iteration C 之后的终态）；否则显示"缺 X 种"。
+**验收测试**
+- `TestMachineDayRollupAggregatesFormats`：两成功一失败 → 该机台日不健康且指出缺哪个格式。
+- `TestRollupIsDerivedNotStored`：断言聚合不产生新写路径（对同一份台账连续查询两次，内容与第一次一致）。
+**禁止事项**：不引入 `DateTask`/`SourceTask` 类型；不做跨源事务；group 成员变化不得改写历史业务日结论。
+
+## 7. Iteration F — 插件边界收敛
+
+**依据（全部核过）**
+- `components/sourceunit/component.go:17-37` 直接 import `app/metadata`、`app/parser`、`app/storage`、`app/state`、`components/metadata`、`components/storage`。
+- Parser 是硬编码 switch（`:619-631`），Storage 是具体构造（`:216-268`）；`csv.storage` capability 有人 provide、**无人 require**（死接口）。
+- capability key 分散在各插件包内，`console.rows.query` 被定义了两次：`app/storage/table.go:1808` 与 `components/storage/storage.go:22`。
+- 两套存储装配已分叉：默认表名 `gocordis_records` vs `records`；`header_check`/`extra_rows` 在自动列分支被丢弃（`components/sourceunit/component.go:753-763` vs `components/storage/storage.go:140-145`）。
+- `SinkRegistry` 是进程全局（`components/storage/sinks.go:23-33`），被 console rows 读取。
+
+**范围与顺序（每步单独提交，步内不得改行为）**
+1. 新建 `contracts` 包：只放 capability key 与共享接口（`model.Storage`/`model.CSVParser` 已在 `app/model`，直接复用）。删除重复定义，保留唯一一处。
+2. `refactor`：合并两套存储装配为 `components/storage` 的一个 Provider；sourceunit 改为消费它。**必须先用特征测试钉住现状**：为 sourceunit 路径与 storage 路径各构造同一份 TOML，断言产出同一 `TableConfig`——现在这条断言是红的（分叉），修完为绿。这是本迭代唯一的红→绿证据，别用"重构无行为变化"糊过去。
+3. Parser 变 capability：`contracts.ParserKey`，`app/parser` 注册 csv/text 两个实现；sourceunit 按 `parser` 取值查找，未注册取值 → 响亮失败。
+4. `SinkRegistry` → realm 作用域的 provider（照框架 precedent），或明确保留进程全局但在文档里写清"同进程多 Host 共享"这一事实。二选一，不许留着双重身份。
+
+**验收测试**
+- `TestAddingAFourthFormatTouchesNoSourceUnitCode`（`tests/`）：新增一个 `[[formats]]` + 一种 parser 取值，源文件与 `components/sourceunit/*.go` 无 diff。
+- `TestStorageAssemblySingleSourceOfTruth`：两条 TOML 入口产出相同的 `TableConfig`（含 `header_check`、`extra_rows`、默认表名）。
+- `TestCapabilityKeysAreDefinedOnce`：遍历 `contracts` 与全部注册表，断言无重复字符串。
+**禁止事项**：不把 `app/*` 每个包都做成插件；不为"更纯的架构"改动采集主流程语义；不在本迭代顺手改 SQL 方言。
+
+## 8. Iteration G — ETL 收尾（三件小事 + 一件明确不做）
+
+1. **TextParser 真流式**：`app/parser/text.go` 三种形态都收进 `memStream`（`:180-185`），单值 `io.ReadAll`（`:95-103`），行正则全量 `rows=append`（`:133`）。改成逐条 `Next()`；验收 `TestTextParserStreamsWithoutBufferingAllRows`（用一个 200k 行文件断言 `testing.AllocsPerRun` 或 RSS 上界，别只测正确性）。
+2. **mysql 不再 `INSERT IGNORE`**：`app/storage/multirow.go:57-59` 按构造把非重复错误也降级成 warning。换成与 mssql/oracle 同一条反连接路径（`buildInsertMissing`）。验收 `TestMySQLReplayIgnoresOnlyDuplicates`（用能注入错误的假 driver 断言：NOT NULL 违例必须上报，不被吞）。
+3. **`endState` 的兄弟路径**：`app/collector/executor.go:100-103` 对 Failed/Pending 终态写失败仍只 Warn，行会停在 `Running` 靠 24h 租约/重启回收。改成写失败时立刻重试一次并记录；不改变结论状态。
+4. **不做 `collection_batches` 表**。整文件从第 1 行重放在现网实测是 11.9s/整轮（`1e52f8c`），批次台账只在你决定改成"文件内断点续写"时才有回报，而它会立刻引入 SQLite 与业务库之间的第二套一致性——与"状态持久化与业务写入分离、靠幂等键最终一致"的原则冲突。要改先改原则，再改表。
+
+## 9. Iteration H — 地基：可测性与文档真实性
+
+1. **`SQLiteState` 没有时钟接缝**：`app/state/sqlite_state.go:33,75,165,191,205,360` 直调 `time.Now()`。加 `now func() time.Time`（照 `MemoryState.nowTime()` 的写法）。这是租约、超期、月末跨年所有测试的前置条件，**排在 Expired 之前做**。
+2. **E2E 隔离**：`tests/` 里凡 `state_dir`/`dsn` 写相对路径的用例全部改绝对 tempdir（`5445d92` 只修了一条）。附带：`tests/state/collect.db` 被跟踪进了版本库，应从跟踪中移除并忽略。
+3. **文档不是负资产**：`docs/TEST_RESULTS.md` 停在 2026-09-08（HEAD 已 2026-11-19），引用 7 个不存在的路径、列了 17 个找不到的测试名。`docs/verification/latest.txt` 记的 `PASS=141 FAIL=0` 在当前仓库复现不了——实跑 `docs/verification/verify.sh` 得 `PASS=100 FAIL=40`，脚本里还硬编码了别人机器的框架路径 `/Users/ccb1900/df/ui/opentusk/go-cordis`。要求：`verify.sh` 改为调用 `go build ./... && go test ./... && go vet ./...` 加文档一致性检查，用仓库内路径；`latest.txt` 由脚本生成、不许手写；`TEST_RESULTS.md` 改成"由命令生成"的模板或删掉。
+4. **时间冻结测试补齐**（已定决策：日期策略必须能被证明）：`app/date/boundary_test.go` 已覆盖月末/年末/闰年/窗口=1 天；仍需 `TestMonthRolloutAcrossYearBoundary`（`tests/`，注入时钟连续跑 12 个"午夜触发"，断言每月目录与文件名日期一致）和 `TestLeaseExpiryWithInjectedClock`（依赖本节第 1 条）。
+
+## 10. 验收矩阵（当前状态，实测）
+
+| 场景 | 期望 | 测试 | 状态 |
+| --- | --- | --- | --- |
+| 正常运行 | 只采昨天及以前 | `TestHandleCollectsYesterdayWithinBoundary` | 本批新增 |
+| 今天的文件存在 | 不采 | `TestHandleRefusesDatesBeyondTheBoundary` | 本批新增 |
+| 未来日期（手动） | 拒绝 | 同上 | 本批新增 |
+| 设备停机 3 天 | 恢复后补齐 | `TestOperationsCatchupMissedDaysAndContentDetect` | 已有 |
+| 停机 30 天 | 窗口内全部补采 | `TestPlannerRescansWindowIncludingLedgerHoles` | 本批新增（单测层） |
+| 停机 31 天 | 窗口内自动、窗口外保留待人工 | `TestPlannerStopsRetryingBeyondWindow`；`Expired` 视图 | 半：规划已生效，汇报面 = Iteration B |
+| 空洞早于最后成功 | 仍重探 | `TestPlannerRescansWindowIncludingLedgerHoles` | 本批新增 |
+| 周末没生产 | 不误报成功、也不误判无数据 | `TestNoDataTerminalOnlyAfterConfirmedAbsence` | 缺：Iteration C |
+| 文件晚生成 | 后续重新发现并采集 | `TestLateFileStillCollectedAfterNoDataDefault` | 缺：Iteration C |
+| A 稳定 AB 不稳定 | 不提前完成 | `TestStableWindowMixedCandidatesStaysPending`；三文件变体 | 部分（2 文件），缺 3 文件 |
+| A 成功 AB 失败 | 只重试 AB | `TestCollectorPartialFileFailureSkipsCompletedFiles` | 已有 |
+| 解析中崩溃 | 重启后重处理 | `TestCollectorMidFileWriteFailureRetriesWithoutLoss` | 已有 |
+| 提交后崩溃 | 不产生重复业务数据 | `TestSQLiteReplayRestoresMissingRows`、`TestFileKeyBackbone`、`TestRealMSSQLReplayInsertMissing` | 已有（真库门控） |
+| 台账写失败 | 不产生虚假成功 | `TestCollectorSucceededNotReportedWhenLedgerWriteFails`、`TestFileStateFailedEndKeepsPreviousStatus` | 本批新增 |
+| 状态保存失败 | 内存不回写错值 | `TestFileStateFailedBeginLeavesNoPhantomRunning` | 本批新增 |
+| 数据库不可达 | 任务保留、恢复后重试 | `TestUnreachableShareStaysFailedAndRetried`、`TestOperationsDatabaseOutageRetriesIdempotently` | 已有 |
+| 两次调度重叠 | 同一任务不重复执行 | `TestSQLiteStateConcurrentBeginClaimsOnce` | 部分（状态层），缺执行层双触发 |
+| 文件内容变化 | 识别新版本 | `TestCheckRunnerReportsChangedFileAsError`、`TestWatchTriggeredCollection` | 已有 |
+| 月末/跨年/闰年 | 目录与文件名日期正确 | `TestBoundaryAcrossCalendarEdges` | 本批新增 |
+
+已知未闭环（不是本规范遗漏，是现状）：`tests/` 的 `TestUncHostGateAggregatesFailures` 在基线 9da9d70 上就是红的（日历耦合 + 共享 `./state`），已由 `5445d92` 修复；`alarm-demo/`、`data/`、`t.exe` 等未跟踪物不属于任何迭代，别顺手提交。
+
+## 11. 一页话给执行者
+
+这个项目当前缺的不是能力，而是**同一件事只有一个地方说了算**：窗口谁定、日期谁判、状态谁持久化、装配谁做。每个迭代结束时应该能删掉一处重复判断，而不是多加一层封装。做完 B–H，不要开始做"平台化"。
