@@ -21,6 +21,10 @@
 | `68fa9aa` | Planner 全窗口重扫 + 窗口作为重试上界；`date.Boundary` 收到 Handle 入口；台账写失败不得报 Succeeded | `TestPlannerRescansWindowIncludingLedgerHoles`、`TestPlannerStopsRetryingBeyondWindow`、`TestPlannerZeroCatchupKeepsLegacyWalk`、`TestHandleRefusesDatesBeyondTheBoundary`、`TestHandleCollectsYesterdayWithinBoundary`、`TestSameDaySourceCollectsToday`、`TestBoundaryAcrossCalendarEdges`、`TestCollectorSucceededNotReportedWhenLedgerWriteFails`、`TestMissingDirectoryTodayNotMaterialized` |
 | `f0c3736` | `catchup_days` 31 → 30（现场口径 = 含昨天在内 30 个自然日） | `TestBoundaryAnchorsTheWindowOnCutoff` |
 | `5445d92` | 宿主闸 E2E 用例本地隔离 + 日期相对 | `TestUncHostGateAggregatesFailures` |
+| `3edab08`+`2777ed1`+`c710630` | `Expired` 全链：状态层退役扫描、事件告知、控制台"超期未采" | `TestExpireBeyondRetiresOnlyOlderUnfinishedRows`、`TestFileStateExpireBeyondSurvivesRestart`、`TestSQLiteLedgerAccountsForExpired`、`TestHandleRetiresBeyondWindowDatesAndAnnouncesThem`、`TestExpiredIsNotAttentionButMismatchIs`、`TestStatsRow` |
+| `95f1477` | 整夜重扫成本量化（工作量断言 + 3 条基准） | `TestWindowRescanWorkIsBoundedToTheWindow`、`BenchmarkNightlyWindowRescan{,SQLiteState}`、`BenchmarkWindowRescanAllDatesMissing` |
+| `d92a5f3` | SQLiteState 时钟接缝（Iteration H.1 前置项已提前完成） | `TestSQLiteStateLeaseExpiry`（租约边界两侧各压 1ns，已做变异验证） |
+| 本次 | `endState` 瞬时写失败重试一次（原 Iteration G.3） | `TestCollectorRetriesTransientLedgerWriteFailure` |
 
 已经存在、**不要重新做**的能力：SQLite 台账与 JSON 一次性导入（`app/state/sqlite.go:35-38`）、原子认领 UPSERT（`app/state/sqlite_state.go:40-60`）、启动孤儿回收 `ReclaimRunning`（`app/host/host.go:856-876`）、UNC 宿主闸（`internal/hostgate`）、文件不存在 vs 不可达 vs 未稳定的三分类（`app/errs/errors.go:76-84`、`app/collector/executor.go:214-252`）、稳定窗口的 all-or-nothing（`app/source/source.go:243-248`）、业务库真主键 + 重放反连接（`app/storage/table.go:521-528`、`app/storage/multirow.go:116-141`）、行列一致性校验与它进"待处理"的通路（`app/query/readmodel.go:661-663`）。
 
@@ -36,7 +40,7 @@
 | 落账 | 写 `state_collections` / `state_files`，与业务库写入不是同一事务 |
 | 待处理 attention | `StatusFailed/StatusPending` 或 `FilesFailed>0` 或 `ChecksMismatch>0` |
 
-## 3. Iteration B — 窗口语义的汇报面：`Expired`
+## 3. Iteration B — 窗口语义的汇报面：`Expired` ✅ 已完成（见上表），保留为口径说明
 
 **为什么现在才做**：窗口作为重试上界已经生效（`68fa9aa`），但窗口外的失败记录仍然以 `Failed` 状态躺在台账里，控制台把它显示成"等待重试"，而系统永远不会再自动碰它——**汇报面与执行面说了两句话**。
 
@@ -148,16 +152,16 @@ func NextAttempt(attempts int, now time.Time) time.Time
 - `TestCapabilityKeysAreDefinedOnce`：遍历 `contracts` 与全部注册表，断言无重复字符串。
 **禁止事项**：不把 `app/*` 每个包都做成插件；不为"更纯的架构"改动采集主流程语义；不在本迭代顺手改 SQL 方言。
 
-## 8. Iteration G — ETL 收尾（三件小事 + 一件明确不做）
+## 8. Iteration G — ETL 收尾（三件里 1 件已完成）
 
 1. **TextParser 真流式**：`app/parser/text.go` 三种形态都收进 `memStream`（`:180-185`），单值 `io.ReadAll`（`:95-103`），行正则全量 `rows=append`（`:133`）。改成逐条 `Next()`；验收 `TestTextParserStreamsWithoutBufferingAllRows`（用一个 200k 行文件断言 `testing.AllocsPerRun` 或 RSS 上界，别只测正确性）。
 2. **mysql 不再 `INSERT IGNORE`**：`app/storage/multirow.go:57-59` 按构造把非重复错误也降级成 warning。换成与 mssql/oracle 同一条反连接路径（`buildInsertMissing`）。验收 `TestMySQLReplayIgnoresOnlyDuplicates`（用能注入错误的假 driver 断言：NOT NULL 违例必须上报，不被吞）。
-3. **`endState` 的兄弟路径**：`app/collector/executor.go:100-103` 对 Failed/Pending 终态写失败仍只 Warn，行会停在 `Running` 靠 24h 租约/重启回收。改成写失败时立刻重试一次并记录；不改变结论状态。
+3. ✅ **`endState` 的兄弟路径**：`app/collector/executor.go:100-103` 对 Failed/Pending 终态写失败仍只 Warn，行会停在 `Running` 靠 24h 租约/重启回收。改成写失败时立刻重试一次并记录；不改变结论状态。
 4. **不做 `collection_batches` 表**。整文件从第 1 行重放在现网实测是 11.9s/整轮（`1e52f8c`），批次台账只在你决定改成"文件内断点续写"时才有回报，而它会立刻引入 SQLite 与业务库之间的第二套一致性——与"状态持久化与业务写入分离、靠幂等键最终一致"的原则冲突。要改先改原则，再改表。
 
 ## 9. Iteration H — 地基：可测性与文档真实性
 
-1. **`SQLiteState` 没有时钟接缝**：`app/state/sqlite_state.go:33,75,165,191,205,360` 直调 `time.Now()`。加 `now func() time.Time`（照 `MemoryState.nowTime()` 的写法）。这是租约、超期、月末跨年所有测试的前置条件，**排在 Expired 之前做**。
+1. **`SQLiteState` 时钟接缝** ✅ 已完成（`d92a5f3`）：`now func() time.Time`，约定同 `MemoryState`。：`app/state/sqlite_state.go:33,75,165,191,205,360` 直调 `time.Now()`。加 `now func() time.Time`（照 `MemoryState.nowTime()` 的写法）。这是租约、超期、月末跨年所有测试的前置条件，**排在 Expired 之前做**。
 2. **E2E 隔离**：`tests/` 里凡 `state_dir`/`dsn` 写相对路径的用例全部改绝对 tempdir（`5445d92` 只修了一条）。附带：`tests/state/collect.db` 被跟踪进了版本库，应从跟踪中移除并忽略。
 3. **文档不是负资产**：`docs/TEST_RESULTS.md` 停在 2026-09-08（HEAD 已 2026-11-19），引用 7 个不存在的路径、列了 17 个找不到的测试名。`docs/verification/latest.txt` 记的 `PASS=141 FAIL=0` 在当前仓库复现不了——实跑 `docs/verification/verify.sh` 得 `PASS=100 FAIL=40`，脚本里还硬编码了别人机器的框架路径 `/Users/ccb1900/df/ui/opentusk/go-cordis`。要求：`verify.sh` 改为调用 `go build ./... && go test ./... && go vet ./...` 加文档一致性检查，用仓库内路径；`latest.txt` 由脚本生成、不许手写；`TEST_RESULTS.md` 改成"由命令生成"的模板或删掉。
 4. **时间冻结测试补齐**（已定决策：日期策略必须能被证明）：`app/date/boundary_test.go` 已覆盖月末/年末/闰年/窗口=1 天；仍需 `TestMonthRolloutAcrossYearBoundary`（`tests/`，注入时钟连续跑 12 个"午夜触发"，断言每月目录与文件名日期一致）和 `TestLeaseExpiryWithInjectedClock`（依赖本节第 1 条）。
