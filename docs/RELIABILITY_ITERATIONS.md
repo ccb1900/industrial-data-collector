@@ -179,11 +179,11 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 3. ✅ **`endState` 的兄弟路径**：`app/collector/executor.go:100-103` 对 Failed/Pending 终态写失败仍只 Warn，行会停在 `Running` 靠 24h 租约/重启回收。改成写失败时立刻重试一次并记录；不改变结论状态。
 4. **不做 `collection_batches` 表**。整文件从第 1 行重放在现网实测是 11.9s/整轮（`1e52f8c`），批次台账只在你决定改成"文件内断点续写"时才有回报，而它会立刻引入 SQLite 与业务库之间的第二套一致性——与"状态持久化与业务写入分离、靠幂等键最终一致"的原则冲突。要改先改原则，再改表。
 
-## 9. Iteration H — 地基：可测性与文档真实性
+## 9. Iteration H — 地基：可测性与文档真实性（1、2 部分完成；3 已完成）
 
 1. **`SQLiteState` 时钟接缝** ✅ 已完成（`d92a5f3`）：`now func() time.Time`，约定同 `MemoryState`。：`app/state/sqlite_state.go:33,75,165,191,205,360` 直调 `time.Now()`。加 `now func() time.Time`（照 `MemoryState.nowTime()` 的写法）。这是租约、超期、月末跨年所有测试的前置条件，**排在 Expired 之前做**。
 2. **E2E 隔离**：`tests/` 里凡 `state_dir`/`dsn` 写相对路径的用例全部改绝对 tempdir（`5445d92` 只修了一条）。附带：`tests/state/collect.db` 被跟踪进了版本库，应从跟踪中移除并忽略。
-3. **文档不是负资产**：`docs/TEST_RESULTS.md` 停在 2026-09-08（HEAD 已 2026-11-19），引用 7 个不存在的路径、列了 17 个找不到的测试名。`docs/verification/latest.txt` 记的 `PASS=141 FAIL=0` 在当前仓库复现不了——实跑 `docs/verification/verify.sh` 得 `PASS=100 FAIL=40`，脚本里还硬编码了别人机器的框架路径 `/Users/ccb1900/df/ui/opentusk/go-cordis`。要求：`verify.sh` 改为调用 `go build ./... && go test ./... && go vet ./...` 加文档一致性检查，用仓库内路径；`latest.txt` 由脚本生成、不许手写；`TEST_RESULTS.md` 改成"由命令生成"的模板或删掉。
+3. ✅ **文档不是负资产**（`d7c34bf`）：verify.sh 两级化（build/vet/test 硬门禁 + 55 条文档一致性 grep），框架仓库缺席时相关检查诚实 SKIP；latest.txt 由脚本生成；三处真实漂移修复（sink 中文化文案、演示数据路径 configs/data → data、状态集补 Expired）；build-console.sh 支持 GOCORDIS_CONSOLE 覆盖并打印源码 HEAD——入库的 web/dist 就是版本钉子。：`docs/TEST_RESULTS.md` 停在 2026-09-08（HEAD 已 2026-11-19），引用 7 个不存在的路径、列了 17 个找不到的测试名。`docs/verification/latest.txt` 记的 `PASS=141 FAIL=0` 在当前仓库复现不了——实跑 `docs/verification/verify.sh` 得 `PASS=100 FAIL=40`，脚本里还硬编码了别人机器的框架路径 `/Users/ccb1900/df/ui/opentusk/go-cordis`。要求：`verify.sh` 改为调用 `go build ./... && go test ./... && go vet ./...` 加文档一致性检查，用仓库内路径；`latest.txt` 由脚本生成、不许手写；`TEST_RESULTS.md` 改成"由命令生成"的模板或删掉。
 4. **时间冻结测试补齐**（已定决策：日期策略必须能被证明）：`app/date/boundary_test.go` 已覆盖月末/年末/闰年/窗口=1 天；仍需 `TestMonthRolloutAcrossYearBoundary`（`tests/`，注入时钟连续跑 12 个"午夜触发"，断言每月目录与文件名日期一致）和 `TestLeaseExpiryWithInjectedClock`（依赖本节第 1 条）。
 
 ## 10. 验收矩阵（当前状态，实测）
@@ -212,6 +212,18 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 
 已知未闭环（不是本规范遗漏，是现状）：`tests/` 的 `TestUncHostGateAggregatesFailures` 在基线 9da9d70 上就是红的（日历耦合 + 共享 `./state`），已由 `5445d92` 修复；`alarm-demo/`、`data/`、`t.exe` 等未跟踪物不属于任何迭代，别顺手提交。
 
-## 11. 一页话给执行者
+## 11. 当前进度一览（2026-11-20）
+
+| 迭代 | 状态 |
+| --- | --- |
+| B `Expired` 全链 | ✅ 完成 |
+| C 无数据确认 | ✅ 完成（默认关，零回归） |
+| D 文件级退避 | ✅ 完成（只节流内容性失败） |
+| E 机台 × 日汇总 | 待做 |
+| F 插件边界收敛 | 待做 |
+| G 流式 TextParser / mysql 去 IGNORE / endState 重试 | ✅ 完成（提前） |
+| H 时钟接缝 / verify.sh 真实化 | ✅ 完成；E2E 全面隔离与 collect.db 出库待做 |
+
+## 12. 一页话给执行者
 
 这个项目当前缺的不是能力，而是**同一件事只有一个地方说了算**：窗口谁定、日期谁判、状态谁持久化、装配谁做。每个迭代结束时应该能删掉一处重复判断，而不是多加一层封装。做完 B–H，不要开始做"平台化"。
