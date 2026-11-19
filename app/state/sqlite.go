@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 2
+const sqliteSchemaVersion = 3
 
 // sqliteStore is the process-wide handle shared by every source unit pointing
 // at the same state.db. One *sql.DB per database keeps 1119 sources from
@@ -147,6 +147,7 @@ func ensureSQLiteSchema(db *sql.DB) error {
 			error_text TEXT NOT NULL DEFAULT '',
 			failed_at INTEGER NOT NULL DEFAULT 0,
 			attempts INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (source_id, date, file_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_failures_path ON state_failures (source_id, date, path)`,
@@ -192,6 +193,34 @@ func ensureSQLiteSchema(db *sql.DB) error {
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("state database schema: %w", err)
+		}
+	}
+	// v2 → v3：state_failures 增加 next_attempt_at（文件级退避）。CREATE TABLE
+	// IF NOT EXISTS 不会给旧表补列，按列存在性 ALTER——对已迁移的库是 no-op。
+	if version > 0 && version < 3 {
+		rows, err := db.Query(`PRAGMA table_info(state_failures)`)
+		if err != nil {
+			return fmt.Errorf("state database schema: %w", err)
+		}
+		hasNext := false
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notNull, pk int
+			var dflt any
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+				rows.Close()
+				return fmt.Errorf("state database schema: %w", err)
+			}
+			if name == "next_attempt_at" {
+				hasNext = true
+			}
+		}
+		rows.Close()
+		if !hasNext {
+			if _, err := db.Exec(`ALTER TABLE state_failures ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("state database schema: %w", err)
+			}
 		}
 	}
 	if version < sqliteSchemaVersion {

@@ -98,6 +98,8 @@ func TestCollectorPartialFileFailureSkipsCompletedFiles(t *testing.T) {
 	if mem.Total() != 2 {
 		t.Fatalf("a+c rows = %d, want 2", mem.Total())
 	}
+	// 第二轮把时钟推过退避窗口：文件自身失败的退避是 1 分钟起步。
+	e.Config.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	_, err = e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err == nil {
 		t.Fatal("retry must still report malformed b.csv")
@@ -529,6 +531,8 @@ func TestCollectorMetadataErrorIsFileLevelFailure(t *testing.T) {
 	}
 	// The failed file is left incomplete so a corrected retry can proceed;
 	// the successful file was not duplicated.
+	// 第二轮把时钟推过退避窗口：文件自身失败的退避是 1 分钟起步。
+	e.Config.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	_, err = e.Handle(context.Background(), model.CollectionRequested{Reason: "test", Date: ptr(date(t, "2026-09-06"))})
 	if err == nil {
 		t.Fatal("retry must still report a.csv")
@@ -563,8 +567,12 @@ func TestCollectorFailureLedgerRoundTrip(t *testing.T) {
 	}
 
 	// The database is back: the retry completes and retires the ledger entry.
+	// 时钟推过退避窗口（文件自身失败的退避 1 分钟起步）——"库恢复后重试"
+	// 的 E2E 场景由 TestOperationsDatabaseOutageRetriesIdempotently 钉着
+	// （瞬时存储失败不节流，无需推钟）。
 	mem2 := storage.NewMemory(storage.MemoryOptions{})
 	e2 := newExecutor(t, root, st, mem2)
+	e2.Config.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	if _, err := e2.Handle(context.Background(), model.CollectionRequested{Reason: "pass2", Date: ptr(date(t, "2026-09-06"))}); err != nil {
 		t.Fatal(err)
 	}
@@ -738,8 +746,10 @@ func TestCollectorMidFileWriteFailureRetriesWithoutLoss(t *testing.T) {
 	}
 
 	// 库恢复：从头重读，前 2 行幂等跳过，后 3 行补齐。
+	// 时钟推过退避窗口（理由同上）。
 	mem2 := storage.NewMemory(storage.MemoryOptions{})
 	e2 := newExecutor(t, root, st, mem2)
+	e2.Config.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	if _, err := e2.Handle(context.Background(), model.CollectionRequested{Reason: "pass2", Date: ptr(date(t, "2026-09-06"))}); err != nil {
 		t.Fatal(err)
 	}

@@ -69,15 +69,16 @@ type noDataStreak struct {
 
 // failedFileRecord is the persistent evidence of one failed file attempt.
 type failedFileRecord struct {
-	Key      model.CollectionKey
-	File     model.FileIdentity
-	Error    string
-	FailedAt time.Time
-	Attempts int
+	Key           model.CollectionKey
+	File          model.FileIdentity
+	Error         string
+	FailedAt      time.Time
+	Attempts      int
+	NextAttemptAt time.Time
 }
 
 func (r *failedFileRecord) toView() model.FileFailure {
-	return model.FileFailure{Key: r.Key, File: r.File, Error: r.Error, FailedAt: r.FailedAt, Attempts: r.Attempts}
+	return model.FileFailure{Key: r.Key, File: r.File, Error: r.Error, FailedAt: r.FailedAt, Attempts: r.Attempts, NextAttemptAt: r.NextAttemptAt}
 }
 
 func NewMemory() *MemoryState {
@@ -246,7 +247,7 @@ func (s *MemoryState) MarkFileCompleted(ctx context.Context, key model.Collectio
 // MarkFileFailed persists one failed-file attempt. The first failure creates
 // the record; later attempts increment its counter and refresh the error, so
 // the ledger shows how often a file has failed and why most recently.
-func (s *MemoryState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string) error {
+func (s *MemoryState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string, throttled bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -263,6 +264,12 @@ func (s *MemoryState) MarkFileFailed(ctx context.Context, key model.CollectionKe
 	rec.Error = errMsg
 	rec.FailedAt = s.nowTime()
 	rec.Attempts++
+	if throttled {
+		rec.NextAttemptAt = model.NextAttempt(rec.Attempts, rec.FailedAt)
+	} else {
+		// 基础设施失败只记账不节流：恢复的信号是基础设施本身回来了。
+		rec.NextAttemptAt = time.Time{}
+	}
 	s.failedFiles[ck][file.Identity()] = rec
 	return nil
 }
@@ -550,16 +557,17 @@ type fileCheckRecordJSON struct {
 }
 
 type failedFileRecordJSON struct {
-	SourceID model.SourceID
-	Date     model.CollectionDate
-	Path     string
-	Name     string
-	Size     int64
-	ModTime  time.Time
-	Hash     string
-	Error    string
-	FailedAt time.Time
-	Attempts int
+	SourceID      model.SourceID
+	Date          model.CollectionDate
+	Path          string
+	Name          string
+	Size          int64
+	ModTime       time.Time
+	Hash          string
+	Error         string
+	FailedAt      time.Time
+	Attempts      int
+	NextAttemptAt time.Time
 }
 
 type collectionRecordJSON struct {
@@ -622,16 +630,17 @@ func snapshot(s *MemoryState) memorySnapshot {
 	for _, m := range s.failedFiles {
 		for _, rec := range m {
 			out.FailedFiles = append(out.FailedFiles, failedFileRecordJSON{
-				SourceID: rec.Key.SourceID,
-				Date:     rec.Key.Date,
-				Path:     rec.File.Path,
-				Name:     rec.File.Name,
-				Size:     rec.File.Size,
-				ModTime:  rec.File.ModTime,
-				Hash:     rec.File.Hash,
-				Error:    rec.Error,
-				FailedAt: rec.FailedAt,
-				Attempts: rec.Attempts,
+				SourceID:      rec.Key.SourceID,
+				Date:          rec.Key.Date,
+				Path:          rec.File.Path,
+				Name:          rec.File.Name,
+				Size:          rec.File.Size,
+				ModTime:       rec.File.ModTime,
+				Hash:          rec.File.Hash,
+				Error:         rec.Error,
+				FailedAt:      rec.FailedAt,
+				Attempts:      rec.Attempts,
+				NextAttemptAt: rec.NextAttemptAt,
 			})
 		}
 	}
@@ -709,6 +718,7 @@ func restore(s *MemoryState, snap memorySnapshot) {
 		}
 		s.failedFiles[ck][file.Identity()] = failedFileRecord{
 			Key: k, File: file, Error: f.Error, FailedAt: f.FailedAt, Attempts: f.Attempts,
+			NextAttemptAt: f.NextAttemptAt,
 		}
 	}
 	s.checks = make(map[string]map[string]model.FileCheck)
@@ -885,9 +895,9 @@ func (s *FileState) MarkFileCompleted(ctx context.Context, key model.CollectionK
 	})
 }
 
-func (s *FileState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string) error {
+func (s *FileState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string, throttled bool) error {
 	return s.transact(func() error {
-		return s.MemoryState.MarkFileFailed(ctx, key, file, errMsg)
+		return s.MemoryState.MarkFileFailed(ctx, key, file, errMsg, throttled)
 	})
 }
 

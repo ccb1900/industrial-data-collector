@@ -186,20 +186,39 @@ func (s *SQLiteState) MarkFileCompleted(ctx context.Context, key model.Collectio
 	return tx.Commit()
 }
 
-func (s *SQLiteState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string) error {
+func (s *SQLiteState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string, throttled bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, err := s.store.db.ExecContext(ctx, `INSERT INTO state_failures
-		(source_id, date, file_id, path, name, size, mod_time, hash, error_text, failed_at, attempts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+	// 先读旧 attempts 再写：next_attempt_at 按最终失败次数算，读改写在
+	// 单写者（applock + MaxOpenConns(1)）下无竞态。
+	var prev int
+	err := s.store.db.QueryRowContext(ctx, `SELECT attempts FROM state_failures
+		WHERE source_id = ? AND date = ? AND file_id = ?`,
+		string(key.SourceID), key.Date.String(), file.Identity()).Scan(&prev)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	attempts := prev + 1
+	now := s.nowTime()
+	next := int64(0)
+	if throttled {
+		// failed_at 与 next 必须出自同一个时钟读数：两次 nowTime() 之间差着
+		// 微秒，会让"next - failed_at = 1 分钟"的断言差一丁点——更糟的是
+		// 语义上它们本来就该是同一时刻的账。
+		next = model.NextAttempt(attempts, now).UnixNano()
+	}
+	_, err = s.store.db.ExecContext(ctx, `INSERT INTO state_failures
+		(source_id, date, file_id, path, name, size, mod_time, hash, error_text, failed_at, attempts, next_attempt_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, date, file_id) DO UPDATE SET
 			error_text = excluded.error_text,
 			failed_at = excluded.failed_at,
-			attempts = state_failures.attempts + 1`,
+			attempts = excluded.attempts,
+			next_attempt_at = excluded.next_attempt_at`,
 		string(key.SourceID), key.Date.String(), file.Identity(),
 		file.Path, file.Name, file.Size, toNanos(file.ModTime), file.Hash,
-		errMsg, s.nowTime().UnixNano())
+		errMsg, now.UnixNano(), attempts, next)
 	return err
 }
 
@@ -222,11 +241,17 @@ func (s *SQLiteState) ReclaimRunning(ctx context.Context, startedBefore time.Tim
 }
 
 func (s *SQLiteState) ListFileFailures(ctx context.Context, sourceID model.SourceID) ([]model.FileFailure, error) {
+	return s.queryFileFailures(ctx, `WHERE source_id = ?`, string(sourceID))
+}
+
+// queryFileFailures 是失败账的唯一读出路径：列清单（含 next_attempt_at）只活
+// 在这一处，新增列时不会再出现"两条读路径漏改一条"的奇偶校验失败。
+func (s *SQLiteState) queryFileFailures(ctx context.Context, where string, args ...any) ([]model.FileFailure, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rows, err := s.store.db.QueryContext(ctx, `SELECT source_id, date, path, name, size, mod_time, hash, error_text, failed_at, attempts
-		FROM state_failures WHERE source_id = ? ORDER BY failed_at, path`, string(sourceID))
+	rows, err := s.store.db.QueryContext(ctx, `SELECT source_id, date, path, name, size, mod_time, hash, error_text, failed_at, attempts, next_attempt_at
+		FROM state_failures `+where+` ORDER BY failed_at, path`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -234,9 +259,9 @@ func (s *SQLiteState) ListFileFailures(ctx context.Context, sourceID model.Sourc
 	out := make([]model.FileFailure, 0)
 	for rows.Next() {
 		var src, date, path, name, hash, errMsg string
-		var size, modTime, failedAt int64
+		var size, modTime, failedAt, nextAt int64
 		var attempts int
-		if err := rows.Scan(&src, &date, &path, &name, &size, &modTime, &hash, &errMsg, &failedAt, &attempts); err != nil {
+		if err := rows.Scan(&src, &date, &path, &name, &size, &modTime, &hash, &errMsg, &failedAt, &attempts, &nextAt); err != nil {
 			return nil, err
 		}
 		d, err := parseCollectionDate(date)
@@ -250,6 +275,7 @@ func (s *SQLiteState) ListFileFailures(ctx context.Context, sourceID model.Sourc
 				Size: size, ModTime: fromNanos(modTime), Hash: hash,
 			},
 			Error: errMsg, FailedAt: fromNanos(failedAt), Attempts: attempts,
+			NextAttemptAt: fromNanos(nextAt),
 		})
 	}
 	return out, rows.Err()

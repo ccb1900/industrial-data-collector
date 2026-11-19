@@ -25,6 +25,10 @@
 | `95f1477` | 整夜重扫成本量化（工作量断言 + 3 条基准） | `TestWindowRescanWorkIsBoundedToTheWindow`、`BenchmarkNightlyWindowRescan{,SQLiteState}`、`BenchmarkWindowRescanAllDatesMissing` |
 | `d92a5f3` | SQLiteState 时钟接缝（Iteration H.1 前置项已提前完成） | `TestSQLiteStateLeaseExpiry`（租约边界两侧各压 1ns，已做变异验证） |
 | 本次 | `endState` 瞬时写失败重试一次（原 Iteration G.3） | `TestCollectorRetriesTransientLedgerWriteFailure` |
+| `8b9b589` | mysql 三条幂等路径废除 INSERT IGNORE，改反连接（原 G.2，提前） | `TestNoBuilderEmitsAnErrorSwallowingInsert`、`TestMySQLIdempotentPathsAreAntiJoin` |
+| `eaba2c7` | line-regex 文本解析真流式（原 G.1，提前） | `TestTextLineRegexStreamsInsteadOfBuffering` |
+| `b9e2e03` | Iteration C 无数据确认（no_data_after_days，默认零回归） | `TestNoDataTerminalOnlyAfterConfirmedAbsence` 等 6 条 |
+| 本次 | Iteration D 文件级退避（只节流内容性失败） | `TestFileRetryThrottledUntilDueThenRecovers`、`TestSQLiteV2LedgerMigratesNextAttemptColumn` 等 |
 
 已经存在、**不要重新做**的能力：SQLite 台账与 JSON 一次性导入（`app/state/sqlite.go:35-38`）、原子认领 UPSERT（`app/state/sqlite_state.go:40-60`）、启动孤儿回收 `ReclaimRunning`（`app/host/host.go:856-876`）、UNC 宿主闸（`internal/hostgate`）、文件不存在 vs 不可达 vs 未稳定的三分类（`app/errs/errors.go:76-84`、`app/collector/executor.go:214-252`）、稳定窗口的 all-or-nothing（`app/source/source.go:243-248`）、业务库真主键 + 重放反连接（`app/storage/table.go:521-528`、`app/storage/multirow.go:116-141`）、行列一致性校验与它进"待处理"的通路（`app/query/readmodel.go:661-663`）。
 
@@ -110,7 +114,7 @@ no_data_after_days   = 3
 - 配置校验：`no_data_after_days` 负数/非法在 Validate 阶段拒绝（validate.go 与 catchup_days 同款检查）。
 **禁止事项**：不引入"人工确认当天没生产"的审批流（现场没有值班角色前，这是把可靠性推给流程）；不使用生产完成标记文件/清单，除非现场先给出上游契约。
 
-## 5. Iteration D — 文件级重试节流（退避是过滤器，不是定时器）
+## 5. Iteration D — 文件级重试节流（退避是过滤器，不是定时器）✅ 已完成
 
 **依据**：`attempts` 落库（`app/state/sqlite.go:150`、`app/state/sqlite_state.go:182-193`）但没有任何调度代码读它；重试完全触发驱动（`docs/RECOVERY.md`）。
 
@@ -123,11 +127,18 @@ no_data_after_days   = 3
 // app/collector 或 app/model：唯一一处退避表
 func NextAttempt(attempts int, now time.Time) time.Time
 ```
-**验收测试**
-- `TestNextAttemptBackoffTable`：表驱动钉死 1/5/15/30/60/360 分钟。
-- `TestFileNotRetriedBeforeNextAttemptWithinSameRun`：同一轮内两次触发，第二次不重复啃失败文件。
-- `TestBackoffSurvivesRestart`：落盘后重启，`next_attempt_at` 保持。
-- `TestBackoffDoesNotExtendWindowDeadline`：退避不把 30 天截止推后（超期就超期）。
+**验收测试**（已落地）
+- `TestNextAttemptBackoffTable`（model.NextAttempt，1/5/15/30/60/360 分钟表）。
+- `TestFileRetryThrottledUntilDueThenRecovers`：解析失败 → 立即重试被节流（日期保持未完成）→ 退避期内不碰文件 → 到期且文件已修复 → 成功清账。时钟注入，无 sleep。
+- `TestFileFailureNextAttemptPersistsAcrossRestart` + `TestSQLiteFailureNextAttemptPersistsAcrossRestart`（file/sqlite）+ `TestSQLiteV2LedgerMigratesNextAttemptColumn`（v2 现场老库打开即补列）。
+- `TestBackoffDoesNotExtendWindowDeadline`：退避不许改写窗口截止（Expired 照常退役）。
+
+**实现期修正（比初版范围收窄，且是有意收窄）**：节流只对**文件自身的内容性失败**
+（解析、元数据、读不开且非不可达）生效。一切由外部系统恢复驱动的失败——数据库
+不可达、schema 演进、共享挂载、备份盘清空——只记账不节流：它们的重试信号是
+"外部修好了"，推迟第一次重试违背验收场景
+（TestOperationsDatabaseOutageRetriesIdempotently、
+TestTableStorageAddColumnEvolution 把这条钉死）。
 **禁止事项**：不做 goroutine 级重试循环；不把退避塞进 scheduler 组件。
 
 ## 6. Iteration E — 机台 × 日 汇总（派生只读，不是新实体）

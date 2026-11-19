@@ -160,38 +160,8 @@ func (s *SQLiteState) CollectionFiles(ctx context.Context, key model.CollectionK
 }
 
 func (s *SQLiteState) fileFailuresForKey(ctx context.Context, key model.CollectionKey) ([]model.FileFailure, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	rows, err := s.store.db.QueryContext(ctx, `SELECT source_id, date, path, name, size, mod_time, hash, error_text, failed_at, attempts
-		FROM state_failures WHERE source_id = ? AND date = ? ORDER BY failed_at, path`,
+	return s.queryFileFailures(ctx, `WHERE source_id = ? AND date = ?`,
 		string(key.SourceID), key.Date.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]model.FileFailure, 0)
-	for rows.Next() {
-		var src, date, path, name, hash, errMsg string
-		var size, modTime, failedAt int64
-		var attempts int
-		if err := rows.Scan(&src, &date, &path, &name, &size, &modTime, &hash, &errMsg, &failedAt, &attempts); err != nil {
-			return nil, err
-		}
-		d, err := parseCollectionDate(date)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, model.FileFailure{
-			Key: model.CollectionKey{SourceID: model.SourceID(src), Date: d},
-			File: model.FileIdentity{
-				SourceID: model.SourceID(src), Path: path, Name: name,
-				Size: size, ModTime: fromNanos(modTime), Hash: hash,
-			},
-			Error: errMsg, FailedAt: fromNanos(failedAt), Attempts: attempts,
-		})
-	}
-	return out, rows.Err()
 }
 
 func (s *SQLiteState) LedgerStats(ctx context.Context) (LedgerStats, error) {

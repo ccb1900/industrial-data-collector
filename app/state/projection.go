@@ -157,7 +157,7 @@ func snapshotFiles(ctx context.Context, tx *sql.Tx, marks string, ids []any, sin
 }
 
 func snapshotFailures(ctx context.Context, tx *sql.Tx, marks string, ids []any, out map[model.SourceID][]model.FileFailure) error {
-	q := `SELECT source_id, date, path, name, size, mod_time, hash, error_text, failed_at, attempts
+	q := `SELECT source_id, date, path, name, size, mod_time, hash, error_text, failed_at, attempts, next_attempt_at
 		FROM state_failures WHERE source_id IN (` + marks + `) ORDER BY source_id, failed_at, path`
 	rows, err := tx.QueryContext(ctx, q, ids...)
 	if err != nil {
@@ -166,9 +166,9 @@ func snapshotFailures(ctx context.Context, tx *sql.Tx, marks string, ids []any, 
 	defer rows.Close()
 	for rows.Next() {
 		var src, date, path, name, hash, errMsg string
-		var size, modTime, failedAt int64
+		var size, modTime, failedAt, nextAt int64
 		var attempts int
-		if err := rows.Scan(&src, &date, &path, &name, &size, &modTime, &hash, &errMsg, &failedAt, &attempts); err != nil {
+		if err := rows.Scan(&src, &date, &path, &name, &size, &modTime, &hash, &errMsg, &failedAt, &attempts, &nextAt); err != nil {
 			return err
 		}
 		d, err := parseCollectionDate(date)
@@ -183,6 +183,7 @@ func snapshotFailures(ctx context.Context, tx *sql.Tx, marks string, ids []any, 
 				Size: size, ModTime: fromNanos(modTime), Hash: hash,
 			},
 			Error: errMsg, FailedAt: fromNanos(failedAt), Attempts: attempts,
+			NextAttemptAt: fromNanos(nextAt),
 		})
 	}
 	return rows.Err()

@@ -114,10 +114,10 @@ func TestSQLiteStateFailureLedger(t *testing.T) {
 	if err := st.MarkFileCompleted(ctx, ck, good, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable again"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable again", true); err != nil {
 		t.Fatal(err)
 	}
 	failures, err := st.ListFileFailures(ctx, "prod")
@@ -147,7 +147,7 @@ func TestSQLiteStateDropClearsLedger(t *testing.T) {
 	if err := st.MarkFileCompleted(ctx, k, good, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkFileFailed(ctx, k, bad, "boom"); err != nil {
+	if err := st.MarkFileFailed(ctx, k, bad, "boom", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Drop(ctx, k); err != nil {
@@ -353,7 +353,7 @@ func TestSQLiteStateImportsLegacyFileState(t *testing.T) {
 	if err := legacy.MarkFileCompleted(ctx, k, good, 7); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.MarkFileFailed(ctx, k, bad, "storage unreachable"); err != nil {
+	if err := legacy.MarkFileFailed(ctx, k, bad, "storage unreachable", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.End(ctx, k, model.StatusFailed, "partial"); err != nil {

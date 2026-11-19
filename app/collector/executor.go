@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -384,7 +385,20 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	}()
 
 	var failErrs []error
-	collectOne := func(i int) model.FileResult { return e.collectFileTracked(ctx, key, &files[i]) }
+	// 文件级退避：失败账一次读入，按文件身份映射。到期才重啃，未到期本轮
+	// 跳过——它算"未完成"，绝不能算成功，否则成功守卫会把这一天锁死。
+	throttled := map[string]time.Time{}
+	if cfg.Now != nil {
+		if fails, ferr := e.State.ListFileFailures(ctx, key.SourceID); ferr == nil {
+			for _, f := range fails {
+				if f.Key == key && f.NextAttemptAt.After(cfg.Now()) {
+					throttled[f.File.Identity()] = f.NextAttemptAt
+				}
+			}
+		}
+	}
+	var throttledCount int
+	collectOne := func(i int) model.FileResult { return e.collectFileTracked(ctx, key, &files[i], throttled) }
 	if cfg.FilesPerSource <= 1 || len(files) <= 1 {
 		// 串行：发现顺序，取消即中止（原语义）。
 		for i := range files {
@@ -396,6 +410,10 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			}
 			fr := collectOne(i)
 			result.Files = append(result.Files, fr)
+			if fr.Status == model.StatusPending && strings.Contains(fr.Error, "retry throttled") {
+				throttledCount++
+				continue
+			}
 			if fr.Status == model.StatusFailed {
 				failErrs = append(failErrs, fmt.Errorf("%s: %s", files[i].Name, fr.Error))
 				continue
@@ -432,6 +450,10 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 				continue
 			}
 			result.Files = append(result.Files, fr)
+			if fr.Status == model.StatusPending && strings.Contains(fr.Error, "retry throttled") {
+				throttledCount++
+				continue
+			}
 			if fr.Status == model.StatusFailed {
 				failErrs = append(failErrs, fmt.Errorf("%s: %s", files[i].Name, fr.Error))
 				continue
@@ -460,6 +482,16 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		cfg.Logger.Error("collection failed", "key", key.String(), "error", result.Error, "records", result.Records, "duration", result.Duration)
 		return result
 	}
+	if throttledCount > 0 {
+		// 有文件在退避期内：这一天保持未完成（Pending），下一轮窗口重扫会再
+		// 排它，到期的那部分文件才会被真正重啃。标 Succeeded 会让成功守卫
+		// 锁死这一天——退避就变成了永久丢失。
+		result.Status = model.StatusPending
+		result.Error = fmt.Sprintf("%d file(s) in retry backoff", throttledCount)
+		_ = e.endState(ctx, key, model.StatusPending, result.Error)
+		cfg.Logger.Info("collection deferred by retry backoff", "key", key.String(), "files", throttledCount)
+		return result
+	}
 	result.Status = model.StatusSucceeded
 	if err := e.endState(ctx, key, model.StatusSucceeded, ""); err != nil {
 		// 成功没落账就不是成功：数据行已提交，下轮按幂等重放补齐台账。
@@ -474,8 +506,8 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 }
 
 // collectFileTracked 采集单文件并在其终结点即时发布 FileDone 事件。
-func (e *Executor) collectFileTracked(ctx context.Context, key model.CollectionKey, file *model.FileIdentity) model.FileResult {
-	fr := e.collectFile(ctx, key, file)
+func (e *Executor) collectFileTracked(ctx context.Context, key model.CollectionKey, file *model.FileIdentity, throttled map[string]time.Time) model.FileResult {
+	fr := e.collectFile(ctx, key, file, throttled)
 	e.observe(func(o Observer) { o.FileDone(ctx, key, &fr) })
 	return fr
 }
@@ -505,13 +537,26 @@ func (e *Executor) completedRecordCount(ctx context.Context, key model.Collectio
 	return 0
 }
 
-func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, file *model.FileIdentity) model.FileResult {
+func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, file *model.FileIdentity, throttled map[string]time.Time) model.FileResult {
 	cfg := e.Config.withDefaults()
 	fr := model.FileResult{File: *file, Status: model.StatusPending}
+	if cfg.Now != nil {
+		if due, ok := throttled[file.Identity()]; ok && due.After(cfg.Now()) {
+			// 退避期内：这一轮不碰它。结果是 Pending（不是 Failed——它没有
+			// 新错误；也不是省略——文件还在清单里，日期保持未完成）。
+			return model.FileResult{
+				File: *file, Status: model.StatusPending,
+				Error: fmt.Sprintf("retry throttled until %s", due.Format(time.RFC3339)),
+			}
+		}
+	}
 	// recordFail persists the local failure ledger entry. It is best effort: a
 	// state write failure must not mask the original failure being reported.
-	recordFail := func() {
-		if err := e.State.MarkFileFailed(ctx, key, *file, fr.Error); err != nil {
+	// throttled 只对"文件自身的失败"为真；基础设施失败（库不可达、台账自身
+	// 故障）只记账——它们的重试信号是基础设施恢复，"恢复后立即重试"是验收
+	// 要求（TestOperationsDatabaseOutageRetriesIdempotently 钉着）。
+	recordFail := func(throttled bool) {
+		if err := e.State.MarkFileFailed(ctx, key, *file, fr.Error, throttled); err != nil {
 			cfg.Logger.Warn("record file failure failed", "key", key.String(), "file", file.Name, "error", err.Error())
 		}
 	}
@@ -520,7 +565,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 	if err != nil {
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
-		recordFail()
+		recordFail(false) // 台账自身故障：不是文件的错，不节流
 		return fr
 	}
 	if done {
@@ -542,7 +587,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			fr.Status = model.StatusFailed
 			fr.Error = err.Error()
 			cfg.Logger.Error("file metadata extraction failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-			recordFail()
+			recordFail(true)
 			return fr
 		}
 	}
@@ -553,7 +598,9 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("file read open failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-		recordFail()
+		// 打不开可能是共享抖动（ErrUnavailable）：不节流，下一轮立刻再试；
+		// 其余（权限、损坏）按文件自身失败节流。
+		recordFail(!errors.Is(err, errs.ErrUnavailable))
 		return fr
 	}
 	defer rc.Close()
@@ -562,7 +609,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 		cfg.Logger.Error("file parse failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-		recordFail()
+		recordFail(true)
 		return fr
 	}
 	md = appmetadata.MergeDocument(md, doc)
@@ -595,7 +642,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			fr.Status = model.StatusFailed
 			fr.Error = fmt.Sprintf("source %s file %q: %v", e.Source.ID(), file.Name, err)
 			cfg.Logger.Error("file parse row failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-			recordFail()
+			recordFail(true)
 			return fr
 		}
 		records = append(records, rec)
@@ -604,7 +651,12 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 				fr.Status = model.StatusFailed
 				fr.Error = err.Error()
 				cfg.Logger.Error("storage write failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-				recordFail()
+				// 存储失败（无论瞬时还是"永久"）的修复信号都是外部恢复——库
+				// 回来、DBA 改表、磁盘清出来。"修复后立即重试"是验收要求
+				// （TestOperationsDatabaseOutageRetriesIdempotently、
+				// TestTableStorageAddColumnEvolution 都钉着），退避它们等于
+				// 把修复后的第一次重试推迟到 6 小时后。
+				recordFail(false)
 				return fr
 			}
 		}
@@ -613,7 +665,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("storage write failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-		recordFail()
+		recordFail(false)
 		return fr
 	}
 	// 严格备份语义：本机副本落盘成功才允许标记完成；失败走 recordFail，
@@ -626,7 +678,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 			fr.Status = model.StatusFailed
 			fr.Error = err.Error()
 			cfg.Logger.Error("file backup failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-			recordFail()
+			recordFail(false) // 备份盘的问题由外部修复，恢复后立即重试
 			return fr
 		}
 	}
@@ -634,7 +686,7 @@ func (e *Executor) collectFile(ctx context.Context, key model.CollectionKey, fil
 		fr.Status = model.StatusFailed
 		fr.Error = err.Error()
 		cfg.Logger.Error("mark file completed failed", "key", key.String(), "file", file.Name, "error", fr.Error)
-		recordFail()
+		recordFail(false) // 台账自身故障：不节流
 		return fr
 	}
 	fr.Status = model.StatusSucceeded

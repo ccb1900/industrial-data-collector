@@ -198,10 +198,10 @@ func TestFailureLedgerPersistsAndClearsOnSuccess(t *testing.T) {
 	if err := st.MarkFileCompleted(ctx, ck, good, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, bad, "storage unreachable", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkFileFailed(ctx, ck, bad, "storage still unreachable"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, bad, "storage still unreachable", true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,7 +252,7 @@ func TestFailureLedgerIsScopedPerSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := model.FileIdentity{SourceID: "prod", Path: "/b.csv", Name: "b.csv", Size: 1, ModTime: time.Unix(1, 0)}
-	if err := st.MarkFileFailed(ctx, ck, bad, "boom"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, bad, "boom", true); err != nil {
 		t.Fatal(err)
 	}
 	prod, err := st.ListFileFailures(ctx, "prod")
@@ -276,7 +276,7 @@ func TestFailureLedgerRetiresByPathOnCorrectedReexport(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := model.FileIdentity{SourceID: "prod", Path: "/b.dat", Name: "b.dat", Size: 19, ModTime: time.Unix(1, 0)}
-	if err := st.MarkFileFailed(ctx, ck, old, "malformed CSV"); err != nil {
+	if err := st.MarkFileFailed(ctx, ck, old, "malformed CSV", true); err != nil {
 		t.Fatal(err)
 	}
 	// The operator fixes the file: same path, new identity (size/mtime).
@@ -381,7 +381,7 @@ func TestSuccessEndClearsStaleFailureLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	gone := model.FileIdentity{SourceID: "prod", Path: "/b.dat", Name: "b.dat", Size: 2, ModTime: time.Unix(2, 0)}
-	if err := st.MarkFileFailed(ctx, k, gone, "storage unreachable"); err != nil {
+	if err := st.MarkFileFailed(ctx, k, gone, "storage unreachable", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.End(ctx, k, model.StatusFailed, "b.dat: storage unreachable"); err != nil {
@@ -414,7 +414,7 @@ func TestNewFileRepairsSucceededRecordWithStaleLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := model.FileIdentity{SourceID: "prod", Path: "/b.dat", Name: "b.dat", Size: 2, ModTime: time.Unix(2, 0)}
-	if err := st.MarkFileFailed(ctx, k, bad, "stale failure"); err != nil {
+	if err := st.MarkFileFailed(ctx, k, bad, "stale failure", true); err != nil {
 		t.Fatal(err)
 	}
 	// 直接改写记录状态为 Succeeded，模拟旧版本留下的毒快照。

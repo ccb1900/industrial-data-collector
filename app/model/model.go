@@ -11,6 +11,27 @@ import (
 // ErrEOF is returned by RecordStream.Next when the stream is exhausted.
 var ErrEOF = errors.New("record stream exhausted")
 
+// NextAttempt 按已失败次数给出下次重试时间：1/5/15/30/60 分钟，之后 6 小时
+// 封顶。它是文件级重试节流的唯一口径：collector 用它算写、state 用它算写，
+// 表驱动测试在两边钉同一组数字。它不是定时器——没有任何东西会在那个时刻
+// 醒来，唯一的时间源仍是 nightly/startup/watch/manual 触发。
+func NextAttempt(attempts int, now time.Time) time.Time {
+	minutes := 360
+	switch {
+	case attempts <= 1:
+		minutes = 1
+	case attempts == 2:
+		minutes = 5
+	case attempts == 3:
+		minutes = 15
+	case attempts == 4:
+		minutes = 30
+	case attempts == 5:
+		minutes = 60
+	}
+	return now.Add(time.Duration(minutes) * time.Minute)
+}
+
 // SourceID identifies one configured data source.
 type SourceID string
 
@@ -263,7 +284,17 @@ type CollectionState interface {
 	// MarkFileFailed records one locally persisted file failure. The record is
 	// the durable retry evidence: it survives process restarts, is reported by
 	// ListFileFailures, and is cleared when the file later completes.
-	MarkFileFailed(ctx context.Context, key CollectionKey, file FileIdentity, errMsg string) error
+	// MarkFileFailed records one locally persisted file failure. throttled
+	// decides whether the record carries a next-attempt time (the standard
+	// backoff table). Only failures that are properties of the file's own
+	// content throttle (parse, metadata, undecodable reads): retrying them
+	// before anything changed is guaranteed waste. Everything whose recovery
+	// is driven by an external system — database down or up, schema evolved,
+	// share mounted, backup disk freed — never throttles, because "retry
+	// immediately after the fix" is an acceptance requirement
+	// (TestOperationsDatabaseOutageRetriesIdempotently,
+	// TestTableStorageAddColumnEvolution), not a nicety.
+	MarkFileFailed(ctx context.Context, key CollectionKey, file FileIdentity, errMsg string, throttled bool) error
 	// ListFileFailures returns the locally persisted failure records for one
 	// source, oldest first. It is a diagnostics view; the retry decision stays
 	// with the recovery planner.
@@ -341,4 +372,8 @@ type FileFailure struct {
 	Error    string
 	FailedAt time.Time
 	Attempts int
+	// NextAttemptAt 是文件级退避的过滤器读数（collector.NextAttempt 按失败次数
+	// 算出）：在此之前这一轮跳过该文件。零值 = 不节流。它不是定时器——没有任何
+	// 东西会在那个时刻醒来，唯一的时间源仍是 nightly/startup/watch/manual 触发。
+	NextAttemptAt time.Time
 }

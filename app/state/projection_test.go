@@ -48,7 +48,7 @@ func projComplete(t *testing.T, st *SQLiteState, key model.CollectionKey, name s
 
 func projFail(t *testing.T, st *SQLiteState, key model.CollectionKey, name, msg string) {
 	t.Helper()
-	if err := st.MarkFileFailed(context.Background(), key, projFile(string(key.SourceID), name), msg); err != nil {
+	if err := st.MarkFileFailed(context.Background(), key, projFile(string(key.SourceID), name), msg, true); err != nil {
 		t.Fatal(err)
 	}
 }
