@@ -9,9 +9,13 @@ import (
 
 // Register binds the storage component types. oracle-storage requires a CGO
 // Oracle driver at runtime; it is registered for composition completeness.
+// Every type named in manifest.toml must be bound here: a declared-but-unbound
+// type passes app/config validation and only dies at load, with the
+// operator-visible ErrUnknownComponentType. TestDeclaredTypesAreBound guards it.
 func Register(reg config.FactoryRegistry) error {
 	return pluginkit.BindSame(reg, []string{
-		"memory-storage", "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage",
+		"memory-storage", "mysql-storage", "postgresql-storage", "sqlite-storage",
+		"oracle-storage", "sqlserver-storage",
 	}, newComponent(NewStorage))
 }
 
