@@ -151,7 +151,14 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 - `TestRollupIsDerivedNotStored`：断言聚合不产生新写路径（对同一份台账连续查询两次，内容与第一次一致）。
 **禁止事项**：不引入 `DateTask`/`SourceTask` 类型；不做跨源事务；group 成员变化不得改写历史业务日结论。
 
-## 7. Iteration F — 插件边界收敛 ✅ 已完成（99295a8 / 956a36f / edfa401）
+## 7. Iteration F — 插件边界收敛 ✅ 已完成（99295a8 / 956a36f / edfa401 + 补齐）
+//
+// 实施与原计划的偏离，如实记录：原计划建 `contracts` 包收编全部 capability
+// key——实际落地的是更小的方案：parser 注册表（app/parser/registry.go，新增
+// 格式零改 sourceunit 的验收点）+ 删除死掉的重复 key（console.rows.query）
+// + SinkRegistry 决策文档化。key 仍住在各自的提供方插件包里：当前被跨插件
+// Require 的 key 只有 3 个，抽 contracts 的收益不足以抵一次全仓 import
+// 重排；出现第 4 个跨插件消费方时再做。
 
 **依据（全部核过）**
 - `components/sourceunit/component.go:17-37` 直接 import `app/metadata`、`app/parser`、`app/storage`、`app/state`、`components/metadata`、`components/storage`。
@@ -169,8 +176,13 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 **验收测试**（已落地）
 - `TestNewSourceUnitResolvesRegisteredParserKinds`：注册第四种 parser → 组件构造与 buildParser 直接放行、工厂被调用、未知取值响亮失败；变异（buildParser 退回 switch）为红。
 - `TestStorageAssemblySingleSourceOfTruth`：同一逻辑声明走两条入口产出同一 spec，**且每个用例带独立语义基准**（合流后"路径一致"是平凡的——第一版漏了基准，默认表名变异照样绿，补齐后表名/丢 header_check 两类变异各红 5 处）。
-- capability key：`console.rows.query` 双重定义整体删除（provide 零次、require 零次，控制台 rows 查询走 SinkRegistry）；SinkRegistry 保留进程级单例并写明理由与迁移点（sinks.go 注释）。
-- flat+catchup 互斥（P1-2 修复）与 parser 校验同源一并落在 F 批次。
+- capability key：`console.rows.query` 的双重定义**全部**删除（provide 一次
+  → 零次、require 零次；控制台 rows 查询走 SinkRegistry）。edfa401 只删了
+  app/storage 一半、提交信息却宣称整体删除，第三轮审查抓到，components/storage
+  一半已在本轮补齐；Provide 注释里留了这次半途而废的记录。
+- SinkRegistry 决策（保留进程级单例）连同理由与迁移点写在 sinks.go 注释里。
+- flat+catchup 互斥是 3e566f9（审查第一轮）落地的，不属于 F 批次——上一版
+  把它记进了这里，已纠正。
 **禁止事项**：不把 `app/*` 每个包都做成插件；不为"更纯的架构"改动采集主流程语义；不在本迭代顺手改 SQL 方言。
 
 ## 8. Iteration G — ETL 收尾（三件里 1 件已完成）

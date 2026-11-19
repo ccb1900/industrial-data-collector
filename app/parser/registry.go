@@ -72,19 +72,6 @@ func KnownParserKinds() []string {
 	return out
 }
 
-// CanonicalParserKind 把别名折叠成规范名（csv-parser → csv）。配置校验的
-// 跨字段规则（如 text 系的 text_format/pattern 检查）按规范名判定。
-func CanonicalParserKind(kind string) (string, bool) {
-	canonical := map[string]string{
-		"csv":         "csv",
-		"csv-parser":  "csv",
-		"text":        "text",
-		"text-parser": "text",
-	}
-	c, ok := canonical[kind]
-	return c, ok
-}
-
 func init() {
 	if err := RegisterParser("csv", NewCSVFromConfigValues); err != nil {
 		panic(err)

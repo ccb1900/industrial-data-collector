@@ -50,6 +50,7 @@ func TestStorageAssemblySingleSourceOfTruth(t *testing.T) {
 			typ:  "sqlite-storage",
 			cfg: map[string]any{
 				"dsn": "file:/tmp/x.db", "header_check": "warn", "extra_rows": true,
+				"file_key": true, "file_key_node": 7, "file_table": "f_registry",
 				"columns": []any{map[string]any{"name": "ID", "column": "id", "type": "text"}},
 			},
 			check: func(t *testing.T, spec *StorageSpec) {
@@ -58,6 +59,17 @@ func TestStorageAssemblySingleSourceOfTruth(t *testing.T) {
 				}
 				if spec.TableCfg.HeaderCheck != "warn" || !spec.TableCfg.ExtraRows {
 					t.Fatalf("header_check/extra_rows must propagate (旧实现在这里丢键): %+v", spec.TableCfg)
+				}
+				// file_key/file_key_node/file_table 的透传此前无任何断言——
+				// 删掉 file_key_node 的读取会让多节点部署的雪花键静默失锚。
+				if !spec.TableCfg.FileKey || spec.TableCfg.FileKeyNode == nil || *spec.TableCfg.FileKeyNode != 7 {
+					t.Fatalf("file_key/file_key_node must propagate: %+v", spec.TableCfg)
+				}
+				if spec.TableCfg.FileTable != "f_registry" {
+					t.Errorf("file_table = %q, want f_registry", spec.TableCfg.FileTable)
+				}
+				if spec.TableCfg.Table != "records" {
+					t.Errorf("declared-branch table default = %q, want records", spec.TableCfg.Table)
 				}
 				if spec.TableCfg.Columns[0].Name != "ID" || spec.TableCfg.Columns[0].Column != "id" {
 					t.Errorf("column decode = %+v", spec.TableCfg.Columns[0])
@@ -84,6 +96,26 @@ func TestStorageAssemblySingleSourceOfTruth(t *testing.T) {
 			check: func(t *testing.T, spec *StorageSpec) {
 				if !spec.Lazy || spec.TableCfg == nil || !spec.TableCfg.Lazy {
 					t.Fatalf("lazy_connect must reach the spec and the config: %+v", spec)
+				}
+			},
+		},
+		{
+			name: "driver defaults per dialect",
+			typ:  "postgresql-storage",
+			cfg:  map[string]any{"dsn": "postgres://x", "header": false},
+			check: func(t *testing.T, spec *StorageSpec) {
+				if spec.SQLCfg == nil || spec.SQLCfg.Driver != "pgx" || spec.SQLCfg.Dialect != "postgres" {
+					t.Fatalf("postgres driver default = %+v, want pgx/postgres", spec.SQLCfg)
+				}
+			},
+		},
+		{
+			name: "oracle driver default",
+			typ:  "oracle-storage",
+			cfg:  map[string]any{"dsn": "oracle://x", "header": false},
+			check: func(t *testing.T, spec *StorageSpec) {
+				if spec.SQLCfg == nil || spec.SQLCfg.Driver != "oracle" {
+					t.Fatalf("oracle driver default = %+v, want oracle", spec.SQLCfg)
 				}
 			},
 		},

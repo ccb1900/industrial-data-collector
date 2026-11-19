@@ -15,12 +15,6 @@ import (
 // Key is the Storage capability exposed by this plugin.
 var Key = runtime.NewKey[model.Storage]("csv.storage")
 
-// TableRowsQueryKey is exposed by a typed table sink when it is configured to
-// serve console queries (`expose_console = true`). The console bridge picks it
-// up and registers the "rows" named query; without a typed sink the bridge
-// simply skips it.
-var TableRowsQueryKey = runtime.NewKey[storage.RowsQuery]("console.rows.query")
-
 type StorageComponent struct {
 	typ      string
 	mem      *storage.MemoryStore
@@ -31,12 +25,15 @@ type StorageComponent struct {
 
 func (c *StorageComponent) Name() string                 { return "storage:" + c.typ }
 func (c *StorageComponent) Inject() []runtime.Dependency { return nil }
+
+// Provide 只声明 csv.storage。曾经还声明过 console.rows.query——它是双重
+// 定义的死 capability：全仓没有任何 Require，控制台的 "rows" 查询实际走
+// SinkRegistry（consolebridge/rows.go）。声明无人消费的能力只会制造
+// "装配面比真实面大"的错觉，已删除（edfa401 只删了一半，本轮补齐——
+// 两条删除语句写在同一个脚本里，第一条的断言失败让第二条根本没执行，
+// 而提交信息却宣称"整体删除"；第三轮审查抓到）。
 func (c *StorageComponent) Provide() []runtime.Capability {
-	caps := []runtime.Capability{Key.Capability()}
-	if c.tableCfg != nil && c.tableCfg.Exposer {
-		caps = append(caps, TableRowsQueryKey.Capability())
-	}
-	return caps
+	return []runtime.Capability{Key.Capability()}
 }
 
 func (c *StorageComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
