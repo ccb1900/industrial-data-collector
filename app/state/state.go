@@ -708,68 +708,90 @@ func (s *FileState) save() error {
 	return lastErr
 }
 
-func (s *FileState) Begin(ctx context.Context, key model.CollectionKey, lease time.Duration) (bool, error) {
+// run 是一次"改内存 + 落盘"的原子动作，FileState 的每个写方法都只经过它。
+// 两条规则，都是现场踩过的：
+//
+//	锁不许跑到 save 前面。两个写者各自 marshal 一份快照、各写自己的临时
+//	文件、各自 rename 覆盖目标——rename 的先后完全由调度决定，谁在锁外落盘，
+//	谁就可能用旧快照盖掉别人刚写完的新快照。
+//
+//	落盘失败必须回滚内存。调用方拿到错误、内存却已经改完，就会留下一条磁盘
+//	上从不存在的记录：Running 会让 24 小时租约挡住这个业务日的全部重试（要
+//	等进程重启才恢复），Succeeded 会让 planner 不再排它、让 Begin 的成功守卫
+//	拒绝重开——一次写失败就此把一个待采日期冻死。
+//
+// apply 报告 changed=false 表示内存没动（Begin 没抢到、回收没找到孤儿行），
+// 那就不必落盘——与改造前一致。
+func (s *FileState) run(apply func() (changed bool, count int64, err error)) (bool, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ok, err := s.MemoryState.Begin(ctx, key, lease)
-	if err != nil || !ok {
-		return ok, err
+	before, err := json.Marshal(snapshot(&s.MemoryState))
+	if err != nil {
+		return false, 0, err
 	}
-	return ok, s.save()
+	changed, count, err := apply()
+	if err != nil {
+		return false, 0, err
+	}
+	if !changed {
+		return false, count, nil
+	}
+	if err := s.save(); err != nil {
+		var snap memorySnapshot
+		if jErr := json.Unmarshal(before, &snap); jErr != nil {
+			return false, 0, errors.Join(err, jErr)
+		}
+		restore(&s.MemoryState, snap)
+		return false, 0, err
+	}
+	return true, count, nil
+}
+
+// transact adapts a mutation with no return value.
+func (s *FileState) transact(apply func() error) error {
+	_, _, err := s.run(func() (bool, int64, error) { return true, 0, apply() })
+	return err
+}
+
+func (s *FileState) Begin(ctx context.Context, key model.CollectionKey, lease time.Duration) (bool, error) {
+	claimed, _, err := s.run(func() (bool, int64, error) {
+		ok, err := s.MemoryState.Begin(ctx, key, lease)
+		return ok, 0, err
+	})
+	return claimed, err
 }
 
 func (s *FileState) End(ctx context.Context, key model.CollectionKey, status model.Status, note string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.MemoryState.End(ctx, key, status, note); err != nil {
-		return err
-	}
-	return s.save()
+	return s.transact(func() error { return s.MemoryState.End(ctx, key, status, note) })
 }
 
 func (s *FileState) Drop(ctx context.Context, key model.CollectionKey) error {
-	s.mu.Lock()
-	if err := s.MemoryState.Drop(ctx, key); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-	return s.save()
+	return s.transact(func() error { return s.MemoryState.Drop(ctx, key) })
 }
 
+// SetAppendMode 没有返回值可传递失败（接口如此）：落盘失败留给下一次写入压实。
 func (s *FileState) SetAppendMode() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.MemoryState.SetAppendMode()
-	s.save()
+	_ = s.transact(func() error { s.MemoryState.SetAppendMode(); return nil })
 }
 
 func (s *FileState) MarkFileCompleted(ctx context.Context, key model.CollectionKey, file model.FileIdentity, records int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.MemoryState.MarkFileCompleted(ctx, key, file, records); err != nil {
-		return err
-	}
-	return s.save()
+	return s.transact(func() error {
+		return s.MemoryState.MarkFileCompleted(ctx, key, file, records)
+	})
 }
 
 func (s *FileState) MarkFileFailed(ctx context.Context, key model.CollectionKey, file model.FileIdentity, errMsg string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.MemoryState.MarkFileFailed(ctx, key, file, errMsg); err != nil {
-		return err
-	}
-	return s.save()
+	return s.transact(func() error {
+		return s.MemoryState.MarkFileFailed(ctx, key, file, errMsg)
+	})
 }
 
 func (s *FileState) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n, err := s.MemoryState.ReclaimRunning(ctx, startedBefore)
-	if err != nil || n == 0 {
-		return n, err
-	}
-	return n, s.save()
+	_, count, err := s.run(func() (bool, int64, error) {
+		n, err := s.MemoryState.ReclaimRunning(ctx, startedBefore)
+		return n > 0, n, err
+	})
+	return count, err
 }
 
 func (s *FileState) Close() error { return nil }
