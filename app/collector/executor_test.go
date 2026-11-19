@@ -605,6 +605,12 @@ type recordingObserver struct {
 	events []string
 }
 
+func (o *recordingObserver) CollectionsExpired(_ context.Context, keys []model.CollectionKey) {
+	for _, k := range keys {
+		o.add("expired " + k.Date.String())
+	}
+}
+
 func (o *recordingObserver) add(s string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -121,3 +121,53 @@ func TestSameDaySourceCollectsToday(t *testing.T) {
 		t.Errorf("today missing from results: %#v", results)
 	}
 }
+
+// TestHandleRetiresBeyondWindowDatesAndAnnouncesThem 把窗口语义闭合到执行侧：
+// 一条窗口外的旧失败，在本轮自动运行时必须 (1) 转成 Expired、(2) 不再被执行、
+// (3) 通过观察面说出来。第 3 点不是装饰——投影是事件驱动的，不发事件的话，
+// 台账写着"不再自动重试"而控制台继续显示"失败，待重试"，同一件事两句话，
+// 而且要等重启才对齐。
+func TestHandleRetiresBeyondWindowDatesAndAnnouncesThem(t *testing.T) {
+	root := t.TempDir()
+	writeDateCSV(t, root, "2026-11-18", "a.csv", "id,name\n1,a\n")
+	e, st := frozenExecutor(t, root, datepolicy.Policy{Type: datepolicy.PolicyYesterday}, 30)
+	ctx := context.Background()
+	old := model.CollectionKey{SourceID: "prod", Date: date(t, "2026-10-01")}
+	if ok, err := st.Begin(ctx, old, 24*time.Hour); err != nil || !ok {
+		t.Fatalf("seed begin: ok=%v err=%v", ok, err)
+	}
+	if err := st.End(ctx, old, model.StatusFailed, "device offline"); err != nil {
+		t.Fatal(err)
+	}
+	obs := &recordingObserver{}
+	e.Observer = obs
+
+	results, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if got, _, _ := st.StatusOf(ctx, old); got != model.StatusExpired {
+		t.Errorf("out-of-window failure = %q, want Expired", got)
+	}
+	sawYesterday := false
+	for _, r := range results {
+		if r.Key.Date.String() == "2026-10-01" {
+			t.Errorf("retired date was executed again this pass: %#v", r)
+		}
+		if r.Key.Date.String() == "2026-11-18" && r.Status == model.StatusSucceeded {
+			sawYesterday = true
+		}
+	}
+	if !sawYesterday {
+		t.Errorf("yesterday not collected in the same pass (window rescan runs alongside): %#v", results)
+	}
+	var announced bool
+	for _, ev := range obs.snapshot() {
+		if ev == "expired 2026-10-01" {
+			announced = true
+		}
+	}
+	if !announced {
+		t.Errorf("observers never told about the retirement: %v", obs.snapshot())
+	}
+}

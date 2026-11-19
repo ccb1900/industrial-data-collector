@@ -105,6 +105,13 @@ func (c *QueryComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := runtime.On(ctx, events.CollectionExpired, func(dctx context.Context, p events.CollectionExpiredPayload) error {
+		c.model.OnCollectionExpired(p.Key, p.At)
+		c.obs.Publish(query.ObservationEvent{Type: "CollectionExpired", Key: p.Key})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	if err := runtime.On(ctx, events.CollectionVerified, func(dctx context.Context, p events.CollectionVerifiedPayload) error {
 		c.model.OnChecksVerified(p.Key, p.Checks)
 		c.obs.Publish(query.ObservationEvent{Type: "CollectionVerified", Key: p.Key})

@@ -81,6 +81,19 @@ func PublishCollectionResult(ctx context.Context, emitCtx *runtime.Context, res 
 	}
 }
 
+// PublishCollectionExpired tells observers these dates are no longer
+// automatic work. Without it the live projection keeps rendering "Failed"
+// (which reads as "will be retried") for rows the planner now refuses.
+func PublishCollectionExpired(ctx context.Context, emitCtx *runtime.Context, keys []model.CollectionKey) {
+	if emitCtx == nil || len(keys) == 0 {
+		return
+	}
+	at := time.Now()
+	for _, k := range keys {
+		_ = event.Serial(ctx, emitCtx, events.CollectionExpired, events.CollectionExpiredPayload{Key: k, At: at})
+	}
+}
+
 // PublishChecksVerified 发布一次采集的行列一致性判定。判定不改采集状态，
 // 所以它不进 Succeeded/Failed 那条链路，只作为观察证据发布。
 func PublishChecksVerified(ctx context.Context, emitCtx *runtime.Context, key model.CollectionKey, checks []model.FileCheck, triggeredBy string) {

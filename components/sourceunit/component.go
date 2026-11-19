@@ -635,6 +635,10 @@ func (o outcomeObserver) CollectionDone(ctx context.Context, res *model.Collecti
 	outcome.PublishCollectionResult(ctx, o.emitCtx, res)
 }
 
+func (o outcomeObserver) CollectionsExpired(ctx context.Context, keys []model.CollectionKey) {
+	outcome.PublishCollectionExpired(ctx, o.emitCtx, keys)
+}
+
 func buildParser(cfg map[string]any) (model.CSVParser, error) {
 	cc := config.ComponentConfig{Config: cfg}
 	kind := configutil.OptionalString(cc, "parser", "csv")

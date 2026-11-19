@@ -22,6 +22,7 @@ const (
 	StatusSucceeded = "Succeeded"
 	StatusFailed    = "Failed"
 	StatusSkipped   = "Skipped"
+	StatusExpired   = "Expired"
 )
 
 // CollectionView is one collection (source x date) rendered for UI.

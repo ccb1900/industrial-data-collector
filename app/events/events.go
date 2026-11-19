@@ -30,6 +30,13 @@ var (
 	// never-materialized dates stay out of the event stream.
 	CollectionDropped = runtime.NewEventKey[CollectionDroppedPayload]("collection.dropped")
 
+	// CollectionExpired reports that a business date left the automatic
+	// catch-up window: the ledger retired it and nothing will retry it until
+	// someone names the date. Without this event the live projection keeps
+	// saying "Failed, will retry" for work the planner refuses to do again —
+	// the exact lie the status exists to remove.
+	CollectionExpired = runtime.NewEventKey[CollectionExpiredPayload]("collection.expired")
+
 	// CollectionVerified reports the row/column consistency verdicts of one
 	// collection. It never changes the collection's status: a mismatch is
 	// evidence for an operator, not a retry trigger.
@@ -52,6 +59,11 @@ type CollectionPendingPayload struct {
 	Key  model.CollectionKey
 	Note string
 	At   time.Time
+}
+
+type CollectionExpiredPayload struct {
+	Key model.CollectionKey
+	At  time.Time
 }
 
 type CollectionStartedPayload struct {

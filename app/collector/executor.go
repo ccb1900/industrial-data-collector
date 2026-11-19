@@ -64,6 +64,9 @@ type Observer interface {
 	FileStarted(ctx context.Context, key model.CollectionKey, file model.FileIdentity)
 	FileDone(ctx context.Context, key model.CollectionKey, fr *model.FileResult)
 	CollectionDone(ctx context.Context, res *model.CollectionResult)
+	// CollectionsExpired 报告本轮退役的业务日（离开自动补采窗口、不再自动重试）。
+	// 退役是在扫描台账时发现的，不是一次采集的结果，所以它不带 CollectionResult。
+	CollectionsExpired(ctx context.Context, keys []model.CollectionKey)
 }
 
 type Executor struct {
@@ -125,6 +128,23 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		cfg.Logger.Error("collection refused by date boundary",
 			"source", e.Source.ID(), "target", target.String(), "error", err.Error())
 		return nil, err
+	}
+
+	// 退役扫描锚在 Cutoff（昨天/今天），不锚在本轮 target：手动回填一个半年前的
+	// 日期时，"自动窗口"依然是从今天往回 30 天。planner 的 target 窗口决定"这轮
+	// 探哪些天"，这里决定"哪些旧账不再自动试"，两者都由 Boundary 这一处口径算出。
+	if start, ok := cfg.Boundary.Start(); ok {
+		retired, err := e.State.ExpireBeyond(ctx, e.Source.ID(), start)
+		if err != nil {
+			// 扫描失败只是这一轮继续重试超期日期，与改造前一致；不能因为一次
+			// 台账读失败把本轮该采的日期也判死。
+			cfg.Logger.Warn("expire sweep failed; out-of-window rows stay retryable this pass",
+				"source", e.Source.ID(), "error", err.Error())
+		} else if len(retired) > 0 {
+			cfg.Logger.Info("retired business dates beyond the catch-up window",
+				"source", e.Source.ID(), "count", len(retired), "window_start", start.String())
+			e.observe(func(o Observer) { o.CollectionsExpired(ctx, retired) })
+		}
 	}
 
 	keys, err := e.Recovery.Plan(ctx, e.Source.ID(), target)
