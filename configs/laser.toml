@@ -16,7 +16,7 @@ bundles = ["collector-core", "collector-console"]
 [defaults]
 state_dir = "../state"
 date_policy = "yesterday"
-catchup_days = 31
+catchup_days = 30 # 自动容错窗口：含昨天在内的 30 个自然日（起点 = 昨天-29）
 batch_size = 1000
 
 [[sinks]]

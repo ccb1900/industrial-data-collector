@@ -17,7 +17,7 @@ bundles = ["collector-core", "collector-console"]
 state_dir = "../state"
 state_type = "sqlite-state"
 date_policy = "yesterday"
-catchup_days = 31
+catchup_days = 30 # 自动容错窗口：含昨天在内的 30 个自然日（起点 = 昨天-29）
 batch_size = 1000
 max_parallel_sources = 8   # 15 个源并行采集（默认 4）。瓶颈是 UNC 列目录的
                            # 网络等待，多源并行让等待互相重叠

@@ -24,7 +24,7 @@ bundles = ["collector-core", "collector-console"]
 state_dir = "../state"
 state_type = "sqlite-state"
 date_policy = "yesterday"
-catchup_days = 31
+catchup_days = 30 # 自动容错窗口：含昨天在内的 30 个自然日（起点 = 昨天-29）
 batch_size = 1000
 # file_stable_window_seconds 保持 0：采的是"昨天"的已完成日志，无读到
 # 半截文件的风险；若改 today 策略必须配 >0。
