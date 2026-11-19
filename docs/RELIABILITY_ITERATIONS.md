@@ -151,7 +151,7 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 - `TestRollupIsDerivedNotStored`：断言聚合不产生新写路径（对同一份台账连续查询两次，内容与第一次一致）。
 **禁止事项**：不引入 `DateTask`/`SourceTask` 类型；不做跨源事务；group 成员变化不得改写历史业务日结论。
 
-## 7. Iteration F — 插件边界收敛
+## 7. Iteration F — 插件边界收敛 ✅ 已完成（99295a8 / 956a36f / edfa401）
 
 **依据（全部核过）**
 - `components/sourceunit/component.go:17-37` 直接 import `app/metadata`、`app/parser`、`app/storage`、`app/state`、`components/metadata`、`components/storage`。
@@ -166,10 +166,11 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 3. Parser 变 capability：`contracts.ParserKey`，`app/parser` 注册 csv/text 两个实现；sourceunit 按 `parser` 取值查找，未注册取值 → 响亮失败。
 4. `SinkRegistry` → realm 作用域的 provider（照框架 precedent），或明确保留进程全局但在文档里写清"同进程多 Host 共享"这一事实。二选一，不许留着双重身份。
 
-**验收测试**
-- `TestAddingAFourthFormatTouchesNoSourceUnitCode`（`tests/`）：新增一个 `[[formats]]` + 一种 parser 取值，源文件与 `components/sourceunit/*.go` 无 diff。
-- `TestStorageAssemblySingleSourceOfTruth`：两条 TOML 入口产出相同的 `TableConfig`（含 `header_check`、`extra_rows`、默认表名）。
-- `TestCapabilityKeysAreDefinedOnce`：遍历 `contracts` 与全部注册表，断言无重复字符串。
+**验收测试**（已落地）
+- `TestNewSourceUnitResolvesRegisteredParserKinds`：注册第四种 parser → 组件构造与 buildParser 直接放行、工厂被调用、未知取值响亮失败；变异（buildParser 退回 switch）为红。
+- `TestStorageAssemblySingleSourceOfTruth`：同一逻辑声明走两条入口产出同一 spec，**且每个用例带独立语义基准**（合流后"路径一致"是平凡的——第一版漏了基准，默认表名变异照样绿，补齐后表名/丢 header_check 两类变异各红 5 处）。
+- capability key：`console.rows.query` 双重定义整体删除（provide 零次、require 零次，控制台 rows 查询走 SinkRegistry）；SinkRegistry 保留进程级单例并写明理由与迁移点（sinks.go 注释）。
+- flat+catchup 互斥（P1-2 修复）与 parser 校验同源一并落在 F 批次。
 **禁止事项**：不把 `app/*` 每个包都做成插件；不为"更纯的架构"改动采集主流程语义；不在本迭代顺手改 SQL 方言。
 
 ## 8. Iteration G — ETL 收尾（三件里 1 件已完成）
@@ -225,7 +226,7 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 | C 无数据确认 | ✅ 完成（默认关，零回归） |
 | D 文件级退避 | ✅ 完成（只节流内容性失败） |
 | E 机台 × 日汇总 | ✅ 完成（machine-days 查询；页面接线留给 UI 阶段） |
-| F 插件边界收敛 | 待做 |
+| F 插件边界收敛 | ✅ 完成（parser 注册表、存储装配收口、死 capability 删除、SinkRegistry 决策） |
 | G 流式 TextParser / mysql 去 IGNORE / endState 重试 | ✅ 完成（提前） |
 | H 时钟接缝 / verify.sh 真实化 | ✅ 完成（含 E2E 全面隔离与 collect.db 出库） |
 
