@@ -64,8 +64,8 @@ PASS  配置键 pattern
 PASS  配置键 detect_content
 PASS  配置键 encoding
 PASS  配置键 header
-FAIL  配置键 delimiter
-FAIL  配置键 skip_lines
+PASS  配置键 delimiter
+PASS  配置键 skip_lines
 PASS  配置键 date_policy
 PASS  配置键 specific_date
 PASS  配置键 catchup_days
@@ -77,14 +77,17 @@ PASS  配置键 state_type
 PASS  配置键 state_dir
 PASS  配置键 storage
 PASS  配置键 sink
-FAIL  配置键 driver
-FAIL  配置键 dsn
-FAIL  配置键 table
-FAIL  配置键 file_table
-FAIL  配置键 expose_console
+PASS  配置键 driver
+PASS  配置键 dsn
+PASS  配置键 table
+PASS  配置键 file_table
+PASS  配置键 expose_console
 PASS  配置键 lazy_connect
 PASS  配置键 metadata_source
 PASS  配置键 layout
+PASS  配置键 machine
+PASS  配置键 format
+PASS  配置键 no_data_after_days
 PASS  配置键 date_dir_layout
 PASS  配置键 filename_date_layout
 PASS  四层展开函数
@@ -136,5 +139,5 @@ SKIP  logstore/procplugin/plugin-kit（找不到 /home/guojianhang/code/industri
 SKIP  ComposeDocument / patch.ApplyPatches（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
 SKIP  Console 源码 seam（3 条）（找不到 /home/guojianhang/code/industrial-data-collector/../go-cordis）
 
-结果: PASS=100 FAIL=7 SKIP=16
-存在漂移，需修复 ✘
+结果: PASS=110 FAIL=0 SKIP=16
+文档与代码一致 ✔

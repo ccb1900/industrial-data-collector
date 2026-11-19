@@ -95,8 +95,14 @@ check "collection_mode batch"  grep_q 'collection_mode", "batch' components/sour
 check "collection_mode append" grep_q '"append"' components/sourceunit/component.go
 
 echo "== source-unit 配置键 =="
-for k in source_id path pattern detect_content encoding header delimiter skip_lines date_policy specific_date catchup_days batch_size collection_mode file_stable_window_seconds dedupe_content_hash state_type state_dir storage sink driver dsn table file_table expose_console lazy_connect metadata_source layout; do
-  check "配置键 $k" grep_q "\"$k\"" components/sourceunit/component.go
+# 键的读取位置随 Iteration F 分了家：parser 系（encoding/delimiter/skip_lines…）
+# 在 app/parser/registry.go，存储系（driver/dsn/table/file_table/expose_console…）
+# 在 components/storage/spec.go，其余仍在 sourceunit。文档一致性查的是
+# "这个键真的有人读"，所以在全部装配面上 grep。
+ASSEMBLY_FILES="components/sourceunit/component.go components/storage/spec.go app/parser/registry.go app/parser/text.go"
+for k in source_id path pattern detect_content encoding header delimiter skip_lines date_policy specific_date catchup_days batch_size collection_mode file_stable_window_seconds dedupe_content_hash state_type state_dir storage sink driver dsn table file_table expose_console lazy_connect metadata_source layout machine format no_data_after_days; do
+  # 不经 grep_q（它只收一个文件）：直接 grep -q 多文件，任一命中即 PASS。
+  check "配置键 $k" grep -q "\"$k\"" $ASSEMBLY_FILES
 done
   check "配置键 date_dir_layout" grep_q '"date_dir_layout"' components/sourceunit/component.go
   check "配置键 filename_date_layout" grep_q '"filename_date_layout"' components/sourceunit/component.go
