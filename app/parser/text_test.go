@@ -72,8 +72,19 @@ func TestLineRegexStrictFailsFile(t *testing.T) {
 	if err := p.Compile(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Parse(context.Background(), strings.NewReader("12\nbad\n")); err == nil {
-		t.Fatal("strict mode must fail on non-matching line")
+	// 流式后错误从 Next 冒出（采集器据此判整个文件失败），断言的是行为
+	// ——严格模式必须让非匹配行走不成——而不是"Parse 必须立刻返回错误"。
+	doc, err := p.Parse(context.Background(), strings.NewReader("12\nbad\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := doc.Data.Next(); err == nil {
+			continue
+		} else if err == model.ErrEOF {
+			t.Fatal("strict mode must fail on non-matching line")
+		}
+		break
 	}
 }
 

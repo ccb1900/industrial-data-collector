@@ -109,32 +109,13 @@ func (p *TextParser) Parse(ctx context.Context, r io.Reader) (model.CSVDocument,
 		header = append([]string(nil), names...)
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		var row int64
-		for sc.Scan() {
-			if err := ctx.Err(); err != nil {
-				return model.CSVDocument{}, err
-			}
-			line := strings.TrimRight(sc.Text(), "\r")
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			m := p.re.FindStringSubmatch(line)
-			if m == nil {
-				if p.Strict {
-					return model.CSVDocument{}, errs.Sourcef(errs.ErrMalformedCSV, "line %q does not match pattern", line)
-				}
-				continue
-			}
-			row++
-			fields := make([]string, len(names))
-			for i := range names {
-				fields[i] = m[i+1]
-			}
-			rows = append(rows, model.Record{RowNumber: row, Fields: fields})
-		}
-		if err := sc.Err(); err != nil {
-			return model.CSVDocument{}, errs.Sourcef(errs.ErrInvalidFile, "read: %v", err)
-		}
+		// 真流式：一行、一次匹配、一条记录，中间不累积。此前这里把全部行
+		// append 进 rows 再包成 memStream——2GB 的设备日志在第一条记录离开
+		// 解析器之前就全量驻留，批次缓冲完全白费
+		// （TestTextLineRegexStreamsInsteadOfBuffering 用计数 reader 钉这条）。
+		return model.CSVDocument{Data: &lineRegexStream{
+			header: header, re: p.re, sc: sc, ctx: ctx, strict: p.Strict,
+		}}, nil
 	case TextKeyValue:
 		sep := p.Separator
 		if sep == "" {
@@ -204,6 +185,61 @@ func (s *memStream) Next() (model.Record, error) {
 	rec := s.rows[s.i]
 	s.i++
 	return rec, nil
+}
+
+// lineRegexStream 把行正则模式的记录直接从 scanner 上吐出来：一行一次匹配，
+// 不累积任何行集。取消语义与改造前一致——Parse 时不预读，ctx.Err 在每次
+// Next 时检查。strict 模式下非匹配行让 Next 返回错误，采集器据此判整个
+// 文件失败（与改造前 Parse 直接报错等价）。
+type lineRegexStream struct {
+	header []string
+	re     *regexp.Regexp
+	sc     *bufio.Scanner
+	ctx    context.Context
+	strict bool
+	row    int64
+	err    error
+}
+
+func (s *lineRegexStream) Header() []string {
+	return append([]string(nil), s.header...)
+}
+
+func (s *lineRegexStream) Next() (model.Record, error) {
+	if s.err != nil {
+		return model.Record{}, s.err
+	}
+	for s.sc.Scan() {
+		if err := s.ctx.Err(); err != nil {
+			s.err = err
+			return model.Record{}, err
+		}
+		line := strings.TrimRight(s.sc.Text(), "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		m := s.re.FindStringSubmatch(line)
+		if m == nil {
+			if s.strict {
+				s.err = errs.Sourcef(errs.ErrMalformedCSV, "line %q does not match pattern", line)
+				return model.Record{}, s.err
+			}
+			continue
+		}
+		s.row++
+		names := s.re.SubexpNames()[1:]
+		fields := make([]string, len(names))
+		for i := range names {
+			fields[i] = m[i+1]
+		}
+		return model.Record{RowNumber: s.row, Fields: fields}, nil
+	}
+	if err := s.sc.Err(); err != nil {
+		s.err = errs.Sourcef(errs.ErrInvalidFile, "read: %v", err)
+		return model.Record{}, s.err
+	}
+	s.err = model.ErrEOF
+	return model.Record{}, model.ErrEOF
 }
 
 // TextParserFromConfig builds a TextParser from component config keys:
