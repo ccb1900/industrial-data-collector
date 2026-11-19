@@ -23,11 +23,14 @@ import (
 )
 
 // MachineDayUnit 是一台源单元喂给聚合的输入：显式身份 + 该源的台账记录。
+// ReadError 标记"台账读取失败"——这样的源不能从视图里消失，否则一次
+// SQLite busy 会让机台日在缺了一个格式的情况下被算成健康。
 type MachineDayUnit struct {
 	MachineID string
 	FormatID  string
 	SourceID  string
 	Records   []model.CollectionRecord
+	ReadError bool
 }
 
 // MachineDayFilter 是查询参数（全部可选）。
@@ -45,15 +48,18 @@ type machineDayFormat struct {
 }
 
 type MachineDayRow struct {
-	Machine   string             `json:"machine"`
-	Date      string             `json:"date"`
-	Healthy   bool               `json:"healthy"`
-	Succeeded int                `json:"succeeded"`
-	NoData    int                `json:"noData"`
-	Failed    int                `json:"failed"`
-	Pending   int                `json:"pending"`
-	Expired   int                `json:"expired"`
-	Formats   []machineDayFormat `json:"formats"`
+	Machine   string `json:"machine"`
+	Date      string `json:"date"`
+	Healthy   bool   `json:"healthy"`
+	Succeeded int    `json:"succeeded"`
+	NoData    int    `json:"noData"`
+	Failed    int    `json:"failed"`
+	Pending   int    `json:"pending"`
+	Expired   int    `json:"expired"`
+	// ReadErrors 计数"台账读失败的源"。视图宁可承认看不见，也不把缺席
+	// 当健康——缺证据的"健康"是最危险的那种。
+	ReadErrors int                `json:"readErrors"`
+	Formats    []machineDayFormat `json:"formats"`
 }
 
 // MachineDayRows 是本文件唯一的一处聚合算法（"一个决定只活在一个地方"）。
@@ -62,7 +68,13 @@ type MachineDayRow struct {
 func MachineDayRows(units []MachineDayUnit, f MachineDayFilter) []MachineDayRow {
 	type key struct{ machine, date string }
 	grouped := map[key][]machineDayFormat{}
+	readErrorsByKey := map[key]int{}
+	// 第一遍：正常台账按 (机台, 业务日) 分组，并记下每台机器已知的最新日期。
+	latestDate := map[string]string{}
 	for _, u := range units {
+		if u.ReadError {
+			continue
+		}
 		machine := u.MachineID
 		if machine == "" {
 			machine = u.SourceID
@@ -81,11 +93,40 @@ func MachineDayRows(units []MachineDayUnit, f MachineDayFilter) []MachineDayRow 
 				Status:   string(rec.Status),
 				Note:     rec.Note,
 			})
+			if d > latestDate[machine] {
+				latestDate[machine] = d
+			}
 		}
+	}
+	// 第二遍：台账读失败的源以 Unknown 入列并压制健康判定——绝不静默缺席。
+	// 归属日期：有过滤用过滤日期；否则挂到该机台已知最新的一天（审查场景：
+	// m1 的 readings 在 11-18 健康、alm_log 读失败 → 11-18 必须显示不健康，
+	// 而不是让 alm_log 消失）；整台机器都读不到时落 ""（诚实承认日期未知）。
+	for _, u := range units {
+		if !u.ReadError {
+			continue
+		}
+		machine := u.MachineID
+		if machine == "" {
+			machine = u.SourceID
+		}
+		if f.Machine != "" && machine != f.Machine {
+			continue
+		}
+		d := f.Date
+		if d == "" {
+			d = latestDate[machine]
+		}
+		k := key{machine, d}
+		grouped[k] = append(grouped[k], machineDayFormat{
+			SourceID: u.SourceID, Format: u.FormatID,
+			Status: "Unknown", Note: "ledger read failed",
+		})
+		readErrorsByKey[k]++
 	}
 	rows := make([]MachineDayRow, 0, len(grouped))
 	for k, formats := range grouped {
-		row := MachineDayRow{Machine: k.machine, Date: k.date, Formats: formats}
+		row := MachineDayRow{Machine: k.machine, Date: k.date, Formats: formats, ReadErrors: readErrorsByKey[k]}
 		sort.Slice(formats, func(i, j int) bool { return formats[i].Format < formats[j].Format })
 		for _, fm := range formats {
 			switch model.Status(fm.Status) {
@@ -102,9 +143,11 @@ func MachineDayRows(units []MachineDayUnit, f MachineDayFilter) []MachineDayRow 
 			}
 		}
 		// Expired 不需要单列禁项：五个状态桶互斥且完备，
-		// Succeeded+NoData == len(formats) 已经排掉了 Expired/Failed/Pending。
-		row.Healthy = row.Failed == 0 && row.Pending == 0 &&
-			row.Succeeded+row.NoData == len(formats)
+		// Succeeded+NoData == len(formats)-readErrors 已经排掉了
+		// Expired/Failed/Pending。Unknown 条目（台账读失败）由 ReadErrors
+		// 压制健康判定——缺证据的"健康"是最危险的那种。
+		row.Healthy = row.Failed == 0 && row.Pending == 0 && row.ReadErrors == 0 &&
+			row.Succeeded+row.NoData == len(formats)-row.ReadErrors
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool {

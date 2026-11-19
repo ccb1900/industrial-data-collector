@@ -564,6 +564,16 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if catchup < 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "catchup_days must be >= 0")
 	}
+	// layout=flat（仪表导出：同一个文件就是当天的数据）与补采窗口在语义上
+	// 互斥：窗口会让一次导出被归到 [target-(N-1), target] 的每一天——最老的
+	// 一天先采，内容哈希去重让其余日期"没有文件"，业务日归属就此错乱，而且
+	// 错归的行是 Succeeded，ExpireBeyond（只退役 Failed/Pending）永不回收。
+	// 强制归零不是吞配置：这个组合不存在一种正确的解释。
+	if layout == "flat" && catchup > 0 {
+		slog.Warn("catchup_days ignored for layout=flat: a flat export is same-day data; a window would attribute one export to N business dates",
+			"source", cc.ID, "catchup_days", catchup)
+		catchup = 0
+	}
 	// 并发与备份开关（fleet 默认由源编排透传；不配置即维持旧行为：
 	// 文件串行、进程级 4 源并发闸、无备份）。
 	filesPerSource := configutil.OptionalInt(cc, "files_per_source", 1)

@@ -2,10 +2,14 @@ package collector
 
 import (
 	"context"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	datepolicy "gocordis-csv-collector/app/date"
+	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/recovery"
 	"gocordis-csv-collector/app/state"
@@ -154,5 +158,99 @@ func TestLateFileAfterConfirmedSkipNeedsManualBackfill(t *testing.T) {
 	}
 	if len(manual) != 1 || manual[0].Key.Date.String() != "2026-10-25" || manual[0].Status != model.StatusSucceeded {
 		t.Fatalf("manual backfill = %#v, want exactly 2026-10-25 Succeeded", manual)
+	}
+}
+
+// scriptedSource 按脚本逐次返回 List 结果：验证"探不到"之外的形态如何参与
+// 无数据确认。
+type scriptedSource struct {
+	id     model.SourceID
+	script []error
+	calls  int
+}
+
+func (s *scriptedSource) ID() model.SourceID { return s.id }
+func (s *scriptedSource) Root() string       { return `\\machine001\data` }
+func (s *scriptedSource) List(_ context.Context, _ model.ListRequest) ([]model.FileIdentity, error) {
+	if s.calls >= len(s.script) {
+		return nil, errs.Sourcef(errs.ErrNotFound, "script exhausted")
+	}
+	e := s.script[s.calls]
+	s.calls++
+	return nil, e
+}
+func (s *scriptedSource) Read(context.Context, model.FileIdentity) (io.ReadCloser, error) {
+	return nil, errs.Sourcef(errs.ErrNotFound, "no files")
+}
+func (s *scriptedSource) Close() error { return nil }
+
+// TestNoDataCountsEmptyDirectory：目录存在但没有匹配文件（上游"先 mkdir 再
+// 写文件"的常见形态）与目录不存在必须同等参与确认计数——审查抓到的第一版
+// 只数 ErrNotFound，对这类部署整个特性静默失效。
+func TestNoDataCountsEmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	// 目录存在且为空：walk 路由返回空列表而不是 ErrNotFound。
+	if err := os.MkdirAll(filepath.Join(root, "2026-11-18"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e, st := frozenExecutor(t, root, datepolicy.Policy{Type: datepolicy.PolicyYesterday}, 1)
+	e.Config.NoDataConfirmDays = 2
+	ctx := context.Background()
+	day := date(t, "2026-11-18")
+
+	if _, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := st.StatusOf(ctx, model.CollectionKey{SourceID: "prod", Date: day}); existed {
+		t.Fatal("first empty probe must only count, not settle")
+	}
+	if _, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, existed, _ := st.StatusOf(ctx, model.CollectionKey{SourceID: "prod", Date: day}); !existed || got != model.StatusSkipped {
+		t.Fatalf("second empty probe = (%q, existed=%v), want confirmed Skipped", got, existed)
+	}
+}
+
+// TestUnstableProbeBreaksNoDataStreak：文件出现但仍在稳定窗口时，"连续探不到"
+// 被打断——否则活跃日会在计数凑满后被误终态化成无数据。
+func TestUnstableProbeBreaksNoDataStreak(t *testing.T) {
+	base := state.NewMemory()
+	e := newExecutor(t, t.TempDir(), base, storage.NewMemory(storage.MemoryOptions{}))
+	now := func() time.Time { return time.Date(2026, 11, 19, 3, 0, 0, 0, time.UTC) }
+	e.Config.Now = now
+	e.Config.DatePolicy = datepolicy.Policy{Type: datepolicy.PolicyYesterday, Now: now}
+	e.Config.Boundary = datepolicy.Boundary{Now: now, WindowDays: 1}
+	e.Recovery = recovery.Planner{State: base, CatchupDays: 1, Now: now}
+	e.Config.NoDataConfirmDays = 2
+	e.Source = &scriptedSource{
+		id: "prod",
+		script: []error{
+			errs.Sourcef(errs.ErrNotFound, "day 1: no dir"),
+			errs.Sourcef(errs.ErrFileUnstable, "day 2: file appeared, still writing"),
+			errs.Sourcef(errs.ErrNotFound, "day 3: dir gone again"),
+		},
+	}
+	ctx := context.Background()
+	day := date(t, "2026-11-18")
+
+	// 第 1 轮：NotFound 计数到 1。
+	if _, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	// 第 2 轮：不稳定探针打断连续性。
+	if _, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	// 第 3 轮：NotFound 从 1 重新数起——不到 2，不终态化。
+	results, err := e.Handle(ctx, model.CollectionRequested{Reason: "scheduled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].NoDataConfirmed {
+		t.Fatalf("streak was broken by the unstable probe; confirmation must restart: %#v", results[0])
+	}
+	if _, existed, _ := base.StatusOf(ctx, model.CollectionKey{SourceID: "prod", Date: day}); existed {
+		t.Fatal("an unconfirmed absence must not materialize a ledger row")
 	}
 }

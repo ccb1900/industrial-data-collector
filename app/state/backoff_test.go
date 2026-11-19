@@ -110,3 +110,40 @@ func TestSQLiteV2LedgerMigratesNextAttemptColumn(t *testing.T) {
 		t.Fatalf("next attempt - failed at = %s, want 1m", d)
 	}
 }
+
+// TestSQLiteV0LedgerWithOldShapeMigrates：user_version=0 却带旧形态表的库
+// （预版本期产物、或建库在 DDL 与版本写入之间崩溃）同样必须补列——门若写在
+// version>0 上，这类库会在 v3 被跳过迁移，之后写账永久报 no such column。
+func TestSQLiteV0LedgerWithOldShapeMigrates(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v0.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE state_failures (
+		source_id TEXT NOT NULL, date TEXT NOT NULL, file_id TEXT NOT NULL,
+		path TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+		mod_time INTEGER NOT NULL DEFAULT 0, hash TEXT NOT NULL DEFAULT '',
+		error_text TEXT NOT NULL DEFAULT '', failed_at INTEGER NOT NULL DEFAULT 0,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (source_id, date, file_id));`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	raw.Close()
+
+	ctx := context.Background()
+	st, err := OpenSQLite(dbPath, "prod", "")
+	if err != nil {
+		t.Fatalf("open v0 ledger: %v", err)
+	}
+	defer st.Close()
+	if err := st.MarkFileFailed(ctx, key("2026-11-18"),
+		model.FileIdentity{SourceID: "prod", Path: "/x/a.csv", Name: "a.csv"}, "boom", true); err != nil {
+		t.Fatalf("write after v0 migration: %v", err)
+	}
+	fails, err := st.ListFileFailures(ctx, "prod")
+	if err != nil || len(fails) != 1 {
+		t.Fatalf("ledger after v0 migration = %+v err=%v", fails, err)
+	}
+}

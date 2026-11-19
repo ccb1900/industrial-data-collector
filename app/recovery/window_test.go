@@ -136,3 +136,44 @@ func keysString(keys []model.CollectionKey) string {
 	}
 	return out
 }
+
+// TestPlannerSkipsDatesUnderLiveLease：窗口内某天真有执行者在跑时，本轮跳过
+// 它——这是"同一任务不重复执行"在规划层的落点。时钟注入让租约边界两侧都能
+// 被压到，不用 sleep。
+func TestPlannerSkipsDatesUnderLiveLease(t *testing.T) {
+	ctx := context.Background()
+	st := state.NewMemory()
+	k := model.CollectionKey{SourceID: "prod", Date: mk("2026-09-05")}
+	if _, err := st.Begin(ctx, k, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	// 时钟就在当下：租约活着，这个日期本轮不排（别的执行者正在跑）。
+	live := Planner{State: st, CatchupDays: 30, Now: time.Now}
+	got, err := live.Plan(ctx, "prod", mk("2026-09-06"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range got {
+		if k.Date.String() == "2026-09-05" {
+			t.Fatalf("in-flight date planned again: %v", got)
+		}
+	}
+
+	// 时钟推过租约：stale Running 必须重新可排（StartedAt 为零值同样按过期算，
+	// 与 Begin 认领的 started_at <= now-lease 守卫一致）。
+	stale := Planner{State: st, CatchupDays: 30, Now: func() time.Time { return time.Now().Add(25 * time.Hour) }}
+	got, err = stale.Plan(ctx, "prod", mk("2026-09-06"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planned bool
+	for _, k := range got {
+		if k.Date.String() == "2026-09-05" {
+			planned = true
+		}
+	}
+	if !planned {
+		t.Fatalf("stale Running lease must re-enter the plan: %v", got)
+	}
+}

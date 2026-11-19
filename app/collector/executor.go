@@ -99,6 +99,42 @@ func (e *Executor) observe(f func(o Observer)) {
 	}
 }
 
+// settleNoData 把一次"探不到"计入确认计数；达到阈值时终态化为有证据的
+// Skipped。两个"没有"的形态共用它：目录/文件不存在（ErrNotFound）与目录
+// 存在但没有匹配文件（空列表）——上游先建目录后写文件是常见行为。
+// 返回 true 表示结果已写好，调用方直接返回。
+// 终态写失败时撤销刚 Begin 的行：留给它的 24h 租约会把这个日期冻住一整天，
+// "下一轮重新判定"得真的有下一轮能排它才行。
+func (e *Executor) settleNoData(ctx context.Context, key model.CollectionKey, cfg Config, result *model.CollectionResult) bool {
+	if cfg.NoDataConfirmDays <= 0 {
+		return false
+	}
+	confirmed, perr := e.State.RecordNoDataProbe(ctx, key, cfg.NoDataConfirmDays)
+	if perr != nil {
+		cfg.Logger.Warn("no-data probe accounting failed; treating as unconfirmed",
+			"key", key.String(), "error", perr.Error())
+		return false
+	}
+	if !confirmed {
+		return false
+	}
+	note := fmt.Sprintf("no data confirmed after %d probes", cfg.NoDataConfirmDays)
+	if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr == nil && ok {
+		if eerr := e.endState(ctx, key, model.StatusSkipped, note); eerr == nil {
+			result.NoDataConfirmed = true
+		} else if derr := e.State.Drop(ctx, key); derr != nil {
+			cfg.Logger.Warn("no-data settle rollback failed; the date may sit in Running for its lease",
+				"key", key.String(), "error", derr.Error())
+		}
+	}
+	if result.NoDataConfirmed {
+		result.Status = model.StatusSkipped
+		result.Error = "no data confirmed"
+		return true
+	}
+	return false
+}
+
 // endState 必须在作业 ctx 已取消时也能落账：Running 行会被 Begin 的 24h
 // 租约和 ListIncomplete 同时挡住，只有进程重启才会回收。终态写入用一个
 // 脱钩的短超时 ctx。
@@ -284,25 +320,8 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 			// 升格为有证据的终态：Skipped 行进台账（所有读取面把 Skipped
 			// 当已结算历史），事件告知投影。计数落台账，重启不清零；
 			// 不可达（ErrUnavailable）走下面 default 分支，绝不参与计数。
-			if cfg.NoDataConfirmDays > 0 {
-				confirmed, perr := e.State.RecordNoDataProbe(ctx, key, cfg.NoDataConfirmDays)
-				if perr != nil {
-					cfg.Logger.Warn("no-data probe accounting failed; treating as unconfirmed",
-						"key", key.String(), "error", perr.Error())
-				} else if confirmed {
-					note := fmt.Sprintf("no data confirmed after %d probes", cfg.NoDataConfirmDays)
-					if ok, berr := e.State.Begin(ctx, key, 24*time.Hour); berr == nil && ok {
-						if eerr := e.endState(ctx, key, model.StatusSkipped, note); eerr == nil {
-							result.NoDataConfirmed = true
-						}
-					}
-					if result.NoDataConfirmed {
-						result.Status = model.StatusSkipped
-						result.Error = "no data confirmed"
-						return result
-					}
-					// 落账失败：退回不物化路径，下一轮重新计数判定。
-				}
+			if e.settleNoData(ctx, key, cfg, result) {
+				return result
 			}
 			if st, existed, sErr := e.State.StatusOf(ctx, key); sErr == nil && !(existed && st == model.StatusSucceeded) {
 				result.Dropped = existed
@@ -314,6 +333,13 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		case errs.Is(err, errs.ErrFileUnstable):
 			// 候选文件都在稳定窗口内：不物化，下次触发重探——
 			// 终态化会把晚到文件永久丢失。
+			if cfg.NoDataConfirmDays > 0 {
+				// 文件存在但还在写："连续探不到"被打断——否则文件持续
+				// 处于稳定窗口时计数照涨，会把活跃日误终态化成无数据。
+				if rerr := e.State.ResetNoData(ctx, key); rerr != nil {
+					cfg.Logger.Warn("no-data streak reset failed", "key", key.String(), "error", rerr.Error())
+				}
+			}
 			result.Status = model.StatusPending
 			result.Error = fmt.Sprintf("files inside stable window: %v", err)
 			// 旧进程中断留下的 Running 必须落成 Pending：否则重启后
@@ -349,6 +375,12 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 		// 非 Succeeded 的旧记录（Running/Failed/Pending，以及只有失败账的
 		// 孤儿键）不再是证据：Drop 掉整份台账，并通知观察层退役 UI 行。
 		// Succeeded 是历史事实，append 模式重触发时保留。
+		// 空目录与目录不存在是同一种"没有"：确认计数一视同仁——上游
+		// "先 mkdir 再写文件"是常见行为，目录存在与否不该决定
+		// no_data_after_days 是否生效。
+		if e.settleNoData(ctx, key, cfg, result) {
+			return result
+		}
 		if st, ok, sErr := e.State.StatusOf(ctx, key); sErr == nil && !(ok && st == model.StatusSucceeded) {
 			result.Dropped = ok
 			_ = e.State.Drop(ctx, key)
@@ -389,11 +421,15 @@ func (e *Executor) collectOne(ctx context.Context, key model.CollectionKey) *mod
 	// 跳过——它算"未完成"，绝不能算成功，否则成功守卫会把这一天锁死。
 	throttled := map[string]time.Time{}
 	if cfg.Now != nil {
-		if fails, ferr := e.State.ListFileFailures(ctx, key.SourceID); ferr == nil {
-			for _, f := range fails {
-				if f.Key == key && f.NextAttemptAt.After(cfg.Now()) {
-					throttled[f.File.Identity()] = f.NextAttemptAt
-				}
+		fails, ferr := e.State.ListFileFailures(ctx, key.SourceID)
+		if ferr != nil {
+			// 读不到失败账就关不掉节流——静默吞掉会让退避悄悄失效。
+			cfg.Logger.Warn("read failure ledger failed; retry throttling disabled this pass",
+				"key", key.String(), "error", ferr.Error())
+		}
+		for _, f := range fails {
+			if f.Key == key && f.NextAttemptAt.After(cfg.Now()) {
+				throttled[f.File.Identity()] = f.NextAttemptAt
 			}
 		}
 	}

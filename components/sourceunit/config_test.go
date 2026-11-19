@@ -168,3 +168,29 @@ func TestNewSourceUnitMachineAndFormatIdentity(t *testing.T) {
 		t.Fatalf("hand-written component must have zero identity, got %q/%q", bare.MachineID(), bare.FormatID())
 	}
 }
+
+// flat 源与补采窗口互斥：窗口会把一次导出归到 N 个业务日（最老日期先采，
+// 哈希去重让其余日期空手而归），错归的行是 Succeeded、永不退役。强制归零。
+func TestNewSourceUnitFlatLayoutForcesCatchupZero(t *testing.T) {
+	c, err := NewSourceUnit(unitCfg(map[string]any{"layout": "flat", "catchup_days": 30}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.planner().CatchupDays != 0 {
+		t.Fatalf("flat planner catchup = %d, want 0", c.planner().CatchupDays)
+	}
+	if c.boundary().WindowDays != 0 {
+		t.Fatalf("flat boundary window = %d, want 0", c.boundary().WindowDays)
+	}
+	if !c.boundary().SameDay {
+		t.Fatal("flat source must keep SameDay=true")
+	}
+	// dated 源不受影响。
+	dated, err := NewSourceUnit(unitCfg(map[string]any{"catchup_days": 30}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dated.planner().CatchupDays != 30 {
+		t.Fatalf("dated planner catchup = %d, want 30", dated.planner().CatchupDays)
+	}
+}

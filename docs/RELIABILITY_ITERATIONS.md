@@ -219,10 +219,10 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 | B `Expired` 全链 | ✅ 完成 |
 | C 无数据确认 | ✅ 完成（默认关，零回归） |
 | D 文件级退避 | ✅ 完成（只节流内容性失败） |
-| E 机台 × 日汇总 | 待做 |
+| E 机台 × 日汇总 | ✅ 完成（machine-days 查询；页面接线留给 UI 阶段） |
 | F 插件边界收敛 | 待做 |
 | G 流式 TextParser / mysql 去 IGNORE / endState 重试 | ✅ 完成（提前） |
-| H 时钟接缝 / verify.sh 真实化 | ✅ 完成；E2E 全面隔离与 collect.db 出库待做 |
+| H 时钟接缝 / verify.sh 真实化 | ✅ 完成（含 E2E 全面隔离与 collect.db 出库） |
 
 ## 12. 一页话给执行者
 

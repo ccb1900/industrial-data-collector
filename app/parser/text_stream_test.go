@@ -155,4 +155,8 @@ func TestTextLineRegexStreamStrictFailsMidStream(t *testing.T) {
 	if err == nil || err == model.ErrEOF {
 		t.Fatalf("strict mismatch must fail the stream, got %v", err)
 	}
+	// 错误携带行内容（不是行号）：现场拿着报错去文件里搜原文即可定位。
+	if !strings.Contains(err.Error(), "bad line") {
+		t.Errorf("strict error must quote the offending line, got %v", err)
+	}
 }

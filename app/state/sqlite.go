@@ -196,8 +196,12 @@ func ensureSQLiteSchema(db *sql.DB) error {
 		}
 	}
 	// v2 → v3：state_failures 增加 next_attempt_at（文件级退避）。CREATE TABLE
-	// IF NOT EXISTS 不会给旧表补列，按列存在性 ALTER——对已迁移的库是 no-op。
-	if version > 0 && version < 3 {
+	// IF NOT EXISTS 不会给旧表补列，按列存在性 ALTER——对已迁移的库是 no-op，
+	// 所以不做版本号门：user_version=0 却带旧形态表的库（预版本期产物、或首次
+	// 建库在 DDL 与 PRAGMA 写入之间崩溃）同样走到这里，漏掉它们会让
+	// MarkFileFailed/ListFileFailures 永久报 no such column，且执行器只静默
+	// 吞掉读错误——退避悄悄失效。
+	if version < 3 {
 		rows, err := db.Query(`PRAGMA table_info(state_failures)`)
 		if err != nil {
 			return fmt.Errorf("state database schema: %w", err)

@@ -293,8 +293,9 @@ func TestFailureLedgerRetiresByPathOnCorrectedReexport(t *testing.T) {
 	}
 }
 
-// 加载即清污：旧语义遗留的 Skipped/Pending 记录在装载时清除并压实回写；
-// 真实实例（Succeeded/Failed）原样保留。
+// 加载迁移：Pending 转 Failed（待重试证据），Skipped 原样保留——它从
+// "旧语义遗留"变成了 Iteration C 的合法终态（确认无数据），装载清除会把
+// 确认结果抹掉、重启后回到每晚重探。真实实例（Succeeded/Failed）原样保留。
 func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 	st := NewMemory()
 	ctx := context.Background()
@@ -313,7 +314,7 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 		return key
 	}
 	keep := []model.CollectionKey{mk("2026-09-05", "Succeeded"), mk("2026-09-06", "Failed")}
-	purge := []model.CollectionKey{mk("2026-09-07", "Skipped")}
+	keepSkipped := []model.CollectionKey{mk("2026-09-07", "Skipped")}
 	convert := []model.CollectionKey{mk("2026-09-08", "Pending")}
 
 	path := filepath.Join(t.TempDir(), "collection-state.json")
@@ -331,9 +332,9 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 			t.Fatalf("real instance %s lost: %v %v", k, got, ok)
 		}
 	}
-	for _, k := range purge {
-		if _, ok, _ := fs.StatusOf(ctx, k); ok {
-			t.Fatalf("pre-instance record %s must be purged", k)
+	for _, k := range keepSkipped {
+		if got, existed, _ := fs.StatusOf(ctx, k); !existed || got != model.StatusSkipped {
+			t.Fatalf("confirmed no-data row %v must survive load: got=%q existed=%v", k, got, existed)
 		}
 	}
 	for _, k := range convert {
@@ -346,14 +347,14 @@ func TestNewFilePurgesPreInstanceRecords(t *testing.T) {
 			t.Fatalf("converted record %s must stay listed for recovery", k)
 		}
 	}
-	// 压实已回写：重新装载不再见到旧语义记录。
+	// 压实已回写：重新装载后各终态保持原样（Skipped 是合法终态，不再清除）。
 	fs2, err := NewFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range purge {
-		if _, ok, _ := fs2.StatusOf(ctx, k); ok {
-			t.Fatalf("purged record %s reappeared after reload", k)
+	for _, k := range keepSkipped {
+		if got, ok, _ := fs2.StatusOf(ctx, k); !ok || got != model.StatusSkipped {
+			t.Fatalf("skipped record %s vanished on reload: %v (found=%v)", k, got, ok)
 		}
 	}
 	if got, ok, _ := fs2.StatusOf(ctx, convert[0]); !ok || got != model.StatusFailed {

@@ -423,8 +423,11 @@ func TestSQLiteStateImportAppliesPreInstanceMigration(t *testing.T) {
 	}
 
 	st := openTestSQLite(t, filepath.Join(dir, "state.db"), "prod", legacyPath)
-	if _, ok, _ := st.StatusOf(ctx, skipped); ok {
-		t.Fatal("skipped pre-instance record must be purged on import")
+	// Skipped 不再清除：它从"旧语义遗留"变成了 Iteration C 的合法终态
+	// （确认无数据），导入即保留——否则现场从 file-state 升级到 sqlite-state
+	// 时，已确认的无数据日会回到每晚重探。
+	if status, ok, _ := st.StatusOf(ctx, skipped); !ok || status != model.StatusSkipped {
+		t.Fatalf("confirmed no-data record after import = %q ok=%v, want kept as Skipped", status, ok)
 	}
 	if status, ok, _ := st.StatusOf(ctx, pending); !ok || status != model.StatusFailed {
 		t.Fatalf("pending record after import = %q ok=%v, want failed", status, ok)

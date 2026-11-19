@@ -166,12 +166,12 @@ func (s *MemoryState) End(ctx context.Context, key model.CollectionKey, status m
 func (s *MemoryState) migratePreInstance() (purged, converted int) {
 	for k, rec := range s.collections {
 		switch rec.Status {
+		// Skipped 曾是"旧语义遗留、装载即清"的状态；Iteration C 让
+		// "确认无数据"重新落成 Skipped 终态后，装载清除会把确认结果抹掉
+		// ——重启一次就回到每晚重探，文档承诺的"不再消耗探针"失效。
+		// Skipped 现在原样保留（两个来源语义一致：都是"已结算的无数据"）。
 		case model.StatusSkipped:
-			delete(s.collections, k)
-			delete(s.files, k)
-			delete(s.failedFiles, k)
-			delete(s.checks, k)
-			purged++
+			// 保留
 		case model.StatusPending:
 			rec.Status = model.StatusFailed
 			s.collections[k] = rec

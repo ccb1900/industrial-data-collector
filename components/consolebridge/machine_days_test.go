@@ -164,3 +164,41 @@ func TestRegisterMachineDaysWiresTheQuery(t *testing.T) {
 		t.Error("bad limit must surface as hub error")
 	}
 }
+
+// TestMachineDayRowsReadErrorIsNotHealthy：台账读失败的源以 Unknown 入列并压制
+// 健康判定——审查抓到的旧实现把它静默丢掉，m1 在缺一个格式的情况下被判健康。
+func TestMachineDayRowsReadErrorIsNotHealthy(t *testing.T) {
+	units := []MachineDayUnit{
+		unit("m1", "readings", "m1-readings", rec("m1-readings", "2026-11-18", model.StatusSucceeded)),
+		{MachineID: "m1", FormatID: "alm_log", SourceID: "m1-alm_log", ReadError: true},
+	}
+	rows := MachineDayRows(units, MachineDayFilter{})
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Healthy {
+		t.Fatalf("a machine-day with an unreadable ledger must not be healthy: %+v", rows[0])
+	}
+	if rows[0].ReadErrors != 1 {
+		t.Errorf("readErrors = %d, want 1", rows[0].ReadErrors)
+	}
+	var unknown bool
+	for _, fm := range rows[0].Formats {
+		if fm.SourceID == "m1-alm_log" && fm.Status == "Unknown" {
+			unknown = true
+		}
+	}
+	if len(rows[0].Formats) != 2 || !unknown {
+		t.Errorf("formats = %+v, want an Unknown entry for the unreadable source", rows[0].Formats)
+	}
+}
+
+// TestMachineDayUnitsSurfacesReadErrors：machineDayUnits 不再吞 Records 错误。
+func TestMachineDayUnitsSurfacesReadErrors(t *testing.T) {
+	// units 为 nil 时不出错、不产生行：注册路径的最低要求。
+	c := &Component{}
+	c.SetUnits(nil)
+	if got := c.machineDayUnits(context.Background()); len(got) != 0 {
+		t.Fatalf("units = %+v, want empty", got)
+	}
+}

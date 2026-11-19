@@ -190,7 +190,10 @@ func (s *memStream) Next() (model.Record, error) {
 // lineRegexStream 把行正则模式的记录直接从 scanner 上吐出来：一行一次匹配，
 // 不累积任何行集。取消语义与改造前一致——Parse 时不预读，ctx.Err 在每次
 // Next 时检查。strict 模式下非匹配行让 Next 返回错误，采集器据此判整个
-// 文件失败（与改造前 Parse 直接报错等价）。
+// 文件失败；与旧 Parse 报错唯一的差别在副作用：坏行**之前**的记录会被
+// 采集器按既有 CSV 语义做一次 best-effort 冲洗（executor 的 _ = write()），
+// 即部分行入库 + 文件判失败——这与 CSV 中途解析错误的行为完全一致，
+// 不是新引入的类别。
 type lineRegexStream struct {
 	header []string
 	re     *regexp.Regexp
