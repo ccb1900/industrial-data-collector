@@ -1,12 +1,17 @@
 package sourceunit
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"dynamic-runtime/extensions/config"
+
+	"gocordis-csv-collector/app/model"
+	appparser "gocordis-csv-collector/app/parser"
 )
 
 func unitCfg(extra map[string]any) config.ComponentConfig {
@@ -193,4 +198,50 @@ func TestNewSourceUnitFlatLayoutForcesCatchupZero(t *testing.T) {
 	if dated.planner().CatchupDays != 30 {
 		t.Fatalf("dated planner catchup = %d, want 30", dated.planner().CatchupDays)
 	}
+}
+
+// TestNewSourceUnitResolvesRegisteredParserKinds 是 Iteration F 的验收点：
+// 新增第四种文件格式 = 在 app/parser 注册一个工厂，sourceunit 零改动。
+// 旧实现是 sourceunit 里的硬编码 switch——注册表化之后这里必须对任何
+// 已注册取值直接放行。
+func TestNewSourceUnitResolvesRegisteredParserKinds(t *testing.T) {
+	registered := 0
+	if err := appparser.RegisterParser("test-4th", func(map[string]any) (model.CSVParser, error) {
+		registered++
+		return &stubParser{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { appparser.UnregisterParser("test-4th") })
+
+	// 组件构造路径：parser = test-4th 必须被解析而不是报"unsupported"。
+	c, err := NewSourceUnit(unitCfg(map[string]any{"parser": "test-4th"}), nil)
+	if err != nil {
+		t.Fatalf("registered kind must resolve: %v", err)
+	}
+	if c.parser == nil {
+		t.Fatal("component must hold the resolved parser")
+	}
+	// buildParser 直连路径同样放行。
+	// 直连路径同样放行，且工厂确实被调用（分派走注册表而非本地 switch）。
+	p, err := buildParser(map[string]any{"parser": "test-4th"})
+	if err != nil {
+		t.Fatalf("buildParser must consult the registry: %v", err)
+	}
+	if _, err := p.Parse(context.Background(), strings.NewReader("x")); err != nil {
+		t.Fatalf("stub parse: %v", err)
+	}
+	if registered == 0 {
+		t.Fatal("factory never ran — the registry was not consulted")
+	}
+	// 未知取值仍然响亮失败。
+	if _, err := buildParser(map[string]any{"parser": "no-such"}); err == nil {
+		t.Fatal("unknown kind must fail loudly")
+	}
+}
+
+type stubParser struct{}
+
+func (stubParser) Parse(context.Context, io.Reader) (model.CSVDocument, error) {
+	return model.CSVDocument{}, nil
 }

@@ -666,55 +666,17 @@ func (o outcomeObserver) CollectionsExpired(ctx context.Context, keys []model.Co
 	outcome.PublishCollectionExpired(ctx, o.emitCtx, keys)
 }
 
+// buildParser 按注册表解析 parser 取值。新增一种文件格式 = 在 app/parser
+// 注册一个工厂，这里零改动（TestNewSourceUnitResolvesRegisteredParserKinds
+// 钉住这个扩展点）。未知取值响亮失败——与配置校验同一份白名单来源。
 func buildParser(cfg map[string]any) (model.CSVParser, error) {
 	cc := config.ComponentConfig{Config: cfg}
 	kind := configutil.OptionalString(cc, "parser", "csv")
-	if kind == "text" || kind == "text-parser" {
-		// Plain-text formats (single-value / line-regex / key-value) for
-		// non-CSV exports such as watched instrument files.
-		return appparser.NewTextParserFromConfigValues(cfg)
-	}
-	switch kind {
-	case "csv", "csv-parser":
-	default:
+	factory, ok := appparser.ParserFor(kind)
+	if !ok {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "unsupported parser %q", kind)
 	}
-	p := appparser.New()
-	encName, encErr := appencoding.Normalize(configutil.OptionalString(cc, "encoding", "utf8"))
-	if encErr != nil {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser: %v", encErr)
-	}
-	p.Encoding = encName
-	p.Header = configutil.OptionalBool(cc, "header", true)
-	p.SkipLines = configutil.OptionalInt(cc, "skip_lines", 0)
-	if p.SkipLines < 0 {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser skip_lines must be >= 0")
-	}
-	p.AllowRagged = configutil.OptionalBool(cc, "allow_ragged", false)
-	if d := configutil.OptionalString(cc, "delimiter", ""); d != "" {
-		runes := []rune(d)
-		if len(runes) != 1 {
-			return nil, errs.Sourcef(errs.ErrInvalidConfig, "delimiter must be one character")
-		}
-		p.Comma = runes[0]
-	}
-	docCfg, err := appparser.ParseDocumentConfig(cfg)
-	if err != nil {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "parser: %v", err)
-	}
-	if docCfg.Enabled() && !p.Header {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode requires header=true")
-	}
-	// 结构化元数据段要求行与声明的字段一一对应，锯齿放行会让元数据错位——
-	// 显式拒绝而不是静默忽略 allow_ragged。
-	if docCfg.Enabled() && p.AllowRagged {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode does not support allow_ragged")
-	}
-	if docCfg.Enabled() && p.SkipLines != 0 {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "structured csv.metadata mode cannot be combined with skip_lines")
-	}
-	p.Document = docCfg
-	return p, nil
+	return factory(cfg)
 }
 
 func buildState(cfg map[string]any, sourceID string) (model.CollectionState, bool, error) {

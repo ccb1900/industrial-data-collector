@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/robfig/cron/v3"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -311,7 +312,9 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 		if format == "line-regex" && str(cc.Config, "pattern") == "" {
 			return fmt.Errorf("source-unit %q line-regex requires pattern", cc.ID)
 		}
-	} else if kind != "csv" && kind != "csv-parser" {
+	} else if !slices.Contains(appparser.KnownParserKinds(), kind) {
+		// 白名单与运行时分派同源（app/parser 注册表）：不会再出现
+		// "校验放行、装配报错"的裂缝。
 		return fmt.Errorf("source-unit %q unsupported parser %q", cc.ID, kind)
 	}
 	if l := str(cc.Config, "layout"); l != "" && l != "dated" && l != "flat" {
