@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -721,153 +720,23 @@ func buildState(cfg map[string]any, sourceID string) (model.CollectionState, boo
 	}
 }
 
+// buildStorage 收口到 components/storage 的唯一推导（DeriveStorageSpec）。
+// 此前这里另有一份推导且与组件路径分叉：默认表名、auto-columns 语义、
+// header_check 丢置——裂缝的形态是"同一份逻辑声明、两条入口、两种装配"。
+// sink 键（storage/sink 别名）与 lazy_connect 的读取仍在 source-unit 一侧。
 func buildStorage(cfg map[string]any) (*storage.MemoryStore, *storage.SQLConfig, *storage.TableConfig, error) {
 	cc := config.ComponentConfig{Config: cfg}
 	typ := configutil.OptionalString(cc, "storage", "")
 	if typ == "" {
 		typ = configutil.OptionalString(cc, "sink", "memory-storage")
 	}
-	typ = normalizeStorageType(typ)
-	switch typ {
-	case "memory-storage":
-		return storage.NewMemory(storage.MemoryOptions{}), nil, nil, nil
-	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage", "sqlserver-storage":
-		driver := configutil.OptionalString(cc, "driver", "")
-		dialect := "mysql"
-		switch typ {
-		case "postgresql-storage":
-			dialect = "postgres"
-			if driver == "" {
-				driver = "pgx"
-			}
-		case "sqlite-storage":
-			dialect = "sqlite"
-			if driver == "" {
-				driver = "sqlite"
-			}
-		case "oracle-storage":
-			dialect = "oracle"
-			if driver == "" {
-				// go-ora 注册的驱动名（纯 Go，无 CGO）；godror 未引入。
-				driver = "oracle"
-			}
-		case "sqlserver-storage":
-			dialect = "sqlserver"
-			if driver == "" {
-				driver = "sqlserver"
-			}
-		}
-		// columns 未声明 + header=true：自动字段映射（默认）。首个批次用
-		// 解码后的表头建列（全部 TEXT，列名即表头文本），不再落入 generic
-		// JSON 模式——编码由解析器处理，GBK 等旧编码在映射前已正确解码。
-		header := configutil.OptionalBool(cc, "header", true)
-		if _, present := cfg["columns"]; !present && header {
-			tableCfg := &storage.TableConfig{
-				Driver:      driver,
-				DSN:         configutil.OptionalString(cc, "dsn", ""),
-				Dialect:     dialect,
-				Table:       configutil.OptionalString(cc, "table", "records"),
-				FileTable:   configutil.OptionalString(cc, "file_table", ""),
-				AutoColumns: true,
-				FileKey:     configutil.OptionalBool(cc, "file_key", false),
-				FileKeyNode: configutil.OptionalIntPtr(cc, "file_key_node"),
-				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
-			}
-			if err := tableCfg.Validate(); err != nil {
-				return nil, nil, nil, err
-			}
-			return nil, nil, tableCfg, nil
-		}
-		// Typed relational mode: declared columns become real database
-		// columns and the CSV header lands in the file registry table.
-		if rawColumns, present := cfg["columns"]; present {
-			// 没有表头就没有可匹配的列名：声明列会整列为空，属于配置错误，
-			// 在装配期拒绝，不等到写库时才表现为"全 NULL"。
-			if !header {
-				return nil, nil, nil, errs.Sourcef(errs.ErrInvalidConfig,
-					"header = false cannot be combined with declared columns (columns map by header name; every declared value would be stored empty)")
-			}
-			columns, cerr := parseTableColumns(rawColumns)
-			if cerr != nil {
-				return nil, nil, nil, cerr
-			}
-			tableCfg := &storage.TableConfig{
-				Driver:      driver,
-				DSN:         configutil.OptionalString(cc, "dsn", ""),
-				Dialect:     dialect,
-				Table:       configutil.OptionalString(cc, "table", "records"),
-				FileTable:   configutil.OptionalString(cc, "file_table", ""),
-				Columns:     columns,
-				ExtraRows:   configutil.OptionalBool(cc, "extra_rows", false),
-				FileKey:     configutil.OptionalBool(cc, "file_key", false),
-				FileKeyNode: configutil.OptionalIntPtr(cc, "file_key_node"),
-				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
-				HeaderCheck: configutil.OptionalString(cc, "header_check", ""),
-			}
-			if err := tableCfg.Validate(); err != nil {
-				return nil, nil, nil, err
-			}
-			return nil, nil, tableCfg, nil
-		}
-		sqlCfg := &storage.SQLConfig{
-			Driver:  driver,
-			DSN:     configutil.OptionalString(cc, "dsn", ""),
-			Dialect: dialect,
-			Table:   configutil.OptionalString(cc, "table", "gocordis_records"),
-		}
-		if err := sqlCfg.Validate(); err != nil {
-			return nil, nil, nil, err
-		}
-		return nil, sqlCfg, nil, nil
-	default:
-		return nil, nil, nil, errs.Sourcef(errs.ErrInvalidConfig, "unknown storage type %q", typ)
+	spec, err := storageplugin.DeriveStorageSpec(storageplugin.NormalizeStorageType(typ), cfg)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-}
-
-// parseTableColumns decodes the declarative column mapping tables.
-func parseTableColumns(raw any) ([]storage.ColumnMapping, error) {
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, errs.Sourcef(errs.ErrInvalidConfig, "columns must be an array of tables")
-	}
-	out := make([]storage.ColumnMapping, 0, len(list))
-	for i, entry := range list {
-		m, ok := entry.(map[string]any)
-		if !ok {
-			return nil, errs.Sourcef(errs.ErrInvalidConfig, "columns #%d must be a table", i)
-		}
-		cc := config.ComponentConfig{Config: m}
-		out = append(out, storage.ColumnMapping{
-			From:       storage.ColumnSource(configutil.OptionalString(cc, "from", "csv")),
-			Name:       configutil.OptionalString(cc, "name", ""),
-			Column:     configutil.OptionalString(cc, "column", ""),
-			Type:       configutil.OptionalString(cc, "type", "text"),
-			Required:   configutil.OptionalBool(cc, "required", false),
-			Occurrence: configutil.OptionalInt(cc, "occurrence", 0),
-			Optional:   configutil.OptionalBool(cc, "optional", false),
-			Aliases:    configutil.OptionalStrings(cc, "aliases"),
-		})
-	}
-	return out, nil
-}
-
-func normalizeStorageType(typ string) string {
-	switch strings.ToLower(strings.TrimSpace(typ)) {
-	case "memory", "memory-storage":
-		return "memory-storage"
-	case "mysql", "mysql-storage":
-		return "mysql-storage"
-	case "postgres", "postgresql", "postgresql-storage":
-		return "postgresql-storage"
-	case "sqlite", "sqlite-storage":
-		return "sqlite-storage"
-	case "oracle", "oracle-storage":
-		return "oracle-storage"
-	case "sqlserver", "mssql", "sqlserver-storage":
-		return "sqlserver-storage"
-	default:
-		return typ
-	}
+	// SQLCfg/TableCfg 按 nil 区分装配形态（调用方 sqlCfg != nil 即走 SQL）：
+	// memory 分支两者皆 nil，绝不为凑返回值强填空配置。
+	return spec.Mem, spec.SQLCfg, spec.TableCfg, nil
 }
 
 func staticMetadata(raw any) (model.Metadata, error) {

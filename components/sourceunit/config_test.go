@@ -140,20 +140,6 @@ func TestBuildStorageRejectsHeaderlessDeclaredColumns(t *testing.T) {
 	}
 }
 
-// aliases 是列级代际别名，必须在 TOML 解码路径上原样带进 TableConfig；
-// 这里静默丢键的后果是现场照旧按"未声明字段"阻断整文件。
-func TestParseTableColumnsAliases(t *testing.T) {
-	cols, err := parseTableColumns([]any{map[string]any{
-		"name": "R-Xerr", "column": "r_xerr", "aliases": []any{"X-error R"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cols) != 1 || len(cols[0].Aliases) != 1 || cols[0].Aliases[0] != "X-error R" {
-		t.Fatalf("aliases not decoded: %+v", cols)
-	}
-}
-
 // 机台/格式身份由 fleet 显式下发（"machine"/"format" 键）：机台×日汇总视图
 // 按它们聚合，不靠拆 source_id 前缀。手写 component 不带这两个键时为零值，
 // 汇总视图把这类源按 source_id 自成一组。

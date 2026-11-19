@@ -89,74 +89,24 @@ func (c *StorageComponent) MemoryStore() *storage.MemoryStore { return c.mem }
 // columns and the CSV header is stored once per file in the file registry
 // table.
 func NewStorage(cc config.ComponentConfig) (*StorageComponent, error) {
-	typ := cc.Type
-	switch typ {
-	case "memory-storage":
-		return &StorageComponent{typ: typ, mem: storage.NewMemory(storage.MemoryOptions{})}, nil
-	case "mysql-storage", "postgresql-storage", "sqlite-storage", "oracle-storage", "sqlserver-storage":
-		dialect := "mysql"
-		driver := configutil.OptionalString(cc, "driver", "")
-		switch typ {
-		case "postgresql-storage":
-			dialect = "postgres"
-			if driver == "" {
-				driver = "pgx"
-			}
-		case "sqlite-storage":
-			dialect = "sqlite"
-			if driver == "" {
-				driver = "sqlite"
-			}
-		case "oracle-storage":
-			dialect = "oracle"
-			if driver == "" {
-				driver = "oracle"
-			}
-		case "sqlserver-storage":
-			dialect = "sqlserver"
-			if driver == "" {
-				driver = "sqlserver"
-			}
-		default:
-			if driver == "" {
-				driver = "mysql"
-			}
-		}
-		dsn := configutil.OptionalString(cc, "dsn", "")
-		table := configutil.OptionalString(cc, "table", "gocordis_records")
-		columns, err := parseColumns(cc.Config["columns"])
-		if err != nil {
-			return nil, err
-		}
-		lazy := configutil.OptionalBool(cc, "lazy_connect", false)
-		if len(columns) > 0 {
-			cfg := storage.TableConfig{
-				Driver:      driver,
-				DSN:         dsn,
-				Dialect:     dialect,
-				Table:       table,
-				FileTable:   configutil.OptionalString(cc, "file_table", ""),
-				Columns:     columns,
-				ExtraRows:   configutil.OptionalBool(cc, "extra_rows", false),
-				FileKey:     configutil.OptionalBool(cc, "file_key", false),
-				FileKeyNode: configutil.OptionalIntPtr(cc, "file_key_node"),
-				Exposer:     configutil.OptionalBool(cc, "expose_console", false),
-				Lazy:        lazy,
-				HeaderCheck: configutil.OptionalString(cc, "header_check", ""),
-			}
-			if err := cfg.Validate(); err != nil {
-				return nil, err
-			}
-			return &StorageComponent{typ: typ, tableCfg: &cfg, lazy: lazy}, nil
-		}
-		cfg := storage.SQLConfig{Driver: driver, DSN: dsn, Dialect: dialect, Table: table}
-		if err := cfg.Validate(); err != nil {
-			return nil, err
-		}
-		return &StorageComponent{typ: typ, sqlCfg: cfg}, nil
-	default:
-		return nil, fmt.Errorf("%w: unknown storage type %q", errs.ErrInvalidConfig, typ)
+	spec, err := DeriveStorageSpec(cc.Type, cc.Config)
+	if err != nil {
+		return nil, err
 	}
+	return &StorageComponent{
+		typ:      spec.Typ,
+		mem:      spec.Mem,
+		sqlCfg:   derefSQL(spec.SQLCfg),
+		tableCfg: spec.TableCfg,
+		lazy:     spec.Lazy,
+	}, nil
+}
+
+func derefSQL(cfg *storage.SQLConfig) storage.SQLConfig {
+	if cfg == nil {
+		return storage.SQLConfig{}
+	}
+	return *cfg
 }
 
 // parseColumns decodes the declarative column mapping. Column entries carry
