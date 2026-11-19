@@ -34,8 +34,6 @@ import (
 
 	mssql "github.com/microsoft/go-mssqldb"
 
-	"dynamic-runtime/runtime"
-
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/model"
 )
@@ -1805,11 +1803,6 @@ func (t *TableStorage) releaseLocked() error {
 
 var _ model.Storage = (*TableStorage)(nil)
 var _ RowsQuery = (*TableStorage)(nil)
-
-// TableRowsQueryKey lets the console bridge discover the typed sink's read
-// side and expose it as the "rows" console query. Absent when no typed sink
-// is active — the bridge skips registration in that case.
-var TableRowsQueryKey = runtime.NewKey[RowsQuery]("console.rows.query")
 
 // ensureSQLiteDir creates the parent directory of a sqlite file DSN, so a
 // fresh deployment does not fail on a missing state directory.
