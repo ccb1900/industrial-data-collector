@@ -18,7 +18,10 @@ func TestBuildMultiRowStatements(t *testing.T) {
 	conflict := "source_id, collection_date, file_id, row_number"
 
 	my := buildMultiRow("mysql", "t", cols, conflict, 2)
-	if !strings.Contains(my, "INSERT IGNORE INTO") || strings.Count(my, "(?, ?, ?, ?, ?)") != 2 {
+	// INSERT IGNORE 已废除：它把任意错误降级成 warning（截断、默认值……），
+	// 行被静默改写或丢弃而采集器认为成功。幂等改走与 mssql/oracle 同构的
+	// 反连接（形状细节见 TestMySQLIdempotentPathsAreAntiJoin）。
+	if !strings.Contains(my, "WHERE NOT EXISTS") || strings.Contains(my, "IGNORE") || strings.Contains(my, "MERGE") {
 		t.Fatalf("mysql multi-row shape: %s", my)
 	}
 	if strings.Contains(my, "@p") || strings.Contains(my, "$") {

@@ -214,7 +214,9 @@ func (s *SQLStore) upsertSQL(argCount int) (string, error) {
 	joined := strings.Join(cols, ", ")
 	switch s.dialect {
 	case "mysql":
-		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)", t, joined, placeholders), nil
+		// INSERT IGNORE 会把非重复错误降级成 warning（截断、默认值……），
+		// 与类型化 sink 一致改走反连接；占位符 ?，单行。
+		return buildInsertMissing(s.dialect, s.table, cols, "source_id, collection_date, file_id, row_number", 1), nil
 	case "postgres", "sqlite":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (source_id, collection_date, file_id, row_number) DO NOTHING", t, joined, placeholders), nil
 	case "oracle", "sqlserver":

@@ -2,11 +2,12 @@
 // batch_size=1000 的批次在局域网 Oracle 上逐行就是 1000 次 RTT（0.3-1ms
 // 的 RTT 即 0.3-1s/批次）——写库成为切真库后的最大单项开销。
 //
-// 幂等语义逐方言保留：mysql 用 INSERT IGNORE，sqlite/postgres 用 ON CONFLICT
-// DO NOTHING；oracle/sqlserver 的 fresh 键走无探测直插（新发的键不可能有
-// 既有行），重放走反连接 INSERT ... WHERE NOT EXISTS 只补缺失行。MERGE 只剩
-// 撞唯一键时的回退与注册表单行 insert-if-missing——它在数据行上的探测锁要
-// 持有到提交，多文件并发时会成环，不能留在写路径里。
+// 幂等语义逐方言保留：sqlite/postgres 用 ON CONFLICT DO NOTHING；mysql 与
+// oracle/sqlserver 同构——fresh 键走无探测直插（新发的键不可能有既有行），
+// 重放走反连接 INSERT ... WHERE NOT EXISTS 只补缺失行。INSERT IGNORE 已废除：
+// 它把非重复错误也降级成 warning（TestNoBuilderEmitsAnErrorSwallowingInsert）。
+// MERGE 只剩撞唯一键时的回退与注册表单行 insert-if-missing——它在数据行上的
+// 探测锁要持有到提交，多文件并发时会成环，不能留在写路径里。
 package storage
 
 import (
@@ -49,14 +50,17 @@ func chunkRowsFor(dialect string, colCount int) int {
 	return n
 }
 
-// buildMultiRow 构造 n 行的写入语句。绑定参数行优先（row-major）顺序
+// buildMultiRow 构造 n 行的幂等写入语句。绑定参数行优先（row-major）顺序
 // 编号：第 i 行第 j 列的参数序号 = i*len(cols)+j+1。
 func buildMultiRow(dialect, table string, cols []string, conflict string, n int) string {
 	q := quoteIdent(dialect, table)
 	switch dialect {
 	case "mysql":
-		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES %s",
-			q, strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "))
+		// INSERT IGNORE 已废除（TestNoBuilderEmitsAnErrorSwallowingInsert）：
+		// 它把非重复错误也降级成 warning——严格模式截断、NOT NULL 填默认值、
+		// 类型溢出改写，行被静默改掉或丢掉而采集器认为成功。幂等改走与
+		// mssql/oracle 相同的反连接：只在撞键时让步，其它错误照常上报。
+		return buildInsertMissing(dialect, table, cols, conflict, n)
 	case "sqlite", "postgres", "postgresql":
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO NOTHING",
 			q, strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "), conflict)
@@ -77,7 +81,7 @@ func buildMultiRow(dialect, table string, cols []string, conflict string, n int)
 		// Oracle 无 VALUES 表构造器，用 UNION ALL 选择列表充当行集。
 		sels := make([]string, 0, n)
 		for i := 0; i < n; i++ {
-			ph := aliasedPlaceholders(i*len(cols)+1, len(cols))
+			ph := aliasedPlaceholders(dialect, i*len(cols)+1, len(cols))
 			cols2 := make([]string, 0, len(cols))
 			for c := range cols {
 				cols2 = append(cols2, fmt.Sprintf("%s AS %s", ph[c], srcAlias(c)))
@@ -108,11 +112,14 @@ func buildInsert(dialect, table string, cols []string, n int) string {
 		q, strings.Join(cols, ", "), strings.Join(valueRows(dialect, cols, n), ", "))
 }
 
-// buildInsertMissing 构造"只插缺失行"的语句，用于 SQL Server / Oracle 的
-// 重放与已登记文件。两条路径都把 MERGE 从数据写路径里拿掉：反连接的探测
+// buildInsertMissing 构造"只插缺失行"的语句，用于 SQL Server / Oracle / MySQL
+// 的重放与已登记文件。这些路径把 MERGE 从数据写路径里拿掉：反连接的探测
 // 不占用 MERGE 在目标行上的探测锁（SQL Server 的 U 锁、Oracle 的 MERGE
 // 目标读），多文件并发重放时不会形成锁环。并发重复处理同一文件仍可能撞
-// 唯一键，由调用方回退 MERGE 重放。
+// 唯一键，由调用方回退重试。
+//
+// Oracle 与 MySQL 都没有 `(VALUES ...) AS src` 的表构造器别名语法，行集用
+// UNION ALL 选择列表充当（oracle 绑定符 :n、mysql 绑定符 ?）。
 func buildInsertMissing(dialect, table string, cols []string, conflict string, n int) string {
 	q := quoteIdent(dialect, table)
 	aliases := make([]string, 0, len(cols))
@@ -120,15 +127,11 @@ func buildInsertMissing(dialect, table string, cols []string, conflict string, n
 		aliases = append(aliases, srcAlias(i))
 	}
 	on := strings.Join(onClause(cols, conflict), " AND ")
-	if dialect == "oracle" {
+	if dialect == "oracle" || dialect == "mysql" {
 		sels := make([]string, 0, n)
 		for i := 0; i < n; i++ {
-			ph := aliasedPlaceholders(i*len(cols)+1, len(cols))
-			parts := make([]string, 0, len(cols))
-			for c := range cols {
-				parts = append(parts, fmt.Sprintf("%s AS %s", ph[c], srcAlias(c)))
-			}
-			sels = append(sels, fmt.Sprintf("SELECT %s FROM DUAL", strings.Join(parts, ", ")))
+			ph := aliasedPlaceholders(dialect, i*len(cols)+1, len(cols))
+			sels = append(sels, fmt.Sprintf("SELECT %s FROM DUAL", strings.Join(ph, ", ")))
 		}
 		return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM (%s) src WHERE NOT EXISTS (SELECT 1 FROM %s dst WHERE %s)",
 			q, strings.Join(cols, ", "), strings.Join(srcRefs(len(cols)), ", "),
@@ -148,11 +151,12 @@ func valueRows(dialect string, cols []string, n int) []string {
 	return rows
 }
 
-// aliasedPlaceholders 返回带序号占位符（oracle MERGE 的选择列表用）。
-func aliasedPlaceholders(start, count int) []string {
+// aliasedPlaceholders 返回带别名的占位符切片（UNION ALL 选择列表用）：
+// oracle ":1 AS c0"，mysql "? AS c0"。
+func aliasedPlaceholders(dialect string, start, count int) []string {
 	out := make([]string, 0, count)
 	for i := 0; i < count; i++ {
-		out = append(out, fmt.Sprintf(":%d", start+i))
+		out = append(out, fmt.Sprintf("%s AS %s", placeholders(dialect, start+i, 1), srcAlias(i)))
 	}
 	return out
 }

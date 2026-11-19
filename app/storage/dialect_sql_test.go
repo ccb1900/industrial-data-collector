@@ -28,8 +28,9 @@ func TestInsertIfMissingStmtPerDialect(t *testing.T) {
 		{"sqlserver", []string{"MERGE INTO", "@p1 AS c0", "@p3 AS c2", ";"}, []string{":1", "FROM DUAL", "ON CONFLICT"}},
 		// oracle：绑定符 :N、源集必须带 FROM DUAL，且不能有多余分号。
 		{"oracle", []string{"MERGE INTO", ":1 AS c0", ":3 AS c2", "FROM DUAL"}, []string{"@p1", "ON CONFLICT"}},
-		// mysql：无 ON CONFLICT，幂等靠 INSERT IGNORE。
-		{"mysql", []string{"INSERT IGNORE INTO"}, []string{"ON CONFLICT", "MERGE"}},
+		// mysql：幂等改走反连接——INSERT IGNORE 把非重复错误降级成 warning，
+		// 已废除（TestNoBuilderEmitsAnErrorSwallowingInsert）。
+		{"mysql", []string{"WHERE NOT EXISTS"}, []string{"ON CONFLICT", "MERGE", "INSERT IGNORE"}},
 		// postgres：$N + ON CONFLICT。
 		{"postgres", []string{"ON CONFLICT (source_id, collection_date) DO NOTHING", "$1", "$3"}, []string{"INSERT IGNORE", "MERGE"}},
 		// sqlite：? + ON CONFLICT。
@@ -161,8 +162,10 @@ func TestInsertIfMissingStmtShape(t *testing.T) {
 	if !strings.Contains(insertIfMissingStmt("sqlite", "F", cols, conflict), "ON CONFLICT (source_id, collection_date, file_id) DO NOTHING") {
 		t.Error("sqlite insert must be ON CONFLICT DO NOTHING")
 	}
-	if !strings.Contains(insertIfMissingStmt("mysql", "F", cols, conflict), "INSERT IGNORE") {
-		t.Error("mysql insert must be INSERT IGNORE")
+	my := insertIfMissingStmt("mysql", "F", cols, conflict)
+	// INSERT IGNORE 已废除（吞非重复错误）；注册行单行插改走反连接。
+	if !strings.Contains(my, "WHERE NOT EXISTS") || strings.Contains(my, "IGNORE") {
+		t.Errorf("mysql insert must be anti-join, got %s", my)
 	}
 }
 

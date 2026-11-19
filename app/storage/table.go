@@ -1055,8 +1055,9 @@ func insertIfMissingStmt(dialect, rawTable string, cols []string, conflict strin
 	case "oracle", "sqlserver":
 		return mergeUpsert(dialect, rawTable, cols, conflict)
 	case "mysql":
-		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)",
-			q, strings.Join(cols, ", "), placeholders(dialect, 1, len(cols)))
+		// INSERT IGNORE 已废除（把非重复错误降级成 warning，注册行写坏都
+		// 不知道）；单行插改走反连接，与重放路径同一构造器。
+		return buildInsertMissing(dialect, rawTable, cols, conflict, 1)
 	default:
 		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
 			q, strings.Join(cols, ", "), placeholders(dialect, 1, len(cols)), conflict)
@@ -1374,12 +1375,15 @@ func (t *TableStorage) write(ctx context.Context, batch model.Batch, allowFast b
 	// SQL Server / Oracle 的免探测写：fresh 键不可能有既有行（SQL Server
 	// 走 TDS 批量装载，实测 1000 行 × 20 列 263ms→32ms、× 70 列 822ms→41ms；
 	// Oracle 走普通多行 INSERT）；重放/已登记文件只插缺失行。MERGE 从数据
-	// 写路径移除，只留作并发撞键时的回退。MySQL / PostgreSQL / SQLite 的
-	// 重放本来就是 INSERT IGNORE / ON CONFLICT DO NOTHING，不经 MERGE，
-	// 保持原语义。
+	// 写路径移除，只留作并发撞键时的回退。MySQL 与它们同构：fresh 直插
+	// （撞键回退反连接），重放走反连接——INSERT IGNORE 已废除，它会把非重复
+	// 错误也降级成 warning，数据被静默改写或丢弃而采集器认为成功
+	// （TestNoBuilderEmitsAnErrorSwallowingInsert 守这条）。PostgreSQL/SQLite
+	// 的重放本来就是 ON CONFLICT DO NOTHING，不经 MERGE，保持原语义。
 	fast := allowFast && (t.cfg.Dialect == "sqlserver" || t.cfg.Dialect == "oracle")
 	bulkFresh := fast && fresh && t.cfg.Dialect == "sqlserver"
-	plainFresh := fast && fresh && t.cfg.Dialect == "oracle"
+	plainFresh := (fast && fresh && t.cfg.Dialect == "oracle") ||
+		(t.cfg.Dialect == "mysql" && fresh)
 	insertMissing := fast && !bulkFresh && !plainFresh
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
