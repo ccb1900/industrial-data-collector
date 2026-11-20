@@ -15,11 +15,14 @@ import (
 // default deployment cannot be reached from the plant network.
 var ErrNonLoopback = errors.New("refusing to bind a non-loopback address without --allow-remote")
 
-// ValidateBind checks the requested listen address. Loopback addresses (and
-// the empty address used by net/http tests) are always allowed. Everything
-// else requires explicit opt-in from an operator who has arranged network
-// isolation and authentication at the reverse proxy.
+// ValidateBind checks the requested listen address. Loopback addresses are
+// allowed. An empty address is NEVER allowed: http.Server substitutes ":http"
+// for a blank Addr — that binds every interface on port 80, silently
+// defeating the loopback default. Everything else requires explicit opt-in.
 func ValidateBind(addr string, allowRemote bool) error {
+	if strings.TrimSpace(addr) == "" {
+		return ErrNonLoopback
+	}
 	if allowRemote {
 		return nil
 	}
@@ -32,10 +35,7 @@ func ValidateBind(addr string, allowRemote bool) error {
 	// A leading ":" (":8080") means ALL interfaces — net.SplitHostPort
 	// returns an empty host for it; never treat that as loopback.
 	if host == "" {
-		if strings.HasPrefix(strings.TrimSpace(addr), ":") {
-			return ErrNonLoopback
-		}
-		return nil // hostless address in a unit test
+		return ErrNonLoopback // ":8080" = all interfaces
 	}
 	if host == "localhost" {
 		return nil

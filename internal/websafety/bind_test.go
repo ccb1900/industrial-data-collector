@@ -11,6 +11,8 @@ func TestValidateBind(t *testing.T) {
 		{"127.0.0.1:8080", false, nil},
 		{"localhost:8080", false, nil},
 		{"[::1]:8080", false, nil},
+		{"", false, ErrNonLoopback},
+		{"   ", false, ErrNonLoopback},
 		{":8080", false, ErrNonLoopback},
 		{"0.0.0.0:8080", false, ErrNonLoopback},
 		{"192.168.1.10:8080", false, ErrNonLoopback},

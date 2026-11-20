@@ -40,3 +40,6 @@ jobs:
       - name: Plugin module vet
         working-directory: plugins/alarm-demo
         run: go vet ./...
+      - name: Plugin module test
+        working-directory: plugins/alarm-demo
+        run: go test ./...
