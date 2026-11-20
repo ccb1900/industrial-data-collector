@@ -95,3 +95,47 @@ func TestEffectiveComponentConfigAppliesOperatorLayers(t *testing.T) {
 		t.Fatalf("operator layer must be part of the effective declaration: %+v/%v", got, ok)
 	}
 }
+
+// Operator Patch 完整覆盖的组件是 operator-managed：控制台的编辑/开关
+// 必须拒绝，不能把高优先级层的秘密值复制进低优先级的 Console Overlay。
+func TestOperatorManagedComponentRejectsConsoleWrites(t *testing.T) {
+	h := effectiveHost(t)
+	op := config.ComponentConfig{ID: "sched", Type: "scheduler", Config: map[string]any{
+		"schedule": "daily", "time": "06:00", "dsn": "operator-secret",
+	}}
+	h.mu.Lock()
+	h.patchLayers = [][]patch.Patch{{{
+		Op: patch.PatchReplace, ID: "sched", Component: &op,
+	}}}
+	h.mu.Unlock()
+
+	if !h.operatorManaged("sched") {
+		t.Fatal("operator-managed component must be detected")
+	}
+	off := false
+	if err := h.SetDeclaredEnabled(context.Background(), "sched", off); err == nil {
+		t.Fatal("enable switch must be rejected on operator-managed component")
+	}
+	if err := h.SetComponentConfig(context.Background(), "sched", map[string]any{"time": "07:00"}); err == nil {
+		t.Fatal("config edit must be rejected on operator-managed component")
+	}
+	// 写入被拒后 Console Overlay 不能包含 operator 的秘密
+	h.mu.Lock()
+	leaked := false
+	for _, p := range h.patches {
+		if p.ID == "sched" && p.Component != nil {
+			if _, ok := p.Component.Config["dsn"]; ok {
+				leaked = true
+			}
+		}
+	}
+	h.mu.Unlock()
+	if leaked {
+		t.Fatal("operator secret copied into console overlay")
+	}
+	// UI 显示必须走有效配置（脱敏后的 operator 值）
+	got, err := h.ComponentConfig("sched")
+	if err != nil || got["time"] != "06:00" {
+		t.Fatalf("ComponentConfig must show effective operator value, got %+v/%v", got, err)
+	}
+}

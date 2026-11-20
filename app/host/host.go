@@ -78,6 +78,12 @@ type Host struct {
 	// 应用成功，控制台必须能看到两者的差别。
 	lastApply fleetstore.ApplyStatus
 	resyncMu  sync.Mutex
+	// declarationMu serializes the FULL declaration transaction: read the
+	// effective row → mutate the console overlay → persist → reconcile →
+	// rollback. h.mu only guards individual field accesses; without this
+	// outer lock concurrent HTTP requests (or config-watch reloads) can
+	// interleave and leave disk/memory/runtime disagreeing.
+	declarationMu sync.Mutex
 	// reclaimedRunning records that the startup sweep of orphaned Running
 	// rows already ran; a second Startup must not terminalize live runs.
 	reclaimedRunning bool
@@ -380,32 +386,21 @@ func New(log *slog.Logger) (*Host, error) {
 // both operations start from the same effective row, only the target field
 // changes. A reconcile failure rolls the patch back.
 func (h *Host) SetDeclaredEnabled(ctx context.Context, id string, enable bool) error {
-	def, found := h.EffectiveComponentConfig(id)
-	if !found {
-		return fmt.Errorf("component %q is not part of the desired configuration", id)
-	}
-	if !enable && appconfig.ConsoleCritical(def.Type) {
-		return fmt.Errorf("component %q is console infrastructure and cannot be disabled", id)
+	if h.operatorManaged(id) {
+		return fmt.Errorf("component %q is operator-managed (read-only --patch layer); edit the operator patch instead", id)
 	}
 	if len(h.removePatchesFor(id)) > 0 {
 		return fmt.Errorf("component %q is uninstalled; install it before enabling", id)
 	}
-	edited := def
-	flag := enable
-	edited.Enabled = &flag
-
-	h.mu.Lock()
-	var prev []patch.Patch
-	hadPrev := false
-	for i := len(h.patches) - 1; i >= 0; i-- {
-		if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
-			prev = []patch.Patch{h.patches[i]}
-			hadPrev = true
-			break
+	return h.commitPatchFrom(ctx, id, func(def config.ComponentConfig) (patch.Patch, error) {
+		if !enable && appconfig.ConsoleCritical(def.Type) {
+			return patch.Patch{}, fmt.Errorf("component %q is console infrastructure and cannot be disabled", id)
 		}
-	}
-	h.mu.Unlock()
-	return h.commitPatch(ctx, patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, prev, hadPrev)
+		edited := def
+		flag := enable
+		edited.Enabled = &flag
+		return patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, nil
+	})
 }
 
 // desiredRow looks a component up in the last desired set first, then in
@@ -734,6 +729,25 @@ func (h *Host) EffectiveComponentConfig(id string) (config.ComponentConfig, bool
 	return config.ComponentConfig{}, false
 }
 
+// operatorManaged reports whether a read-only operator patch layer fully
+// owns this component (Replace/Insert). Such components are NOT editable via
+// the console overlay: writing the effective row back into the lower-
+// priority layer would copy operator secrets into a writable file and the
+// real value would still be shadowed by the operator layer — a silent no-op
+// from the operator's perspective (联合审查 P1-3).
+func (h *Host) operatorManaged(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, layer := range h.patchLayers {
+		for _, p := range layer {
+			if p.ID == id && (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // baseSnapshotLocked returns a defensive copy of the desired base. Callers
 // pass it to Reconcile instead of h.lastDesired (which may be replaced
 // concurrently by the config watcher) — one locked read, no data race.
@@ -743,29 +757,68 @@ func (h *Host) baseSnapshotLocked() config.Config {
 	return config.Config{Components: append([]config.ComponentConfig(nil), h.lastDesired.Components...)}
 }
 
-// commitPatch writes one patch, persists it atomically, and reconciles from
-// a locked base snapshot. On reconcile failure the exact previous patch
-// entries are restored (rollback), so a rejected declaration never leaves a
-// persisted patch that disagrees with the runtime.
-func (h *Host) commitPatch(ctx context.Context, p patch.Patch, prev []patch.Patch, hadPrev bool) error {
+// declarationTx is the single serialization point for every declaration
+// write (config edit / enable switch / uninstall / install). mutate runs
+// under declarationMu + h.mu; it may only change h.patches (never persist or
+// reconcile). The helper snapshots the overlay before the mutation, then
+// persists atomically and reconciles from a stable base. Any failure restores
+// the exact snapshot — including failures in a sibling operation, because
+// no other declaration transaction can interleave.
+func (h *Host) declarationTx(ctx context.Context, mutate func() error) error {
+	h.declarationMu.Lock()
+	defer h.declarationMu.Unlock()
+
 	h.mu.Lock()
-	h.setPatchLocked(p)
+	prev := append([]patch.Patch(nil), h.patches...)
 	h.mu.Unlock()
+
+	if err := mutate(); err != nil {
+		return err
+	}
 	if err := h.persistOverlay(); err != nil {
 		h.mu.Lock()
-		h.rollbackPatchLocked(p.ID, prev, hadPrev)
+		h.patches = prev
 		h.mu.Unlock()
 		return err
 	}
-	base := h.baseSnapshotLocked()
-	if err := h.Reconcile(ctx, base); err != nil {
+	if err := h.Reconcile(ctx, h.baseSnapshotLocked()); err != nil {
 		h.mu.Lock()
-		h.rollbackPatchLocked(p.ID, prev, hadPrev)
+		h.patches = prev
 		h.mu.Unlock()
 		_ = h.persistOverlay()
 		return err
 	}
 	return nil
+}
+
+// commitPatch applies one console overlay patch as a serialized transaction.
+func (h *Host) commitPatch(ctx context.Context, p patch.Patch) error {
+	return h.declarationTx(ctx, func() error {
+		h.mu.Lock()
+		h.setPatchLocked(p)
+		h.mu.Unlock()
+		return nil
+	})
+}
+
+// commitPatchFrom reads the effective row INSIDE the serialized transaction:
+// reading before locking lets a concurrent edit/switch overwrite the field
+// the other operation just changed (联合审查 P1-2 风险 B).
+func (h *Host) commitPatchFrom(ctx context.Context, id string, build func(config.ComponentConfig) (patch.Patch, error)) error {
+	return h.declarationTx(ctx, func() error {
+		cur, ok := h.EffectiveComponentConfig(id)
+		if !ok {
+			return fmt.Errorf("component %q is not part of the desired configuration", id)
+		}
+		p, err := build(cur)
+		if err != nil {
+			return err
+		}
+		h.mu.Lock()
+		h.setPatchLocked(p)
+		h.mu.Unlock()
+		return nil
+	})
 }
 
 // rollbackPatchLocked restores a previous patch (or removes the new one).
@@ -793,20 +846,14 @@ func (h *Host) rollbackPatchLocked(id string, prev []patch.Patch, hadPrev bool) 
 // RedactedSentinel — this copy is for DISPLAY and edit round-trips; writing
 // it back restores the stored secrets (see SetComponentConfig).
 func (h *Host) ComponentConfig(id string) (map[string]any, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i := len(h.patches) - 1; i >= 0; i-- {
-		if h.patches[i].ID == id && h.patches[i].Op == patch.PatchReplace {
-			return redactMap(h.patches[i].Component.Config), nil
-		}
+	// UI 展示必须与实际生效配置一致：先应用所有层（含 operator patch），
+	// 再脱敏。旧实现只读 console patch / raw base，operator 覆盖下显示值
+	// 与运行值不同（联合审查 P1-3）。
+	eff, ok := h.EffectiveComponentConfig(id)
+	if !ok {
+		return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
-	for _, cc := range h.lastDesired.Components {
-		if cc.ID == id {
-			// Config 为 nil 是合法的（bundle 预设的无配置组件）：返回空 map。
-			return redactMap(cc.Config), nil
-		}
-	}
-	return nil, fmt.Errorf("component %q is not part of the desired configuration", id)
+	return redactMap(eff.Config), nil
 }
 
 // storedComponentConfig returns the UNSHADED stored configuration of one
@@ -831,32 +878,21 @@ func (h *Host) storedComponentConfig(id string) (config.ComponentConfig, bool) {
 // failed reconciliation rolls the edit back so the patch list never holds a
 // configuration the runtime rejected.
 func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string]any) error {
+	if h.operatorManaged(id) {
+		return fmt.Errorf("component %q is operator-managed (read-only --patch layer); edit the operator patch instead", id)
+	}
 	// A display copy may carry RedactedSentinel for secrets: restore the
 	// stored values BEFORE the edit is recorded, so a round-trip never
 	// persists the sentinel.
 	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
 		restoreRedacted(cfg, stored.Config)
 	}
-	def, found := h.EffectiveComponentConfig(id)
-	if !found {
-		return fmt.Errorf("component %q is not part of the desired configuration", id)
-	}
-	edited := def
-	edited.ID = id
-	edited.Config = cfg
-
-	h.mu.Lock()
-	var prev []patch.Patch
-	hadPrev := false
-	for i := len(h.patches) - 1; i >= 0; i-- {
-		if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
-			prev = []patch.Patch{h.patches[i]}
-			hadPrev = true
-			break
-		}
-	}
-	h.mu.Unlock()
-	if err := h.commitPatch(ctx, patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, prev, hadPrev); err != nil {
+	if err := h.commitPatchFrom(ctx, id, func(def config.ComponentConfig) (patch.Patch, error) {
+		edited := def
+		edited.ID = id
+		edited.Config = cfg
+		return patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, nil
+	}); err != nil {
 		return fmt.Errorf("apply config for %q: %w", id, err)
 	}
 	return nil
@@ -867,24 +903,12 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 // reverted by the Runtime during reconciliation; the definition is kept in
 // the patch so Install can restore it.
 func (h *Host) UninstallComponent(ctx context.Context, id string) error {
+	// 事务内读取有效声明：锁外读 h.lastDesired 会与 Watch 的 setBaseDesired
+	// 竞争（联合审查 P1-2 风险 C）。
 	var def config.ComponentConfig
 	found := false
-	for _, cc := range h.lastDesired.Components {
-		if cc.ID == id {
-			def = cc
-			found = true
-			break
-		}
-	}
-	if !found {
-		h.mu.Lock()
-		for _, p := range h.patches {
-			if (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) && p.ID == id {
-				def = *p.Component
-				found = true
-			}
-		}
-		h.mu.Unlock()
+	if eff, ok := h.EffectiveComponentConfig(id); ok {
+		def, found = eff, true
 	}
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
@@ -894,21 +918,17 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	}
 	// A plugin is one business unit: the rows the discovery layer expands
 	// from its manifest share the "<plugin>:" prefix (client module, pages).
-	// Uninstalling the backend removes them together — an orphaned UI row
-	// with a dangling follows provider would wait in Pending forever with
-	// nothing in the console to explain why.
 	siblings := h.pluginSiblingRows(id)
-	h.mu.Lock()
-	h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: id, Component: &def})
-	for _, s := range siblings {
-		sib := s
-		h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: sib.ID, Component: &sib})
-	}
-	h.mu.Unlock()
-	if err := h.persistOverlay(); err != nil {
-		return err
-	}
-	return h.Reconcile(ctx, h.baseSnapshotLocked())
+	return h.declarationTx(ctx, func() error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: id, Component: &def})
+		for _, s := range siblings {
+			sib := s
+			h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: sib.ID, Component: &sib})
+		}
+		return nil
+	})
 }
 
 // pluginSiblingRows collects the desired rows a plugin's prefix covers.
@@ -934,26 +954,31 @@ func (h *Host) pluginSiblingRows(id string) []config.ComponentConfig {
 // InstallComponent restores a previously uninstalled component by dropping
 // its remove patches; replace patches (config edits) stay in force.
 func (h *Host) InstallComponent(ctx context.Context, id string) error {
-	h.mu.Lock()
-	prefix := id + ":"
-	kept := h.patches[:0]
 	dropped := false
-	for _, p := range h.patches {
-		if p.Op == patch.PatchRemove && (p.ID == id || strings.HasPrefix(p.ID, prefix)) {
-			dropped = true
-			continue
+	err := h.declarationTx(ctx, func() error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		prefix := id + ":"
+		// 缺陷修复：不要在 h.patches[:0] 上原地过滤（会篡改共享底层数组，
+		// 并扰乱事务快照）。新建切片。
+		kept := make([]patch.Patch, 0, len(h.patches))
+		for _, p := range h.patches {
+			if p.Op == patch.PatchRemove && (p.ID == id || strings.HasPrefix(p.ID, prefix)) {
+				dropped = true
+				continue
+			}
+			kept = append(kept, p)
 		}
-		kept = append(kept, p)
+		h.patches = kept
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	h.patches = kept
-	h.mu.Unlock()
 	if !dropped {
 		return fmt.Errorf("component %q was not uninstalled", id)
 	}
-	if err := h.persistOverlay(); err != nil {
-		return err
-	}
-	return h.Reconcile(ctx, h.baseSnapshotLocked())
+	return nil
 }
 
 // RemovedComponents lists uninstalled component definitions (patch order,

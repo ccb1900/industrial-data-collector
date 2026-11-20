@@ -40,6 +40,11 @@ func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, 
 	cfg := parsed.Config
 	// Snapshot the raw parsed composition first: it is the base the patch
 	// layers apply to, and install/restore re-reconciles from it.
+	// 文件热加载也是一次声明变更：与控制台编辑共享 declarationMu，
+	// 否则 setBaseDesired 会在控制台事务的读→改→持久化之间插入，
+	// 让两个入口以不确定顺序互相覆盖（联合审查 P1-2）。
+	p.host.declarationMu.Lock()
+	defer p.host.declarationMu.Unlock()
 	p.host.setBaseDesired(cfg)
 	// 期望状态 patch 在每次热加载时先行应用：控制台的卸载/配置编辑决策
 	// 不被文件内容覆盖；补丁与基础文件的形状冲突在此显式失败。
