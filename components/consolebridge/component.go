@@ -29,7 +29,6 @@ import (
 	logstore "dynamic-runtime/extensions/console/logstore"
 	"gocordis-csv-collector/app/errs"
 	"gocordis-csv-collector/app/events"
-	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/query"
 	queryplugin "gocordis-csv-collector/components/query"
@@ -56,8 +55,9 @@ type Component struct {
 	// fleet 能力由宿主注入（SetFleetHandlers，见 fleet.go）：有效声明
 	// 文档的查询与编辑。nil = 本运行时未接声明存储（纯文件部署）。
 	fleetQuery  func() (any, error)
-	fleetMutate func(context.Context, fleetstore.FleetDoc) error
-	fleetReset  func(context.Context) error
+	fleetMutate fleetMutateFunc
+	fleetReset  fleetResetFunc
+	fleetStatus fleetStatusFunc
 	// fleetMu 串行化读-改-写编辑：并发命令（两个操作员同时改配置）
 	// 若不串行会互相覆盖（last-writer-wins 丢更新）。
 	fleetMu sync.Mutex

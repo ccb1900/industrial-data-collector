@@ -69,7 +69,8 @@ func (d FleetDoc) Empty() bool { return len(d.keys()) == 0 }
 // Store is the SQLite-backed fleet document store. One row, one document —
 // the console edits the whole declaration, never a partial merge.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open creates (or opens) the store at path. The parent directory is
@@ -91,15 +92,171 @@ func Open(path string) (*Store, error) {
 	}
 	// 单写者：配置编辑是低频操作，单连接串行即可，也杜绝多协程写竞争。
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS fleet_doc (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		doc TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("fleetstore: %w", err)
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS fleet_doc (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			doc TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		// 配置底座（Iteration 配置-G）：版本计数与审计历史。计数放 meta
+		// 而不是 fleet_doc 行上——Reset 会删行，版本必须跨重置单调。
+		`CREATE TABLE IF NOT EXISTS fleet_meta (
+			k TEXT PRIMARY KEY,
+			v TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS fleet_history (
+			revision INTEGER PRIMARY KEY,
+			doc TEXT NOT NULL,
+			source TEXT NOT NULL,
+			saved_at TEXT NOT NULL
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("fleetstore: %w", err)
+		}
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: path}, nil
+}
+
+// ErrRevisionConflict 是乐观并发控制的拒绝信号：提交携带的预期版本与当前
+// 版本不符——另一个页面（或另一个入口）已经改过配置。
+var ErrRevisionConflict = errors.New("fleetstore: 配置已被其他页面修改，请刷新后重试")
+
+// ApplyStatus 是一次配置版本被运行时应用的结果快照。
+type ApplyStatus struct {
+	Revision int64     `json:"revision"`
+	Status   string    `json:"status"` // applied | failed
+	Error    string    `json:"error,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// HistoryEntry 是一条审计记录：谁（source）在何时把配置写成了什么（全量快照）。
+type HistoryEntry struct {
+	Revision int64     `json:"revision"`
+	Source   string    `json:"source"`
+	SavedAt  time.Time `json:"savedAt"`
+	Doc      *FleetDoc `json:"doc"`
+}
+
+const (
+	SourceConsole = "console"
+	SourceImport  = "import"
+	SourceReset   = "reset"
+)
+
+// metaGet/metaSet：版本计数与 seed 指纹都住在 fleet_meta。
+func (s *Store) metaGet(key string) (string, bool, error) {
+	var v string
+	switch err := s.db.QueryRow(`SELECT v FROM fleet_meta WHERE k = ?`, key).Scan(&v); err {
+	case nil:
+		return v, true, nil
+	case sql.ErrNoRows:
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("fleetstore meta: %w", err)
+	}
+}
+
+func (s *Store) metaSet(key, v string) error {
+	if _, err := s.db.Exec(`INSERT INTO fleet_meta (k, v) VALUES (?, ?)
+		ON CONFLICT (k) DO UPDATE SET v = excluded.v`, key, v); err != nil {
+		return fmt.Errorf("fleetstore meta: %w", err)
+	}
+	return nil
+}
+
+// Revision 返回当前版本号（没有文档时为 0）。版本跨重置单调递增。
+func (s *Store) Revision() (int64, error) {
+	v, ok, err := s.metaGet("revision")
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+	var n int64
+	if _, err := fmt.Sscan(v, &n); err != nil {
+		return 0, fmt.Errorf("fleetstore meta: revision %q: %w", v, err)
+	}
+	return n, nil
+}
+
+// SetSeedFingerprint 记录账本最近一次对应的 seed 文件指纹。文件重载时
+// 指纹不一致 = 手改的文件四层表正被账本遮蔽——运行时据此把死信变响。
+func (s *Store) SetSeedFingerprint(fp string) error {
+	return s.metaSet("seed_fp", fp)
+}
+
+// SeedFingerprint 返回记录的 seed 指纹；ok=false 表示尚未记录。
+func (s *Store) SeedFingerprint() (string, bool, error) {
+	v, ok, err := s.metaGet("seed_fp")
+	return v, ok, err
+}
+
+// Save 以乐观并发控制替换文档：expectRevision 必须等于当前版本（空库为 0）。
+// 成功返回新版本；版本不符返回 ErrRevisionConflict，账本原样不动。每次成功
+// 落一条历史（全量快照 + 来源）。
+func (s *Store) Save(doc FleetDoc, expectRevision int64, source string) (int64, error) {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return 0, fmt.Errorf("fleetstore save: %w", err)
+	}
+	cur, err := s.Revision()
+	if err != nil {
+		return 0, err
+	}
+	if expectRevision != cur {
+		return 0, fmt.Errorf("%w（当前版本 %d，提交携带 %d）", ErrRevisionConflict, cur, expectRevision)
+	}
+	next := cur + 1
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(`INSERT INTO fleet_doc (id, doc, updated_at) VALUES (1, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET doc = excluded.doc, updated_at = excluded.updated_at`,
+		string(raw), now); err != nil {
+		return 0, fmt.Errorf("fleetstore save: %w", err)
+	}
+	if err := s.metaSet("revision", fmt.Sprint(next)); err != nil {
+		return 0, err
+	}
+	if _, err := s.db.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
+		VALUES (?, ?, ?, ?)`, next, string(raw), source, now); err != nil {
+		return 0, fmt.Errorf("fleetstore history: %w", err)
+	}
+	return next, nil
+}
+
+// History 返回最近的审计记录（最新在前），limit <= 0 视为 10。
+func (s *Store) History(limit int) ([]HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.Query(`SELECT revision, doc, source, saved_at
+		FROM fleet_history ORDER BY revision DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fleetstore history: %w", err)
+	}
+	defer rows.Close()
+	out := make([]HistoryEntry, 0, limit)
+	for rows.Next() {
+		var e HistoryEntry
+		var raw, savedAt string
+		if err := rows.Scan(&e.Revision, &raw, &e.Source, &savedAt); err != nil {
+			return nil, fmt.Errorf("fleetstore history: %w", err)
+		}
+		at, err := time.Parse(time.RFC3339, savedAt)
+		if err != nil {
+			return nil, fmt.Errorf("fleetstore history: %w", err)
+		}
+		e.SavedAt = at
+		var doc FleetDoc
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return nil, fmt.Errorf("fleetstore history: %w", err)
+		}
+		e.Doc = &doc
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func dsnWithBusyTimeout(path string) string {
@@ -112,6 +269,9 @@ func dsnWithBusyTimeout(path string) string {
 
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Path 返回存储的数据库路径（快照等伴生产物按它的目录落位）。
+func (s *Store) Path() string { return s.path }
 
 // Load returns the stored document; exists is false when nothing was ever
 // saved (the TOML file stays authoritative).
@@ -170,27 +330,29 @@ func (d *FleetDoc) Normalize() {
 	}
 }
 
-// Save replaces the stored document (idempotent upsert of the single row).
-func (s *Store) Save(doc FleetDoc) error {
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("fleetstore save: %w", err)
-	}
-	_, err = s.db.Exec(`INSERT INTO fleet_doc (id, doc, updated_at) VALUES (1, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET doc = excluded.doc, updated_at = excluded.updated_at`,
-		string(raw), time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		return fmt.Errorf("fleetstore save: %w", err)
-	}
-	return nil
-}
-
 // Reset drops the stored document: the TOML file becomes authoritative again.
-func (s *Store) Reset() error {
-	if _, err := s.db.Exec(`DELETE FROM fleet_doc WHERE id = 1`); err != nil {
-		return fmt.Errorf("fleetstore reset: %w", err)
+// 版本照常推进并记录 tombstone——"回到文件权威"也是一次必须可审计的配置变更。
+func (s *Store) Reset(expectRevision int64) (int64, error) {
+	cur, err := s.Revision()
+	if err != nil {
+		return 0, err
 	}
-	return nil
+	if expectRevision != cur {
+		return 0, fmt.Errorf("%w（当前版本 %d，提交携带 %d）", ErrRevisionConflict, cur, expectRevision)
+	}
+	next := cur + 1
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(`DELETE FROM fleet_doc WHERE id = 1`); err != nil {
+		return 0, fmt.Errorf("fleetstore reset: %w", err)
+	}
+	if err := s.metaSet("revision", fmt.Sprint(next)); err != nil {
+		return 0, err
+	}
+	if _, err := s.db.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
+		VALUES (?, ?, ?, ?)`, next, "{}", SourceReset, now); err != nil {
+		return 0, fmt.Errorf("fleetstore history: %w", err)
+	}
+	return next, nil
 }
 
 // FleetDBPath 解析配置的 fleet 存储路径：defaults.state_dir（缺省

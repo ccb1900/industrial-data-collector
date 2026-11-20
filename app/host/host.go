@@ -2,11 +2,14 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -69,7 +72,10 @@ type Host struct {
 	fleetSeedData  []byte
 	fleetAnnounced bool
 	resync         func(ctx context.Context) error
-	resyncMu       sync.Mutex
+	// lastApply 记录最近一次配置版本被运行时应用的结果：保存成功不代表
+	// 应用成功，控制台必须能看到两者的差别。
+	lastApply fleetstore.ApplyStatus
+	resyncMu  sync.Mutex
 	// reclaimedRunning records that the startup sweep of orphaned Running
 	// rows already ran; a second Startup must not terminalize live runs.
 	reclaimedRunning bool
@@ -145,26 +151,26 @@ func (h *Host) FleetSnapshot() (fleetstore.FleetDoc, error) {
 // (组合管线干跑 + 补丁叠加 + 应用层校验), restores redacted secrets, then
 // persists. Validation failure means the store keeps its previous content —
 // the console shows why.
-func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
+func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc, expectRevision int64, source string) (int64, error) {
 	h.mu.Lock()
 	store := h.fleet
 	seed := h.fleetSeedData
 	resync := h.resync
 	h.mu.Unlock()
 	if store == nil || len(seed) == 0 {
-		return fmt.Errorf("fleet store is not wired into this runtime")
+		return 0, fmt.Errorf("fleet store is not wired into this runtime")
 	}
 	if doc.Empty() {
-		return fmt.Errorf("empty fleet declaration is not a valid edit — use 恢复 TOML (fleet.reset) to return to the file")
+		return 0, fmt.Errorf("empty fleet declaration is not a valid edit — use 恢复 TOML (fleet.reset) to return to the file")
 	}
 	// 显示副本写回：哨兵值从当前有效文档还原（sinks 按 name、machines
 	// 按 no 身份匹配，数组重排不串位），round-trip 永不毁掉真实凭证。
 	current, err := h.unredactedFleet()
 	if err != nil {
-		return fmt.Errorf("fleet secret restore: %w", err)
+		return 0, fmt.Errorf("fleet secret restore: %w", err)
 	}
 	if err := restoreFleetSecrets(&doc, &current); err != nil {
-		return fmt.Errorf("fleet secret restore: %w", err)
+		return 0, fmt.Errorf("fleet secret restore: %w", err)
 	}
 	// 编辑体来自 JSON（float64），还原的 JSON 往返也会再产生 float64：
 	// 干跑与落库前必须还原 TOML 数值形状（int64），否则组合层按 int64
@@ -174,21 +180,30 @@ func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
 	// 应用层校验。任一失败即拒绝，存储保持原内容。
 	parsed, err := sourcecomp.ExpandWithPluginsBase(seed, "", doc.AsBase())
 	if err != nil {
-		return fmt.Errorf("fleet declaration rejected: %w", err)
+		return 0, fmt.Errorf("fleet declaration rejected: %w", err)
 	}
 	cfg := parsed.Config
 	if err := h.applyOverlay(&cfg); err != nil {
-		return fmt.Errorf("fleet declaration rejected: %w", err)
+		return 0, fmt.Errorf("fleet declaration rejected: %w", err)
 	}
 	if err := appconfig.Validate(cfg); err != nil {
-		return fmt.Errorf("fleet declaration rejected: %w", err)
+		return 0, fmt.Errorf("fleet declaration rejected: %w", err)
 	}
-	if err := store.Save(doc); err != nil {
-		return err
+	rev, err := store.Save(doc, expectRevision, source)
+	if err != nil {
+		return 0, err
 	}
-	h.log.Info("fleet declaration updated via console; re-reconciling")
+	// 保存成功：本次账本对应的 seed 就是当前文件。指纹刷新让"文件被手改"
+	// 的遮蔽告警只对真正的新改动触发一次。
+	if fp := seedFingerprint(seed); fp != "" {
+		if ferr := store.SetSeedFingerprint(fp); ferr != nil {
+			h.log.Warn("seed fingerprint update failed", "error", ferr.Error())
+		}
+	}
+	h.log.Info("fleet declaration updated via console; re-reconciling", "revision", rev)
+	h.setLastApply(rev, "applying", "")
 	if resync == nil {
-		return nil
+		return rev, nil
 	}
 	// 异步重调和：命令立刻返回（观察流会把新组合推给控制台），调和
 	// 串行化由 resync 实现方保证。
@@ -200,25 +215,100 @@ func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc) error {
 		defer cancel()
 		if err := fn(rctx); err != nil {
 			h.notifyReconcileFailure(err)
+			h.setLastApply(rev, "failed", err.Error())
+			return
+		}
+		h.setLastApply(rev, "applied", "")
+		if err := h.ExportConfigSnapshot(); err != nil {
+			h.log.Warn("config snapshot export failed", "error", err.Error())
 		}
 	}()
-	return nil
+	return rev, nil
+}
+
+// setLastApply 记录一次配置版本的应用结果（保存成功 ≠ 应用成功）。
+func (h *Host) setLastApply(rev int64, status, errMsg string) {
+	h.mu.Lock()
+	h.lastApply = fleetstore.ApplyStatus{Revision: rev, Status: status, Error: errMsg, At: time.Now()}
+	h.mu.Unlock()
+}
+
+// FleetApplyStatus 返回最近一次配置应用的结果；零值 = 尚无控制台变更。
+func (h *Host) FleetApplyStatus() fleetstore.ApplyStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastApply
+}
+
+// FleetRevision 返回账本当前版本（无账本时 0）。控制台把它随 fleet 查询
+// 下发，编辑提交时原样带回作 CAS 凭据。
+func (h *Host) FleetRevision() (int64, error) {
+	h.mu.Lock()
+	store := h.fleet
+	h.mu.Unlock()
+	if store == nil {
+		return 0, nil
+	}
+	return store.Revision()
+}
+
+// seedFingerprint 是文件内容的 sha256（配置权威核查报告 V1-1 的死信探针）。
+func seedFingerprint(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// refreshSeedFingerprint 在每次文件解析后调用：指纹与账本记录不一致 =
+// 手改的文件四层表正被账本遮蔽。权威不变（账本仍是真相），但死信必须响。
+func (h *Host) refreshSeedFingerprint(data []byte) {
+	h.mu.Lock()
+	store := h.fleet
+	h.mu.Unlock()
+	if store == nil {
+		return
+	}
+	fp := seedFingerprint(data)
+	// 遮蔽只在账本非空时成立：账本为空则文件就是权威，不存在死信。
+	doc, exists, err := store.Load()
+	if err != nil || !exists || doc.Empty() {
+		if err == nil {
+			if uerr := store.SetSeedFingerprint(fp); uerr != nil {
+				h.log.Warn("seed fingerprint update failed", "error", uerr.Error())
+			}
+		}
+		return
+	}
+	old, ok, err := store.SeedFingerprint()
+	if err != nil {
+		h.log.Warn("seed fingerprint read failed", "error", err.Error())
+		return
+	}
+	if ok && old != fp {
+		h.log.Warn("config file changed but its fleet tables are shadowed by the console-edited declaration",
+			"hint", "手改的 [[machines]]/[[formats]] 等四层表不会生效；在控制台用「恢复 TOML」采纳文件内容，或继续使用控制台编辑")
+	}
+	if err := store.SetSeedFingerprint(fp); err != nil {
+		h.log.Warn("seed fingerprint update failed", "error", err.Error())
+	}
 }
 
 // FleetReset drops the stored declaration: the seed file becomes
 // authoritative again, and the runtime re-reconciles from it.
-func (h *Host) FleetReset(ctx context.Context) error {
+func (h *Host) FleetReset(ctx context.Context, expectRevision int64) (int64, error) {
 	h.mu.Lock()
 	store, resync := h.fleet, h.resync
 	h.mu.Unlock()
 	if store == nil {
-		return fmt.Errorf("fleet store is not wired into this runtime")
+		return 0, fmt.Errorf("fleet store is not wired into this runtime")
 	}
-	if err := store.Reset(); err != nil {
-		return err
+	rev, err := store.Reset(expectRevision)
+	if err != nil {
+		return 0, err
 	}
+	h.log.Info("fleet declaration reset to file authority; re-reconciling", "revision", rev)
+	h.setLastApply(rev, "applying", "")
 	if resync == nil {
-		return nil
+		return rev, nil
 	}
 	h.resyncMu.Lock()
 	fn := resync
@@ -228,11 +318,13 @@ func (h *Host) FleetReset(ctx context.Context) error {
 		defer cancel()
 		if err := fn(rctx); err != nil {
 			h.notifyReconcileFailure(err)
+			h.setLastApply(rev, "failed", err.Error())
+			return
 		}
+		h.setLastApply(rev, "applied", "")
 	}()
-	return nil
+	return rev, nil
 }
-
 func New(log *slog.Logger) (*Host, error) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -255,6 +347,7 @@ func New(log *slog.Logger) (*Host, error) {
 // rememberSeed keeps the raw seed TOML of the last parse — the fleet query
 // and first-overlay need what the FILE declared, independent of the store.
 func (h *Host) rememberSeed(data []byte) {
+	h.refreshSeedFingerprint(data)
 	h.mu.Lock()
 	h.fleetSeedData = append([]byte(nil), data...)
 	h.mu.Unlock()
@@ -347,6 +440,45 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 	}
 	h.attachStateProjection(ctx)
 	return nil
+}
+
+// ExportConfigSnapshot 把生效声明（已脱敏）导出为
+// <state_dir>/config-snapshot.json——"拷目录起新机"部署物的一部分，
+// 也是配置审计链的落盘形态。调用方：fleet 变更应用成功后（自动）与
+// 启动调和成功后（cmd，尽力而为）。
+// 注意：不能挂在 host.PostReconcile——WatchHost.Sync（fleet 变更的重调
+// 路径）走 configwatch adapter，不经过它；导出点在 FleetMutate/Reset 的
+// 应用成功分支与本方法（cmd 启动后调用）。
+func (h *Host) ExportConfigSnapshot() error {
+	h.mu.Lock()
+	store := h.fleet
+	h.mu.Unlock()
+	if store == nil {
+		return fmt.Errorf("fleet store is not wired into this runtime")
+	}
+	doc, err := h.FleetSnapshot()
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(filepath.Dir(store.Path()), "config-snapshot.json"), b)
+}
+
+// writeAtomic 原子写：临时文件 + rename，读方永远见到完整文件。
+func writeAtomic(path string, data []byte) error {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // applyOverlay applies the desired-state patch layers to a fresh
@@ -706,9 +838,23 @@ func (h *Host) attachStateProjection(ctx context.Context) {
 		h.mu.Unlock()
 		if hasFleet {
 			bridge.SetFleetHandlers(
-				func() (any, error) { return h.FleetSnapshot() },
-				func(ctx context.Context, doc fleetstore.FleetDoc) error { return h.FleetMutate(ctx, doc) },
-				func(ctx context.Context) error { return h.FleetReset(ctx) },
+				func() (any, error) {
+					doc, err := h.FleetSnapshot()
+					if err != nil {
+						return nil, err
+					}
+					rev, rerr := h.FleetRevision()
+					if rerr != nil {
+						return nil, rerr
+					}
+					st := h.FleetApplyStatus()
+					return consolebridge.FleetQueryResult{FleetDoc: doc, Revision: rev, LastApply: &st}, nil
+				},
+				func(ctx context.Context, doc fleetstore.FleetDoc, expect int64, source string) (int64, error) {
+					return h.FleetMutate(ctx, doc, expect, source)
+				},
+				func(ctx context.Context, expect int64) (int64, error) { return h.FleetReset(ctx, expect) },
+				func() fleetstore.ApplyStatus { return h.FleetApplyStatus() },
 			)
 		}
 	}

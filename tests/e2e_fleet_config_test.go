@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -134,9 +135,13 @@ schedule = "nightly"
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Printf("DBG defaults=%T batch=%T\n", doc.Defaults, doc.Defaults["batch_size"])
 	doc.Machines = append(doc.Machines, map[string]any{"no": "m2", "path": "data/YYYYMMDD", "group": "g"})
-	if err := app.Host.FleetMutate(context.Background(), doc); err != nil {
+	rev, err := app.Host.FleetRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRev, err := app.Host.FleetMutate(context.Background(), doc, rev, fleetstore.SourceConsole)
+	if err != nil {
 		t.Fatal(err)
 	}
 	waitForFleet(t, 15*time.Second, func() bool { return hasSource(t, app.Host, "m2-readings") })
@@ -144,12 +149,12 @@ schedule = "nightly"
 	// 非法编辑必须被拒（引用不存在的格式组），存储保持原样。
 	bad := doc
 	bad.Machines = append(bad.Machines, map[string]any{"no": "m3", "path": "data/x", "group": "nope"})
-	if err := app.Host.FleetMutate(context.Background(), bad); err == nil {
+	if _, err := app.Host.FleetMutate(context.Background(), bad, newRev, fleetstore.SourceConsole); err == nil {
 		t.Fatal("invalid declaration must be rejected")
 	}
 
 	// reset：回到文件形态，m2 消失。
-	if err := app.Host.FleetReset(context.Background()); err != nil {
+	if _, err := app.Host.FleetReset(context.Background(), newRev); err != nil {
 		t.Fatal(err)
 	}
 	waitForFleet(t, 15*time.Second, func() bool { return !hasSource(t, app.Host, "m2-readings") })
@@ -212,7 +217,7 @@ func TestFleetStoreCoversOnceAndDumpPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(doc); err != nil {
+	if _, err := store.Save(doc, 0, "import"); err != nil {
 		t.Fatal(err)
 	}
 	store.Close()
@@ -261,7 +266,11 @@ func TestFleetStoreSecretRoundTrip(t *testing.T) {
 	}
 
 	// 写回哨兵：存储里的真实 dsn 不被占位符覆盖。
-	if err := app.Host.FleetMutate(context.Background(), snap); err != nil {
+	revSnap, err := app.Host.FleetRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Host.FleetMutate(context.Background(), snap, revSnap, fleetstore.SourceConsole); err != nil {
 		t.Fatal(err)
 	}
 	stored, exists, err := store.Load()
@@ -275,12 +284,12 @@ func TestFleetStoreSecretRoundTrip(t *testing.T) {
 	// 新增行携带哨兵：拒绝。
 	bad := snap
 	bad.Sinks = append(bad.Sinks, map[string]any{"name": "db2", "driver": "sqlite", "dsn": "__REDACTED__"})
-	if err := app.Host.FleetMutate(context.Background(), bad); err == nil {
+	if _, err := app.Host.FleetMutate(context.Background(), bad, revSnap, fleetstore.SourceConsole); err == nil {
 		t.Fatal("sentinel on a NEW row must be rejected")
 	}
 
 	// 空文档：拒绝并提示用 reset。
-	if err := app.Host.FleetMutate(context.Background(), fleetstore.FleetDoc{}); err == nil {
+	if _, err := app.Host.FleetMutate(context.Background(), fleetstore.FleetDoc{}, revSnap, fleetstore.SourceConsole); err == nil {
 		t.Fatal("empty declaration must be rejected")
 	}
 }
@@ -442,5 +451,81 @@ since = "2026-09-01"
 	}
 	if failed[0].Key.Date.String() != wantFirst {
 		t.Fatalf("failed date = %s, want %s (first planned date)", failed[0].Key.Date.String(), wantFirst)
+	}
+}
+
+// TestFleetRevisionCASAndSnapshot 配置底座的三件事：乐观并发拒绝、脱敏快照
+// 落盘、应用状态可见。审查报告 V1 定义了语义，这里钉住行为。
+func TestFleetRevisionCASAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "fleet.toml")
+	writeFleetConfigWithSecret(t, cfgPath)
+
+	app, err := apphost.NewWatchHost(cfgPath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close(context.Background())
+	// 控制台编辑落 fleetstore：宿主接线（与 TestFleetStoreConsoleEditReconciles 同）。
+	store, err := fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.Host.SetFleetStore(store, app.Sync)
+	ctx := context.Background()
+	if err := app.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	rev, err := app.Host.FleetRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := app.Host.FleetSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRev, err := app.Host.FleetMutate(ctx, doc, rev, fleetstore.SourceConsole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newRev != rev+1 {
+		t.Fatalf("revision = %d, want %d", newRev, rev+1)
+	}
+
+	// 旧版本再提交：CAS 拒绝，错误必须是可识别的并发冲突。
+	if _, err := app.Host.FleetMutate(ctx, doc, rev, fleetstore.SourceConsole); !errors.Is(err, fleetstore.ErrRevisionConflict) {
+		t.Fatalf("stale revision err = %v, want ErrRevisionConflict", err)
+	}
+
+	// 应用状态：异步调和完成后 = applied，且版本对得上。
+	waitForFleet(t, 15*time.Second, func() bool {
+		st := app.Host.FleetApplyStatus()
+		return st.Status == "applied" && st.Revision == newRev
+	})
+
+	// 脱敏快照：落在账本同目录（state_dir/config-snapshot.json）。
+	// 先直接调导出，把真实错误带出来（自动导出走同一函数）。
+	if err := app.Host.ExportConfigSnapshot(); err != nil {
+		t.Fatalf("ExportConfigSnapshot: %v", err)
+	}
+	// 快照与账本（config.db）同目录——FleetDBPath 解析 defaults.state_dir，
+	// 本用例的 state_dir 就是 tempdir 根。
+	snapshotPath := filepath.Join(filepath.Dir(fleetstore.FleetDBPath(cfgPath)), "config-snapshot.json")
+	waitForFleet(t, 15*time.Second, func() bool {
+		_, err := os.Stat(snapshotPath)
+		return err == nil
+	})
+	raw, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "__REDACTED__") {
+		t.Error("snapshot must carry the redaction sentinel")
+	}
+	if strings.Contains(string(raw), dir) {
+		t.Error("snapshot must not contain the real dsn path（明文凭证出库 = 泄漏）")
 	}
 }

@@ -45,7 +45,7 @@ func TestRoundTripBundledConfigs(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			if err := store.Save(doc); err != nil {
+			if _, err := store.Save(doc, 0, "import"); err != nil {
 				t.Fatal(err)
 			}
 			loaded, exists, err := store.Load()
@@ -82,7 +82,7 @@ func TestLoadNormalizesJSONNumbers(t *testing.T) {
 		Defaults: map[string]any{"catchup_days": int64(31), "batch_size": int64(1000)},
 		Machines: []any{map[string]any{"no": "M-1", "path": "../res/YYYYMM"}},
 	}
-	if err := store.Save(doc); err != nil {
+	if _, err := store.Save(doc, 0, "import"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, exists, err := store.Load()
