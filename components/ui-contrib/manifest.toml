@@ -5,12 +5,6 @@ name = "ui-contribution"
 title = "UI Contributions"
 
 [[types]]
-name = "ui-page"
-kind = "ui-contribution"
-capability = "ui-page"
-title = "UI Page Contribution"
-
-[[types]]
 name = "ui-panel"
 kind = "ui-contribution"
 capability = "ui-panel"

@@ -20,47 +20,6 @@ import (
 	appui "dynamic-runtime/extensions/console/registry"
 )
 
-// PageComponent registers one Page during each activation.
-type PageComponent struct {
-	plugin string
-	id     string
-	def    appui.PageDefinition
-}
-
-// NewPage creates a UI Page Contribution Component from its own config block.
-func NewPage(cc config.ComponentConfig) (*PageComponent, error) {
-	def, err := pageDefinition(cc)
-	if err != nil {
-		return nil, err
-	}
-	return &PageComponent{plugin: cc.Type, id: cc.ID, def: def}, nil
-}
-
-func (c *PageComponent) Name() string                  { return fmt.Sprintf("ui-contrib-page:%s", c.id) }
-func (c *PageComponent) Provide() []runtime.Capability { return nil }
-
-func (c *PageComponent) Inject() []runtime.Dependency {
-	return []runtime.Dependency{runtime.Requires(uiplugin.UIHostKey)}
-}
-
-func (c *PageComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	reg, err := runtime.Require(ctx, uiplugin.UIHostKey)
-	if err != nil {
-		return nil, err
-	}
-	owner := c.owner(ctx)
-	if err := ctx.Effect(func() (func() error, error) {
-		return reg.RegisterPage(owner, c.def)
-	}); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-func (c *PageComponent) owner(ctx *runtime.Context) appui.ContributionOwner {
-	return appui.ContributionOwner{PluginID: c.plugin, ComponentID: c.id, ActivationID: activationID(ctx)}
-}
-
 // PanelComponent registers one Panel during each activation.
 type PanelComponent struct {
 	plugin string
@@ -213,10 +172,6 @@ func parsePanels(raw any) ([]appui.PanelDefinition, error) {
 		out = append(out, def)
 	}
 	return out, nil
-}
-
-func pageDefinition(cc config.ComponentConfig) (appui.PageDefinition, error) {
-	return pageFromMap(cc.Config)
 }
 
 func panelDefinition(cc config.ComponentConfig) (appui.PanelDefinition, error) {

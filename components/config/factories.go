@@ -79,6 +79,21 @@ func RegisterFactories(reg config.FactoryRegistry, logger *slog.Logger, explorer
 	}); err != nil {
 		return err
 	}
+	// ui-page is the framework's page-declaration component: built-in pages
+	// and plugin-discovered rows go through the same authority (one
+	// decision, one place), including the follows lifecycle edge.
+	if err := pluginkit.Bind(reg, "ui-page", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return uiplugin.NewUIPageComponent(cc)
+	}); err != nil {
+		return err
+	}
+	// plugin-error surfaces a broken plugin manifest as a Failed activation
+	// with a reason — a corrupted declaration must not read as an uninstall.
+	if err := pluginkit.Bind(reg, "plugin-error", func(cc config.ComponentConfig) (runtime.Component, error) {
+		return procplugin.NewErrorComponent(cc)
+	}); err != nil {
+		return err
+	}
 	return pluginkit.Bind(reg, "plugin-explorer", func(cc config.ComponentConfig) (runtime.Component, error) {
 		return explorerplugin.NewPlugin(cc, explorerSvc)
 	})

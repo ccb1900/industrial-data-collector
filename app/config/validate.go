@@ -188,7 +188,10 @@ func validateOne(cfg extconfig.Config, cc extconfig.ComponentConfig, ti pluginme
 	case "ui-contribution":
 		switch cc.Type {
 		case "ui-page":
-			for _, field := range []string{"page_id", "title", "route", "renderer"} {
+			// Identity fields only: the renderer-OR-views rule belongs to
+			// the framework factory (host.NewUIPageComponent) — the app
+			// must not mirror it here or the two definitions drift.
+			for _, field := range []string{"page_id", "title", "route"} {
 				if str(cc.Config, field) == "" {
 					return fmt.Errorf("ui-page %q missing %s", cc.ID, field)
 				}

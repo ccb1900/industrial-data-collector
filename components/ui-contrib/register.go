@@ -7,11 +7,11 @@ import (
 	"gocordis-csv-collector/components/internal/pluginkit"
 )
 
-// Register binds the declarative UI contribution component types.
+// Register binds the declarative UI contribution component types. The
+// ui-page type moved to the framework factory (components/config binds
+// host.NewUIPageComponent): built-in and plugin pages now run through the
+// same declaration authority, and rows with a backend follow its lifecycle.
 func Register(reg config.FactoryRegistry) error {
-	if err := pluginkit.Bind(reg, "ui-page", newComponent(NewPage)); err != nil {
-		return err
-	}
 	if err := pluginkit.Bind(reg, "ui-panel", newComponent(NewPanel)); err != nil {
 		return err
 	}

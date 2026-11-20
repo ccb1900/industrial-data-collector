@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -351,10 +352,83 @@ func New(log *slog.Logger) (*Host, error) {
 	}
 	ctrl := config.NewController(rt, reg)
 	explorer.SetOwned(ctrl.Owned)
-	return &Host{
+	h := &Host{
 		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
 		processStart: time.Now(),
-	}, nil
+	}
+	// The explorer's enable/disable switch edits the DECLARATION (an
+	// enabled=false row patch — the row survives, §4.4 Configuration:
+	// disable = O-Retire on the entry) and reconciles, instead of touching
+	// fibers directly. Without this the console switch would take the
+	// documented transient branch: the next reconcile overrides it. With
+	// follows-declared UI rows, toggling a plugin's backend row withdraws
+	// or restores its UI through the Runtime's dependency rules — one
+	// business unit, one lifecycle authority.
+	explorer.SetDeclarationSwitch(h.SetDeclaredEnabled)
+	return h, nil
+}
+
+// SetDeclaredEnabled flips one desired component's enabled switch through
+// the persistent patch overlay, then reconciles. Discovery-governed plugin
+// UI rows (follows) do not need their own flip: disabling the backend
+// withdraws them via the Runtime; enabling restores them automatically.
+// Removal decisions (uninstall) are independent: an uninstalled component
+// is absent from the declaration, and the switch must not resurrect it.
+func (h *Host) SetDeclaredEnabled(ctx context.Context, id string, enable bool) error {
+	def, found := h.desiredRow(id)
+	if !found {
+		return fmt.Errorf("component %q is not part of the desired configuration", id)
+	}
+	if !enable && appconfig.ConsoleCritical(def.Type) {
+		return fmt.Errorf("component %q is console infrastructure and cannot be disabled", id)
+	}
+	if len(h.removePatchesFor(id)) > 0 {
+		// An explicit uninstall outranks a switch: the row is gone.
+		return fmt.Errorf("component %q is uninstalled; install it before enabling", id)
+	}
+	edited := def
+	flag := enable
+	edited.Enabled = &flag
+	h.mu.Lock()
+	h.setPatchLocked(patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited})
+	h.mu.Unlock()
+	if err := h.persistOverlay(); err != nil {
+		return err
+	}
+	return h.Reconcile(ctx, h.lastDesired)
+}
+
+// desiredRow looks a component up in the last desired set first, then in
+// inserted/replaced patch layers (an inserted component is not in base).
+func (h *Host) desiredRow(id string) (config.ComponentConfig, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, cc := range h.lastDesired.Components {
+		if cc.ID == id {
+			return cc, true
+		}
+	}
+	var def config.ComponentConfig
+	found := false
+	for _, p := range h.patches {
+		if (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) && p.ID == id {
+			def = *p.Component
+			found = true
+		}
+	}
+	return def, found
+}
+
+func (h *Host) removePatchesFor(id string) []patch.Patch {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []patch.Patch
+	for _, p := range h.patches {
+		if p.Op == patch.PatchRemove && p.ID == id {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // rememberSeed keeps the raw seed TOML of the last parse — the fleet query
@@ -416,15 +490,43 @@ func hReadyBound(ctx context.Context, owned []config.OwnedComponent) error {
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	for _, o := range owned {
+		// disabled 声明条目：无运行对象（框架 Applied 语义），不就绪也不失败。
+		if o.Fiber == nil {
+			continue
+		}
+		// 依赖等待（Pending 且不会离开）是合法稳态：提供方被停用时，消费方
+		// （如带 follows 的 UI 行）可能长期合法地不 Active——不是故障，Ready
+		// 会一直傻等整个超时。正常启动的瞬时 Pending 会在毫秒级离开调度，
+		// 给一个短观察窗：离开了就照常 Ready（不把"还没来得及就绪"误放行）。
+		if o.Fiber.State() == runtime.StatePending && !leavesPending(readyCtx, o.Fiber) {
+			continue
+		}
 		if err := o.Fiber.Ready(readyCtx); err != nil {
-			st := "nil"
-			if o.Fiber != nil {
-				st = o.Fiber.State().String()
-			}
+			st := o.Fiber.State().String()
 			return fmt.Errorf("component %s not ready (state %s): %w", o.ID, st, err)
 		}
 	}
 	return nil
+}
+
+// pendingObserveWindow 是区分"瞬时 Pending"与"合法依赖等待"的观察窗：
+// 编排器对已满足依赖的挂载从毫秒级推进，离开不了 Pending 的行只可能是
+// 依赖不满足（§4.4/铁律 6）。
+const pendingObserveWindow = 2 * time.Second
+
+func leavesPending(ctx context.Context, f *runtime.Fiber) bool {
+	deadline := time.Now().Add(pendingObserveWindow)
+	for time.Now().Before(deadline) {
+		if f.State() != runtime.StatePending {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return f.State() != runtime.StatePending
 }
 
 // PostReconcile 运行每次成功 reconcile 之后的应用层步骤：组件就绪检查、
@@ -746,8 +848,18 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	if appconfig.ConsoleCritical(def.Type) {
 		return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
 	}
+	// A plugin is one business unit: the rows the discovery layer expands
+	// from its manifest share the "<plugin>:" prefix (client module, pages).
+	// Uninstalling the backend removes them together — an orphaned UI row
+	// with a dangling follows provider would wait in Pending forever with
+	// nothing in the console to explain why.
+	siblings := h.pluginSiblingRows(id)
 	h.mu.Lock()
 	h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: id, Component: &def})
+	for _, s := range siblings {
+		sib := s
+		h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: sib.ID, Component: &sib})
+	}
 	h.mu.Unlock()
 	if err := h.persistOverlay(); err != nil {
 		return err
@@ -755,14 +867,35 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	return h.Reconcile(ctx, h.lastDesired)
 }
 
+// pluginSiblingRows collects the desired rows a plugin's prefix covers.
+func (h *Host) pluginSiblingRows(id string) []config.ComponentConfig {
+	prefix := id + ":"
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []config.ComponentConfig
+	for _, cc := range h.lastDesired.Components {
+		if strings.HasPrefix(cc.ID, prefix) {
+			out = append(out, cc)
+		}
+	}
+	for _, p := range h.patches {
+		if (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) && p.Component != nil &&
+			strings.HasPrefix(p.ID, prefix) {
+			out = append(out, *p.Component)
+		}
+	}
+	return out
+}
+
 // InstallComponent restores a previously uninstalled component by dropping
 // its remove patches; replace patches (config edits) stay in force.
 func (h *Host) InstallComponent(ctx context.Context, id string) error {
 	h.mu.Lock()
+	prefix := id + ":"
 	kept := h.patches[:0]
 	dropped := false
 	for _, p := range h.patches {
-		if p.Op == patch.PatchRemove && p.ID == id {
+		if p.Op == patch.PatchRemove && (p.ID == id || strings.HasPrefix(p.ID, prefix)) {
 			dropped = true
 			continue
 		}
@@ -784,9 +917,22 @@ func (h *Host) InstallComponent(ctx context.Context, id string) error {
 func (h *Host) RemovedComponents() []config.ComponentConfig {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	removed := map[string]bool{}
+	for _, p := range h.patches {
+		if p.Op == patch.PatchRemove {
+			removed[p.ID] = true
+		}
+	}
 	out := make([]config.ComponentConfig, 0, len(h.patches))
 	for _, p := range h.patches {
 		if p.Op != patch.PatchRemove || p.Component == nil {
+			continue
+		}
+		// A plugin's UI rows removed via the backend cascade stay out of
+		// the list: their removal is not an independent decision — the
+		// plugin row itself is listed, and installing it restores the whole
+		// unit (the remove patches carry the prefix).
+		if i := strings.Index(p.ID, ":"); i > 0 && removed[p.ID[:i]] {
 			continue
 		}
 		out = append(out, *p.Component)

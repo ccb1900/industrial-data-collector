@@ -17,6 +17,18 @@ capability = "ui-client"
 title = "UI Client Module"
 
 [[types]]
+name = "ui-page"
+kind = "ui-contribution"
+capability = "ui-page"
+title = "UI Page (framework factory)"
+
+[[types]]
+name = "plugin-error"
+kind = "console-plugin"
+capability = "plugin-error"
+title = "Broken Plugin Manifest"
+
+[[types]]
 name = "proc-plugin"
 kind = "console-plugin"
 capability = "proc-plugin"
