@@ -84,9 +84,9 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("fleetstore: %w", err)
 		}
 	}
-	// busy_timeout：dump-config/-once 与运行中的 web-ui 并发读存储时
-	// 等待写锁而不是立即报 SQLITE_BUSY。
-	db, err := sql.Open("sqlite", dsnWithBusyTimeout(path))
+	// busy_timeout：dump-config/-once 与运行中的 web-ui 并发访问存储时
+	// 等待锁而不是立即报 SQLITE_BUSY；写事务以 IMMEDIATE 起步（dsnForFile）。
+	db, err := sql.Open("sqlite", dsnForFile(path))
 	if err != nil {
 		return nil, fmt.Errorf("fleetstore: %w", err)
 	}
@@ -230,7 +230,8 @@ func (s *Store) Save(doc FleetDoc, expectRevision int64, source string) (int64, 
 	// CAS + 三次写必须在同一事务里：否则（a）并发调用方可能双双通过 CAS、
 	// 败者的 doc/revision 已落库而历史插入撞主键报错——调用方被告知失败
 	// 但文档其实已写入；（b）中途失败（磁盘满）留下"版本推进了、审计没有"。
-	// MaxOpenConns(1) 串行化连接，BEGIN IMMEDIATE 再挡住跨进程写者。
+	// MaxOpenConns(1) 串行化本句柄；跨句柄/跨进程写者由 _txlock=immediate
+	// （见 dsnForFile）挡在 BEGIN 排队——注释与实现自此一致。
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("fleetstore save: %w", err)
@@ -296,12 +297,17 @@ func (s *Store) History(limit int) ([]HistoryEntry, error) {
 	return out, rows.Err()
 }
 
-func dsnWithBusyTimeout(path string) string {
+// dsnForFile 打开参数：busy_timeout(5000) 让并发读者/写者排队而不是立即
+// SQLITE_BUSY；_txlock=immediate 让驱动把每个事务的 BEGIN 变为
+// BEGIN IMMEDIATE——CAS 的"读版本→写"整段处在同一写锁域内，跨句柄/跨进程
+// 的并发写者排队后重读版本，败者确定性地得到 ErrRevisionConflict，
+// 而不是延迟事务升级时的裸 SQLITE_BUSY（race_test 钉住）。
+func dsnForFile(path string) string {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return path + sep + "_pragma=busy_timeout(5000)"
+	return path + sep + "_pragma=busy_timeout(5000)&_txlock=immediate"
 }
 
 // Close closes the underlying database.
