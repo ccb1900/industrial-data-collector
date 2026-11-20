@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './plugins/*/vendor/*'))
+          if [ -n "$unformatted" ]; then echo "gofmt required:"; echo "$unformatted"; exit 1; fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Race (core paths)
+        run: go test -race ./app/... ./components/... ./internal/... ./tests/...
+
+  plugin-module:
+    # plugins/alarm-demo 是独立 module：根目录 go test ./... 不覆盖它。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Plugin module build
+        working-directory: plugins/alarm-demo
+        run: go build ./...
+      - name: Plugin module vet
+        working-directory: plugins/alarm-demo
+        run: go vet ./...

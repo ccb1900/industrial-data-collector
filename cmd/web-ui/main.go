@@ -38,12 +38,14 @@ import (
 	apphost "gocordis-csv-collector/app/host"
 	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/internal/gziphttp"
+	"gocordis-csv-collector/internal/websafety"
 	"gocordis-csv-collector/web"
 )
 
 func main() {
 	configPath := flag.String("config", "configs/desktop.toml", "application TOML configuration")
-	addr := flag.String("addr", ":8080", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8080", "listen address (default loopback only)")
+	allowRemote := flag.Bool("allow-remote", false, "explicitly allow non-loopback binds — supply auth/network isolation yourself")
 	dumpConfig := flag.Bool("dump-config", false, "print the effective configuration (patches applied, validated) and exit without starting")
 	var patches multiFlag
 	flag.Var(&patches, "patch", "read-only operator patch file, applied after the console overlay (repeatable, later files win)")
@@ -66,6 +68,15 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	// 控制面对整个工控网络暴露是安全事故：默认拒绝非 loopback，必须显式
+	// --allow-remote 并自行安排反向代理鉴权/网络隔离。
+	if err := websafety.ValidateBind(*addr, *allowRemote); err != nil {
+		logger.Error("refusing to start web UI", "addr", *addr, "error", err.Error())
+		os.Exit(1)
+	}
+	if *allowRemote {
+		logger.Warn("non-loopback bind enabled — the collector control surface has NO built-in authentication; put it behind an authenticated reverse proxy and restrict the network")
 	}
 	if err := run(logger, configAbs, *addr, patches); err != nil {
 		logger.Error("web-ui failed", "error", err.Error())
@@ -219,7 +230,7 @@ func (a lifecycleAdapter) SetConfig(ctx context.Context, id string, cfg map[stri
 
 func findUIComponent(h *apphost.Host) *consolehost.UIComponent {
 	for _, o := range h.Owned() {
-		if o.ID == "ui" {
+		if o.ID == "ui" && o.Fiber != nil && o.Fiber.Component() != nil {
 			if c, ok := o.Fiber.Component().(*consolehost.UIComponent); ok {
 				return c
 			}
@@ -232,6 +243,9 @@ func findExplorerComponent(h *apphost.Host) *consoleexplorer.ExplorerComponent {
 	for _, o := range h.Owned() {
 		if o.Type != "plugin-explorer" {
 			continue
+		}
+		if o.Fiber == nil || o.Fiber.Component() == nil {
+			continue // disabled declaration: no live component
 		}
 		if c, ok := o.Fiber.Component().(*consoleexplorer.ExplorerComponent); ok {
 			return c

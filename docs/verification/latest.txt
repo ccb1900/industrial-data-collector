@@ -6,7 +6,8 @@ PASS  go vet ./...
 PASS  go test ./...
 == CLI 标志 ==
 PASS  web-ui -config
-PASS  web-ui -addr
+PASS  web-ui -addr 默认 loopback
+PASS  web-ui --allow-remote
 PASS  web-ui -dump-config
 PASS  web-ui -patch
 PASS  csv-collector -once
@@ -160,5 +161,5 @@ PASS  渲染器注册表
 PASS  投影 seam
 PASS  客户端模块加载
 
-结果: PASS=147 FAIL=0 SKIP=0
+结果: PASS=148 FAIL=0 SKIP=0
 文档与代码一致 ✔

@@ -40,7 +40,8 @@ CORDIS="${GOCORDIS_CONSOLE:-$(pwd)/../go-cordis}"
 
 echo "== CLI 标志 =="
 check "web-ui -config"      grep_q '"config", "configs/desktop.toml"' cmd/web-ui/main.go
-check "web-ui -addr"        grep_q '"addr", ":8080"' cmd/web-ui/main.go
+check "web-ui -addr 默认 loopback" grep_q '"addr", "127.0.0.1:8080"' cmd/web-ui/main.go
+check "web-ui --allow-remote"  grep_q '"allow-remote"' cmd/web-ui/main.go
 check "web-ui -dump-config" grep_q '"dump-config"' cmd/web-ui/main.go
 check "web-ui -patch"       grep_q '"patch"' cmd/web-ui/main.go
 check "csv-collector -once" grep_q '"once"' cmd/csv-collector/main.go
