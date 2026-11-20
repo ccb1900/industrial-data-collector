@@ -242,6 +242,25 @@ TestTableStorageAddColumnEvolution 把这条钉死）。
 | G 流式 TextParser / mysql 去 IGNORE / endState 重试 | ✅ 完成（提前） |
 | H 时钟接缝 / verify.sh 真实化 | ✅ 完成（含 E2E 全面隔离与 collect.db 出库） |
 
-## 12. 一页话给执行者
+## 13. 配置管理迭代（2026-11-20 启动，前置核查见 docs/CONFIG_AUTHORITY_REVIEW.md）
+
+五点只读核查钉死的语义边界：文件四层表在账本非空时是死信；reconcile 失败
+无回滚（"保留旧可用状态"是新能力不是现状）；fleet.set 与表单同一条
+FleetMutate；config.db 里是明文凭证；动态表单渲染器在框架仓库。
+
+- 配置-G0/G ✅：fleetstore 版本 CAS（ErrRevisionConflict）+ 审计历史
+  （全量快照+来源）+ Reset tombstone；host 的 lastApply 三态挂版本；
+  文件遮蔽告警（指纹比对，恰一次）；脱敏快照导出（账本同目录，原子写）。
+  ⚠ 快照导出点不能挂 host.PostReconcile——WatchHost.Sync 走 configwatch
+  adapter，不经过它；正确位置是 FleetMutate/Reset 的应用成功分支。
+- 配置-H（后端部分）✅：parser Schema 与工厂同一次注册（无 Schema 注册
+  被拒），UI 的动态表单、文档键清单、未知键校验从同一处取。storage/
+  machine 的 Schema 按同一机制补齐即可。UI 消费（动态表单渲染器）在
+  GoCordis 侧，属 UI 阶段。
+- 配置-I/J（工作台、样例预览、diff）：后端契约已就绪（machine-days、
+  lastApply、Schema），UI 阶段实施。
+- 凭证出库（Credential Manager）：P2，正式部署前。
+
+## 14. 一页话给执行者
 
 这个项目当前缺的不是能力，而是**同一件事只有一个地方说了算**：窗口谁定、日期谁判、状态谁持久化、装配谁做。每个迭代结束时应该能删掉一处重复判断，而不是多加一层封装。做完 B–H，不要开始做"平台化"。

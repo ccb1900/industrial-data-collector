@@ -195,7 +195,7 @@ func TestNewSourceUnitResolvesRegisteredParserKinds(t *testing.T) {
 	if err := appparser.RegisterParser("test-4th", func(map[string]any) (model.CSVParser, error) {
 		registered++
 		return &stubParser{}, nil
-	}); err != nil {
+	}, appparser.ConfigSchema{Title: "test", Fields: []appparser.ConfigField{{Name: "k", Label: "K", Type: "string"}}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { appparser.UnregisterParser("test-4th") })

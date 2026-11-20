@@ -23,16 +23,43 @@ import (
 // ParserFactory 从组件配置（扁平键值）构造一个 parser。
 type ParserFactory func(cfg map[string]any) (model.CSVParser, error)
 
+// ConfigField 是配置项的自述：UI 据此生成表单、文档据此生成键清单、
+// 校验据此拒绝未知/缺漏——一份声明喂三个消费者（Iteration 配置-H）。
+// Type 取值：string / int / bool / enum。
+type ConfigField struct {
+	Name        string   `json:"name"`
+	Label       string   `json:"label"`
+	Description string   `json:"description,omitempty"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required,omitempty"`
+	Default     any      `json:"default,omitempty"`
+	Options     []string `json:"options,omitempty"`
+	Advanced    bool     `json:"advanced,omitempty"`
+}
+
+// ConfigSchema 是一种 parser 的配置自述。与工厂同一次注册——分开放就会
+// 重演 F 迭代修过的"白名单两份"病。
+type ConfigSchema struct {
+	Kind   string        `json:"kind"`
+	Title  string        `json:"title"`
+	Fields []ConfigField `json:"fields"`
+}
+
 var (
 	parserMu    sync.RWMutex
 	parserKinds = map[string]ParserFactory{}
+	parserDesc  = map[string]ConfigSchema{}
 )
 
-// RegisterParser 注册一种 parser 取值。同名重复注册报错：两种实现抢同一个
-// 配置键是装配错误，绝不静默后来者赢。
-func RegisterParser(kind string, f ParserFactory) error {
+// RegisterParser 注册一种 parser 取值：工厂 + 配置自述必须同一次给出。
+// 同名重复注册报错：两种实现抢同一个配置键是装配错误，绝不静默后来者赢。
+func RegisterParser(kind string, f ParserFactory, schema ConfigSchema) error {
 	if kind == "" || f == nil {
 		return fmt.Errorf("parser registry: kind and factory must not be empty")
+	}
+	schema.Kind = kind
+	if len(schema.Fields) == 0 {
+		return fmt.Errorf("parser registry: kind %q must declare at least one config field", kind)
 	}
 	parserMu.Lock()
 	defer parserMu.Unlock()
@@ -40,7 +67,16 @@ func RegisterParser(kind string, f ParserFactory) error {
 		return fmt.Errorf("parser registry: kind %q already registered", kind)
 	}
 	parserKinds[kind] = f
+	parserDesc[kind] = schema
 	return nil
+}
+
+// ParserSchemaFor 返回一种 parser 的配置自述。
+func ParserSchemaFor(kind string) (ConfigSchema, bool) {
+	parserMu.RLock()
+	defer parserMu.RUnlock()
+	sc, ok := parserDesc[kind]
+	return sc, ok
 }
 
 // UnregisterParser 只供测试注销替身；生产代码不调用。
@@ -72,22 +108,42 @@ func KnownParserKinds() []string {
 	return out
 }
 
+var (
+	csvSchema = ConfigSchema{
+		Title: "CSV / 结构化文本",
+		Fields: []ConfigField{
+			{Name: "encoding", Label: "文件编码", Type: "enum", Default: "utf8", Options: []string{"utf8", "gbk", "gb18030", "big5", "latin1", "windows1252", "utf16le", "utf16be"}},
+			{Name: "header", Label: "首行是表头", Type: "bool", Default: true},
+			{Name: "skip_lines", Label: "跳过前 N 行", Type: "int", Default: 0, Advanced: true},
+			{Name: "allow_ragged", Label: "允许残缺行", Type: "bool", Default: false, Advanced: true},
+			{Name: "delimiter", Label: "分隔符", Type: "string", Default: ",", Advanced: true},
+		},
+	}
+	textSchema = ConfigSchema{
+		Title: "纯文本（单值 / 行正则 / 键值）",
+		Fields: []ConfigField{
+			{Name: "text_format", Label: "文本形态", Type: "enum", Default: "single-value", Options: []string{"single-value", "line-regex", "key-value"}},
+			{Name: "pattern", Label: "行正则（line-regex 必填，需具名分组）", Type: "string"},
+			{Name: "strict", Label: "严格模式（不匹配行判文件失败）", Type: "bool", Default: false},
+			{Name: "value_name", Label: "单值字段名", Type: "string", Default: "value", Advanced: true},
+			{Name: "separator", Label: "键值分隔符", Type: "string", Default: "=", Advanced: true},
+		},
+	}
+)
+
 func init() {
-	if err := RegisterParser("csv", NewCSVFromConfigValues); err != nil {
-		panic(err)
+	for _, kind := range []string{"csv", "csv-parser"} {
+		if err := RegisterParser(kind, NewCSVFromConfigValues, csvSchema); err != nil {
+			panic(err)
+		}
 	}
-	if err := RegisterParser("csv-parser", NewCSVFromConfigValues); err != nil {
-		panic(err)
-	}
-	if err := RegisterParser("text", func(cfg map[string]any) (model.CSVParser, error) {
+	textFactory := func(cfg map[string]any) (model.CSVParser, error) {
 		return NewTextParserFromConfigValues(cfg)
-	}); err != nil {
-		panic(err)
 	}
-	if err := RegisterParser("text-parser", func(cfg map[string]any) (model.CSVParser, error) {
-		return NewTextParserFromConfigValues(cfg)
-	}); err != nil {
-		panic(err)
+	for _, kind := range []string{"text", "text-parser"} {
+		if err := RegisterParser(kind, textFactory, textSchema); err != nil {
+			panic(err)
+		}
 	}
 }
 
