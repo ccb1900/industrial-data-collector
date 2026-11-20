@@ -522,3 +522,12 @@ func registerSQLServerStubOnce() {
 type stubDriver struct{}
 
 func (stubDriver) Open(string) (driver.Conn, error) { return nil, errors.New("stub") }
+
+func TestValidateRejectsDatedTodayPolicy(t *testing.T) {
+	cc := extconfig.ComponentConfig{ID: "src", Type: "csv-source-unit", Config: map[string]any{
+		"source_id": "src", "path": ".", "date_policy": "today",
+	}}
+	if err := Validate(extconfig.Config{Components: []extconfig.ComponentConfig{cc}}); err == nil {
+		t.Fatal("dated+today must be rejected at config validation (Boundary cuts off yesterday)")
+	}
+}

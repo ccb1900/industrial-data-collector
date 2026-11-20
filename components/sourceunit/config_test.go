@@ -255,3 +255,29 @@ type stubParser struct{}
 func (stubParser) Parse(context.Context, io.Reader) (model.CSVDocument, error) {
 	return model.CSVDocument{}, nil
 }
+
+// 日期策略矩阵（联合审查 P2）：flat 未声明 date_policy 默认 today（同日导出）；
+// dated 默认 yesterday；specific 保持显式指定。完整 e2e 由 watch/executor 测钉。
+func TestDatePolicyDefaultsFollowLayout(t *testing.T) {
+	flat, err := NewSourceUnit(unitCfg(map[string]any{"layout": "flat"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flat.policy.Type != "today" {
+		t.Fatalf("flat default policy = %q, want today", flat.policy.Type)
+	}
+	dated, err := NewSourceUnit(unitCfg(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dated.policy.Type != "yesterday" {
+		t.Fatalf("dated default policy = %q, want yesterday", dated.policy.Type)
+	}
+	explicit, err := NewSourceUnit(unitCfg(map[string]any{"layout": "flat", "date_policy": "specific", "specific_date": "2026-11-19"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.policy.Type != "specific" {
+		t.Fatalf("explicit policy overridden: %q", explicit.policy.Type)
+	}
+}

@@ -423,6 +423,11 @@ func validateSourceUnit(cc extconfig.ComponentConfig) error {
 			return fmt.Errorf("source-unit %q specific_date invalid", cc.ID)
 		}
 	}
+	// 日期策略矩阵：dated+today 会被 Boundary 的截止线（昨天）拒绝，配置
+	// 校验阶段就响亮报错；flat（同日导出）默认 today，允许显式 today。
+	if policy == "today" && str(cc.Config, "layout") != "flat" {
+		return fmt.Errorf("source-unit %q date_policy=today requires layout=flat (dated sources collect through yesterday)", cc.ID)
+	}
 	if raw, ok := cc.Config["batch_size"]; ok {
 		b, valid := intCfgValue(raw)
 		if !valid || b <= 0 {

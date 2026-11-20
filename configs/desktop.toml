@@ -18,7 +18,7 @@ cron = "0 4 * * 0"
 [defaults]
 state_dir = "../state"
 date_policy = "yesterday"
-catchup_days = 7
+catchup_days = 30  # 产品默认：30 天滚动补采窗口（web-ui 默认配置）
 batch_size = 1000
 file_stable_window_seconds = 0
 # 采集后行列一致性校验默认开启：逐文件复测行/列并与库中结果对照，不一致只登记

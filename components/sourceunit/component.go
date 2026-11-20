@@ -52,16 +52,22 @@ type SourceUnitComponent struct {
 	metadataExtractor     model.MetadataExtractor
 	metadataFromComponent bool
 	stateSvc              model.CollectionState
-	memState              bool
-	mem                   *storage.MemoryStore
-	sqlCfg                *storage.SQLConfig
-	tableCfg              *storage.TableConfig
-	lazyConnect           bool
-	policy                date.Policy
-	batchSize             int
-	group                 string
-	header                bool
-	catchupDays           int
+	stateRawCfg           map[string]any
+	appendMode            bool
+	// stateDeferred=true 表示构造期没有触碰持久化资源（file/sqlite state）；
+	// Apply 才 buildState + since 迁移，并在 Effect 中 Close。禁用组件因此
+	// 不执行任何磁盘操作，Apply 失败也不会留下不可逆的历史清理。
+	stateDeferred bool
+	memState      bool
+	mem           *storage.MemoryStore
+	sqlCfg        *storage.SQLConfig
+	tableCfg      *storage.TableConfig
+	lazyConnect   bool
+	policy        date.Policy
+	batchSize     int
+	group         string
+	header        bool
+	catchupDays   int
 	// sameDay = layout 是 flat（仪表导出：文件本身就是当天的）。它决定
 	// date.Boundary 的截止线：dated 源永远不采今天，flat 源今天就是它的业务日。
 	sameDay bool
@@ -91,6 +97,9 @@ type SourceUnitComponent struct {
 type job struct {
 	req model.CollectionRequested
 }
+
+// stateConfig 返回构造时保存的状态配置快照（Apply 延迟建库用）。
+func (c *SourceUnitComponent) stateConfig() map[string]any { return c.stateRawCfg }
 
 func (c *SourceUnitComponent) Name() string { return "source-unit:" + string(c.sourceID) }
 func (c *SourceUnitComponent) Inject() []runtime.Dependency {
@@ -131,10 +140,16 @@ func (c *SourceUnitComponent) MemoryStore() *storage.MemoryStore { return c.mem 
 // for the console's "待补采" display.
 // Records 暴露本源的台账记录（诊断与测试用；不进任何能力面）。
 func (c *SourceUnitComponent) Records(ctx context.Context) ([]model.CollectionRecord, error) {
+	if c.stateSvc == nil {
+		return nil, fmt.Errorf("source-unit %q: state not active (component disabled or not yet activated)", c.sourceID)
+	}
 	return c.stateSvc.CollectionRecords(ctx, c.sourceID)
 }
 
 func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionKey, error) {
+	if c.stateSvc == nil {
+		return nil, fmt.Errorf("source-unit %q: state not active", c.sourceID)
+	}
 	target, err := c.policy.Resolve()
 	if err != nil {
 		return nil, err
@@ -167,6 +182,9 @@ func (c *SourceUnitComponent) PlanKeys(ctx context.Context) ([]model.CollectionK
 // ReclaimRunning closes Running records left by a previous process so the
 // startup pass can collect those dates immediately (see Host.Startup).
 func (c *SourceUnitComponent) ReclaimRunning(ctx context.Context, startedBefore time.Time) (int64, error) {
+	if c.stateSvc == nil {
+		return 0, nil // disabled source has no ledger to reclaim
+	}
 	return c.stateSvc.ReclaimRunning(ctx, startedBefore)
 }
 
@@ -177,6 +195,9 @@ func (c *SourceUnitComponent) ReclaimRunning(ctx context.Context, startedBefore 
 // ledger use ProjectionSnapshotter instead.
 func (c *SourceUnitComponent) Projection(ctx context.Context) (query.UnitState, error) {
 	u := query.UnitState{SourceID: string(c.sourceID), Path: c.path}
+	if c.stateSvc == nil {
+		return u, fmt.Errorf("source-unit %q: state not active", c.sourceID)
+	}
 	recs, err := c.stateSvc.CollectionRecords(ctx, c.sourceID)
 	if err != nil {
 		return u, err
@@ -234,6 +255,55 @@ func (c *SourceUnitComponent) ProjectionFromSnapshot(snap state.ProjectionSnapsh
 
 // Apply starts one worker/event-handler activation for this Source.
 func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	// 延迟状态资源在激活期创建：禁用组件不会执行此段，Apply 失败时
+	// 尚未建立的 resources 无需回滚。
+	if c.stateDeferred {
+		svc, _, err := buildState(c.stateConfig(), string(c.sourceID))
+		if err != nil {
+			return nil, err
+		}
+		c.stateSvc = svc
+		if c.appendMode {
+			setter, ok := svc.(interface{ SetAppendMode() })
+			if !ok {
+				_ = svc.Close()
+				c.stateSvc = nil
+				return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q collection_mode=append requires a state supporting it", string(c.sourceID))
+			}
+			setter.SetAppendMode()
+		}
+		// since 迁移（删除早于生命周期下界的历史行）现在是明确的激活步骤：
+		// 失败则本次激活报错并关闭刚打开的状态库——不可逆的清理只在确认
+		// 组件真正激活前发生，且失败可诊断。
+		if !c.since.IsZero() {
+			records, err := svc.CollectionRecords(ctx.Context(), c.sourceID)
+			if err != nil {
+				_ = svc.Close()
+				c.stateSvc = nil
+				return nil, fmt.Errorf("source-unit %q since migration: %w", c.sourceID, err)
+			}
+			for _, r := range records {
+				if r.Key.Date.Before(c.since) {
+					if err := svc.Drop(ctx.Context(), r.Key); err != nil {
+						_ = svc.Close()
+						c.stateSvc = nil
+						return nil, fmt.Errorf("source-unit %q since migration drop %s: %w", c.sourceID, r.Key, err)
+					}
+				}
+			}
+		}
+		if err := ctx.Effect(func() (func() error, error) {
+			return func() error {
+				err := c.stateSvc.Close()
+				c.stateSvc = nil
+				return err
+			}, nil
+		}); err != nil {
+			_ = svc.Close()
+			c.stateSvc = nil
+			return nil, err
+		}
+	}
 	// component 装配：提取器来自 path-metadata 组件的 capability。
 	if c.metadataFromComponent {
 		extractorSvc, err := runtime.Require(ctx, metadataplugin.Key)
@@ -516,14 +586,22 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 		extractor = ex
 	}
 
-	stateSvc, isMemory, err := buildState(cc.Config, sourceID)
-	if err != nil {
-		return nil, err
+	// 构造阶段保持纯：memory-state 无磁盘副作用可直接建；file/sqlite
+	// state 延迟到 Apply（Framework addOne 会先 Factory.Create 再判 disabled）。
+	stateKind := configutil.OptionalString(cc, "state_type", "memory-state")
+	var stateSvc model.CollectionState
+	isMemory := stateKind == "memory-state"
+	deferred := false
+	if isMemory {
+		stateSvc = state.NewMemory()
+	} else {
+		deferred = true
+		if err := validateStateConfig(cc.Config, sourceID); err != nil {
+			return nil, err
+		}
 	}
-	// collection_mode = "append": change-triggered sources record many
-	// snapshots under one business date, so the succeeded guard stays off
-	// (file-level dedup still protects against duplicates).
-	if configutil.OptionalString(cc, "collection_mode", "batch") == "append" {
+	appendMode := configutil.OptionalString(cc, "collection_mode", "batch") == "append"
+	if stateSvc != nil && appendMode {
 		setter, ok := stateSvc.(interface{ SetAppendMode() })
 		if !ok {
 			return nil, errs.Sourcef(errs.ErrInvalidConfig, "source-unit %q collection_mode=append requires a state supporting it", cc.ID)
@@ -604,20 +682,10 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// since 生命周期下界的一次性清扫：since 之前的旧记录（历史版本
-	// 物化的 Skipped/Pending，或误配时期的成功/失败）不属于这个源的
-	// 存在史——清除，而不是留在台账里成为永久不可行动项。
-	if !since.IsZero() {
-		ctx := context.Background()
-		if recs, rerr := stateSvc.CollectionRecords(ctx, model.SourceID(sourceID)); rerr == nil {
-			for _, r := range recs {
-				if r.Key.Date.Before(since) {
-					_ = stateSvc.Drop(ctx, r.Key)
-				}
-			}
-		}
-	}
 	return &SourceUnitComponent{
+		stateRawCfg:           cc.Config,
+		appendMode:            appendMode,
+		stateDeferred:         deferred,
 		sourceID:              model.SourceID(sourceID),
 		group:                 group,
 		header:                header,
@@ -768,7 +836,13 @@ func staticMetadata(raw any) (model.Metadata, error) {
 
 func datePolicy(cfg map[string]any) (date.Policy, error) {
 	cc := config.ComponentConfig{Config: cfg}
-	policyType := configutil.OptionalString(cc, "date_policy", date.PolicyYesterday)
+	// flat 布局的文件本身就是"今天的数据"：未声明 date_policy 时默认 today
+	// （yesterday 会让只配置 layout=flat 的源采到昨天，与 SameDay 边界脱节）。
+	defaultPolicy := date.PolicyYesterday
+	if configutil.OptionalString(cc, "layout", "dated") == "flat" {
+		defaultPolicy = date.PolicyToday
+	}
+	policyType := configutil.OptionalString(cc, "date_policy", defaultPolicy)
 	policy := date.Policy{Type: policyType}
 	if policyType == date.PolicySpecific {
 		raw := configutil.OptionalString(cc, "specific_date", "")
@@ -785,3 +859,33 @@ func datePolicy(cfg map[string]any) (date.Policy, error) {
 }
 
 var _ runtime.Component = (*SourceUnitComponent)(nil)
+
+// validateStateConfig checks a deferred state configuration without opening
+// any resource: construction must stay pure (the Runtime Controller calls
+// Factory.Create even for disabled rows).
+func validateStateConfig(cfg map[string]any, sourceID string) error {
+	cc := config.ComponentConfig{Config: cfg}
+	switch configutil.OptionalString(cc, "state_type", "memory-state") {
+	case "memory-state":
+		return nil
+	case "file-state":
+		dir := configutil.OptionalString(cc, "state_dir", "./state")
+		if dir == "" {
+			return errs.Sourcef(errs.ErrInvalidConfig, "file-state state_dir must not be empty")
+		}
+		if !state.PathAllowed(filepath.Join(dir, sourceID, "collection-state.json")) {
+			return errs.Sourcef(errs.ErrInvalidConfig, "state path is invalid")
+		}
+	case "sqlite-state":
+		dir := configutil.OptionalString(cc, "state_dir", "./state")
+		if dir == "" {
+			return errs.Sourcef(errs.ErrInvalidConfig, "sqlite-state state_dir must not be empty")
+		}
+		if !state.PathAllowed(filepath.Join(dir, "state.db")) {
+			return errs.Sourcef(errs.ErrInvalidConfig, "state database path is invalid")
+		}
+	default:
+		return errs.Sourcef(errs.ErrInvalidConfig, "unknown state_type %q", configutil.OptionalString(cc, "state_type", ""))
+	}
+	return nil
+}

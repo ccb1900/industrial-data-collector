@@ -1,0 +1,84 @@
+package sourceunit
+
+// 联合审查 P1：Factory.Create 必须是纯构造。框架 addOne 先调 Factory.Create
+// 再判 disabled，所以构造期的 buildState（创建 SQLite/导入旧账本）与 since
+// 清理（Drop）连禁用组件也会执行，且 Apply 失败时不可逆。状态资源与 since
+// 迁移移入 Apply（Runtime Effect 拥有，撤销时 Close）。
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/runtime"
+)
+
+func TestNewSourceUnitDoesNotTouchState(t *testing.T) {
+	dir := t.TempDir()
+	// 只走构造，不 Apply：state.db 与 since 清理都不应发生。
+	c, err := NewSourceUnit(config.ComponentConfig{ID: "off", Type: Type, Config: map[string]any{
+		"source_id":   "off",
+		"path":        dir,
+		"pattern":     "*.csv",
+		"parser":      "csv",
+		"state_type":  "sqlite-state",
+		"state_dir":   filepath.Join(dir, "state"),
+		"date_policy": "yesterday",
+		"since":       "2026-01-01",
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.stateSvc != nil {
+		t.Fatal("construction must not open a state store; Apply owns lifecycle resources")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state")); !os.IsNotExist(err) {
+		t.Fatalf("construction must not create state dir/files, got %v", err)
+	}
+}
+
+func TestApplyInitializesStateAndCleanup(t *testing.T) {
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	defer func() { _ = rt.Close(ctx) }()
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	c, err := NewSourceUnit(config.ComponentConfig{ID: "live", Type: Type, Config: map[string]any{
+		"source_id":   "live",
+		"path":        dir,
+		"pattern":     "*.csv",
+		"parser":      "csv",
+		"state_type":  "sqlite-state",
+		"state_dir":   stateDir,
+		"date_policy": "yesterday",
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := rt.Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := 0
+	for f.State() != runtime.StateActive && deadline < 200 {
+		time.Sleep(10 * time.Millisecond)
+		deadline++
+	}
+	if f.State() != runtime.StateActive {
+		t.Fatalf("state = %v, want Active (%v)", f.State(), f.Err())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "state.db")); err != nil {
+		t.Fatalf("Apply must initialize the state store: %v", err)
+	}
+	if err := f.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
