@@ -4,6 +4,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 // 四层展开：机台 × 其组的格式 → 源定义；defaults 下沉；机台元数据并表。
@@ -97,6 +99,32 @@ func TestExpandFleetReferenceIntegrity(t *testing.T) {
 }
 
 // Parse 集成：四层声明经组合管线展开为源行，defaults 与 sink 字段下沉。
+// 30 天窗口是产品默认规则，缺省注入发生在 fleet 解析这一单点（与
+// date_policy="yesterday" 同一模式）：不声明=30（并随展开可见地 stamp 进
+// 有效配置），显式值原样覆盖——显式 0 仍是声明式 legacy 兼容口。
+func TestParseFleetDefaultsCatchupDefault(t *testing.T) {
+	d, err := parseFleetDefaults(map[string]any{"state_dir": "../state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.CatchupDays != 30 {
+		t.Fatalf("undeclared catchup_days = %d, want product default 30", d.CatchupDays)
+	}
+	d0, err := parseFleetDefaults(map[string]any{"catchup_days": int64(0)})
+	if err != nil || d0.CatchupDays != 0 {
+		t.Fatalf("explicit 0 must stay declared legacy, got %d/%v", d0.CatchupDays, err)
+	}
+	d7, err := parseFleetDefaults(map[string]any{"catchup_days": int64(7)})
+	if err != nil || d7.CatchupDays != 7 {
+		t.Fatalf("explicit 7 kept, got %d/%v", d7.CatchupDays, err)
+	}
+	// 缺省同样对缺失 defaults 表生效。
+	dNil, err := parseFleetDefaults(nil)
+	if err != nil || dNil.CatchupDays != 30 {
+		t.Fatalf("defaults-less fleet = %d/%v, want 30", dNil.CatchupDays, err)
+	}
+}
+
 func TestParseFourLayerFleet(t *testing.T) {
 	doc := `
 defaults = { state_dir = "../state", date_policy = "yesterday", catchup_days = 31, batch_size = 1000, expect = "daily", inspection_lookback_days = 2 }
@@ -275,6 +303,11 @@ func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 	if out[0].Config["files_per_source"] != 8 || out[0].Config["max_parallel_sources"] != 6 ||
 		out[0].Config["backup_dir"] != "../backup" || out[0].Config["backup_keep_days"] != 30 {
 		t.Fatalf("cfg = %#v", out[0].Config)
+	}
+	// 并发闸决策点在展开处（不在组件构造）：fleet 值直接固定进程闸容量。
+	// 本测试是包内第一个带 max_parallel_sources>0 的展开，gate 尚未固定。
+	if got := parallelism.Capacity(); got != 6 {
+		t.Fatalf("gate capacity after fleet expansion = %d, want 6", got)
 	}
 	// 校验开关是 bool：只有显式写了才下发，且 false 必须真的能下发。
 	off := false

@@ -186,6 +186,30 @@ func TestNewSourceUnitFlatLayoutForcesCatchupZero(t *testing.T) {
 	}
 }
 
+// 30 天自动容错窗口是产品默认规则：dated 源不配置即得 30，联合验收不再
+// 依赖每个配置文件手写；显式 0 保留为声明式兼容口（无窗口下界的老语义，
+// TestPlannerZeroCatchupKeepsLegacyWalk 钉住），不再是缺省值的隐含义。
+func TestNewSourceUnitCatchupDefaultsToThirtyDayWindow(t *testing.T) {
+	c, err := NewSourceUnit(unitCfg(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.planner().CatchupDays != 30 {
+		t.Fatalf("default dated planner catchup = %d, want 30", c.planner().CatchupDays)
+	}
+	if c.boundary().WindowDays != 30 {
+		t.Fatalf("default dated boundary window = %d, want 30", c.boundary().WindowDays)
+	}
+	explicitZero, err := NewSourceUnit(unitCfg(map[string]any{"catchup_days": 0}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicitZero.planner().CatchupDays != 0 || explicitZero.boundary().WindowDays != 0 {
+		t.Fatalf("explicit catchup_days=0 must stay the declared escape hatch, got planner=%d boundary=%d",
+			explicitZero.planner().CatchupDays, explicitZero.boundary().WindowDays)
+	}
+}
+
 // TestNewSourceUnitResolvesRegisteredParserKinds 是 Iteration F 的验收点：
 // 新增第四种文件格式 = 在 app/parser 注册一个工厂，sourceunit 零改动。
 // 旧实现是 sourceunit 里的硬编码 switch——注册表化之后这里必须对任何

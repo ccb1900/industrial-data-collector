@@ -28,6 +28,22 @@ func TestGateCapacityAndCancel(t *testing.T) {
 	Release()
 }
 
+// 固定语义：闸容量一经固定不再改变——运行期改动只响亮告警、要求重启，
+// 不静默分歧也不假热更（决策点单在 fleet 展开，见 sourcecomp）。
+func TestGateFixedOnce(t *testing.T) {
+	if Capacity() != 2 { // 上一测试固定为 2（包内声明顺序）
+		t.Fatalf("capacity after first Configure = %d, want 2", Capacity())
+	}
+	Configure(999) // 不同值：必须保持旧闸
+	if Capacity() != 2 {
+		t.Fatalf("re-Configure must not resize a fixed gate, got %d", Capacity())
+	}
+	Configure(0) // 非正值同样忽略
+	if Capacity() != 2 {
+		t.Fatalf("non-positive Configure ignored, got %d", Capacity())
+	}
+}
+
 func TestLedgerWaitAndDrain(t *testing.T) {
 	Begin()
 	Begin()

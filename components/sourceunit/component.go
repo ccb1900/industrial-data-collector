@@ -542,7 +542,14 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if batch <= 0 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "batch_size must be positive")
 	}
+	// 30 天自动容错窗口是产品默认规则：dated 源未声明 catchup_days 即获得
+	// 窗口，部署不再依赖每个配置文件手写；显式 0 保留为声明式兼容口
+	// （无窗口下界的老语义），缺省与"关闭"从此是两件事。flat 源不适用
+	// （窗口与其同日导出语义互斥，缺省直接保持 0，不发误报警告）。
 	catchup := configutil.OptionalInt(cc, "catchup_days", 0)
+	if _, catchupDeclared := cc.Config["catchup_days"]; !catchupDeclared && layout != "flat" {
+		catchup = model.DefaultCatchupDays
+	}
 	// 实例制语义：since = 源生命周期下界。文件不存在不是失败——无证据
 	// 不物化；网络不可达才是可重试 Failed（分类见 executor）。
 	since := model.CollectionDate{}
@@ -579,9 +586,9 @@ func NewSourceUnit(cc config.ComponentConfig, logger *slog.Logger) (*SourceUnitC
 	if filesPerSource < 1 {
 		return nil, errs.Sourcef(errs.ErrInvalidConfig, "files_per_source must be >= 1")
 	}
-	if n := configutil.OptionalInt(cc, "max_parallel_sources", 0); n > 0 {
-		parallelism.Configure(n)
-	}
+	// max_parallel_sources 只作显示：进程闸的决策点在 fleet 展开
+	// （sourcecomp.expandFleet），组件构造各自 Configure 会让"谁先构建"
+	// 决定全进程容量。
 	backupDir := configutil.OptionalString(cc, "backup_dir", "")
 	backupKeepDays := configutil.OptionalInt(cc, "backup_keep_days", 0)
 	// 采集后行列一致性校验默认开启：每次采集完成即重测文件并与库中结果

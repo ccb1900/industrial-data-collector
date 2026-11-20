@@ -9,6 +9,7 @@ package parallelism
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 )
 
@@ -24,16 +25,34 @@ var (
 	errs    []error
 )
 
-// Configure 设定闸容量；首次调用生效（全部源单元继承同一 fleet 默认，
-// 之后的不同值是配置异常，忽略并由调用方保持旧闸）。
+// Configure 设定进程闸容量。决策点是唯一的：fleet 展开（sourcecomp）在
+// 构建任何组件之前调用一次；闸固定后不改——运行期改 max_parallel_sources
+// 需要重启（诚实语义，不造假热更），不同值响亮告警而不是静默分歧。
 func Configure(n int) {
 	mu.Lock()
 	defer mu.Unlock()
-	if gateSet || n <= 0 {
+	if n <= 0 {
+		return
+	}
+	if gateSet {
+		if cap(gate) != n {
+			slog.Warn("parallelism: process gate already fixed; changing max_parallel_sources takes effect only after restart",
+				"fixed", cap(gate), "requested", n)
+		}
 		return
 	}
 	gate = make(chan struct{}, n)
 	gateSet = true
+}
+
+// Capacity 返回当前闸容量（未固定时为 0；诊断与测试用）。
+func Capacity() int {
+	mu.Lock()
+	defer mu.Unlock()
+	if !gateSet {
+		return 0
+	}
+	return cap(gate)
 }
 
 // Acquire 占用一个并发槽，ctx 取消时返回 false。

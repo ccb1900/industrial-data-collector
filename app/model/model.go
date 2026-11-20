@@ -181,6 +181,15 @@ const (
 	StatusExpired Status = "Expired"
 )
 
+// DefaultCatchupDays is the product-default automatic fault-tolerance
+// window for dated sources: a fleet or source that does not declare
+// catchup_days gets a 30-day rolling catch-up scan. Declaring
+// catchup_days = 0 remains the explicit escape hatch back to the legacy
+// unlimited walk — the default and the opt-out are separate decisions,
+// injected once here for both fleet parsing (sourcecomp) and component
+// construction (sourceunit) to consume.
+const DefaultCatchupDays = 30
+
 // FileResult reports the outcome of one input file.
 type FileResult struct {
 	File     FileIdentity

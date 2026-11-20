@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"gocordis-csv-collector/app/model"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 // 四层声明模型（features/20260919.md）：机台清单（事实）× 格式清单组
@@ -191,6 +194,14 @@ type ScheduleDef struct {
 // expandFleet 展开：机台 × 其组的格式 → 源定义。引用完整性在此强校验
 // （缺格式/缺组/缺 sink/坏 since 任一 → 响亮失败，绝不静默丢采集）。
 func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups []FormatGroupDef, machines []MachineDef, schedules []ScheduleDef) ([]*ResolvedSource, []extconfig.ComponentConfig, error) {
+	// 进程并发闸的唯一决策点在展开处：fleet [defaults] 已知、任何组件尚未
+	// 构建。source-unit 组件不再各自 Configure（first-call-wins 会让"哪个
+	// 源先构建"决定全进程容量）；cfg 里下发的 max_parallel_sources 键保留，
+	// 仅作有效配置的可见性。闸容量变更需重启——parallelism.Configure 对
+	// 分歧值响亮告警。
+	if d.MaxParallelSources > 0 {
+		parallelism.Configure(d.MaxParallelSources)
+	}
 	stateType := d.StateType
 	if stateType == "" {
 		stateType = "file-state"
@@ -483,7 +494,9 @@ func copyStringMap(m map[string]string) map[string]string {
 }
 
 func parseFleetDefaults(raw any) (FleetDefaults, error) {
-	d := FleetDefaults{DatePolicy: "yesterday"}
+	// 缺省注入与 date_policy 同一模式：未声明 catchup_days 即产品默认 30；
+	// 显式值（含 0 = 声明式 legacy 兼容口）在下方原样覆盖。
+	d := FleetDefaults{DatePolicy: "yesterday", CatchupDays: model.DefaultCatchupDays}
 	m, ok := raw.(map[string]any)
 	if !ok {
 		if raw == nil {
