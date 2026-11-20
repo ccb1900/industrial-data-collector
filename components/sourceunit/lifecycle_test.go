@@ -13,6 +13,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
+	"gocordis-csv-collector/app/model"
 )
 
 func TestNewSourceUnitDoesNotTouchState(t *testing.T) {
@@ -80,5 +81,69 @@ func TestApplyInitializesStateAndCleanup(t *testing.T) {
 	}
 	if err := f.Gone(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// since 迁移不能先于破坏性检查：Apply 后续失败（metadata 依赖缺失）时
+// 历史台账必须保持不变——失败前的部分 Drop 不可恢复。
+func TestSinceMigrationRunsAfterDependencyChecks(t *testing.T) {
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	defer func() { _ = rt.Close(ctx) }()
+	dir := t.TempDir()
+
+	c, err := NewSourceUnit(config.ComponentConfig{ID: "dep", Type: Type, Config: map[string]any{
+		"source_id":       "dep",
+		"path":            dir,
+		"pattern":         "*.csv",
+		"parser":          "csv",
+		"state_type":      "memory-state",
+		"date_policy":     "yesterday",
+		"since":           "2026-01-01",
+		"metadata_source": "component", // 需要 metadata capability，测试中不存在
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 构造期 memory-state 已可用：预置早于 since 的历史行。
+	var oldDate model.CollectionDate
+	if err := oldDate.UnmarshalText([]byte("2025-12-31")); err != nil {
+		t.Fatal(err)
+	}
+	oldKey := model.CollectionKey{SourceID: "dep", Date: oldDate}
+	if ok, err := c.stateSvc.Begin(ctx, oldKey, time.Hour); err != nil || !ok {
+		t.Fatalf("begin history row: %v/%v", ok, err)
+	}
+	if err := c.stateSvc.End(ctx, oldKey, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := rt.Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for f.State() != runtime.StateFailed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if f.State() != runtime.StatePending {
+		t.Fatalf("dependency missing must withdraw to Pending (not Failed), got %v", f.State())
+	}
+	// 关键断言：历史行仍在。旧实现在 Require(metadata) 之前就 Drop 了它。
+	recs, err := c.stateSvc.CollectionRecords(ctx, "dep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range recs {
+		if r.Key == oldKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("since migration dropped history before a later Apply failure")
 	}
 }

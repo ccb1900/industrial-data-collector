@@ -272,26 +272,6 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 			}
 			setter.SetAppendMode()
 		}
-		// since 迁移（删除早于生命周期下界的历史行）现在是明确的激活步骤：
-		// 失败则本次激活报错并关闭刚打开的状态库——不可逆的清理只在确认
-		// 组件真正激活前发生，且失败可诊断。
-		if !c.since.IsZero() {
-			records, err := svc.CollectionRecords(ctx.Context(), c.sourceID)
-			if err != nil {
-				_ = svc.Close()
-				c.stateSvc = nil
-				return nil, fmt.Errorf("source-unit %q since migration: %w", c.sourceID, err)
-			}
-			for _, r := range records {
-				if r.Key.Date.Before(c.since) {
-					if err := svc.Drop(ctx.Context(), r.Key); err != nil {
-						_ = svc.Close()
-						c.stateSvc = nil
-						return nil, fmt.Errorf("source-unit %q since migration drop %s: %w", c.sourceID, r.Key, err)
-					}
-				}
-			}
-		}
 		if err := ctx.Effect(func() (func() error, error) {
 			return func() error {
 				err := c.stateSvc.Close()
@@ -452,7 +432,38 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 	if err != nil {
 		return nil, err
 	}
+
+	// since 迁移放在所有破坏性检查与资源装配之后：依赖缺失时 Apply 根本
+	// 不执行；Storage 打不开 / Effect 注册失败时也不会先删历史台账。
+	// 迁移本身是可重试的维护操作（逐条 Drop 幂等）——中途失败仅记 warning，
+	// 不阻断激活，剩余条目下次 Apply 再扫一遍即可，绝不让"部分删除+
+	// Apply 失败"留下不可恢复的半成品。
+	if !c.since.IsZero() {
+		c.migrateSince(ctx.Context())
+	}
 	return nil, nil
+}
+
+// migrateSince removes ledger rows before the source's lifecycle lower bound.
+// It is idempotent and best-effort: a partial run leaves the remaining rows
+// for the next activation, so no failure can turn a partial cleanup into an
+// unrecoverable state.
+func (c *SourceUnitComponent) migrateSince(ctx context.Context) {
+	records, err := c.stateSvc.CollectionRecords(ctx, c.sourceID)
+	if err != nil {
+		c.logger.Warn("since migration could not read ledger; will retry on next activation",
+			"source", c.sourceID, "error", err.Error())
+		return
+	}
+	for _, r := range records {
+		if r.Key.Date.Before(c.since) {
+			if err := c.stateSvc.Drop(ctx, r.Key); err != nil {
+				c.logger.Warn("since migration dropped part of the ledger; remaining rows retried next activation",
+					"source", c.sourceID, "key", r.Key, "error", err.Error())
+				return
+			}
+		}
+	}
 }
 
 func (c *SourceUnitComponent) setActive(r *checkRunner) {
