@@ -202,3 +202,66 @@ func summaryDates(in []CollectionSummary) []string {
 	}
 	return out
 }
+
+// TestExpiredWithLingeringFailureStaysActionable 钉住"超期"在两个后端的一致
+// 语义：离开窗口 ≠ 从待处理消失。退役的日期带着失败文件，正是"必须由人指定
+// 日期回填"那种 ask——LedgerAttention 靠 state_failures 的 EXISTS 分支把它
+// 留在待处理里，投影侧靠 FilesFailed>0 同样留住。计数则分开：Pending 说"系统
+// 还会再试"，Expired 说"得人动手"。
+//
+// 这条测试来自 2026-11-20 的现网演示：迭代规范 §3 原先写"Expired 不进待处理"，
+// 与两个后端的真实行为都相反——代码是对的，文档写错了（已改）。
+func TestExpiredWithLingeringFailureStaysActionable(t *testing.T) {
+	ctx := context.Background()
+	db := filepath.Join(t.TempDir(), "state.db")
+	st, err := OpenSQLite(db, "prod", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	seedStatus(t, st, "2026-11-13", model.StatusFailed)
+	f := model.FileIdentity{SourceID: "prod", Path: "/x/a_20261113.log", Name: "a_20261113.log"}
+	if err := st.MarkFileFailed(ctx, key("2026-11-13"), f, "line does not match pattern", true); err != nil {
+		t.Fatal(err)
+	}
+	// 窗口首日 = 11-17：11-13 退役。
+	changed, err := st.ExpireBeyond(ctx, "prod", mk("2026-11-17"))
+	if err != nil || len(changed) != 1 {
+		t.Fatalf("retire = %v err=%v", changed, err)
+	}
+
+	attn, err := st.LedgerAttention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	for _, s := range attn {
+		if s.Record.Key.Date.String() == "2026-11-13" {
+			seen = true
+			if s.Record.Status != model.StatusExpired {
+				t.Errorf("attention row status = %q, want Expired（待处理里要说清是哪种 ask）", s.Record.Status)
+			}
+			if s.FilesFailed == 0 {
+				t.Errorf("attention row lost its failed-file evidence: %+v", s)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("retired date with a lingering failure must stay actionable in 待处理")
+	}
+
+	stats, err := st.LedgerStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 {
+		t.Errorf("Pending = %d, want 0（它不会再自动重试）", stats.Pending)
+	}
+	if stats.Expired != 1 {
+		t.Errorf("Expired = %d, want 1", stats.Expired)
+	}
+	if stats.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1（证据不随退役消失）", stats.FilesFailed)
+	}
+}

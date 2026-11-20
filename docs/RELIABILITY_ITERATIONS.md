@@ -22,6 +22,7 @@
 | `f0c3736` | `catchup_days` 31 → 30（现场口径 = 含昨天在内 30 个自然日） | `TestBoundaryAnchorsTheWindowOnCutoff` |
 | `5445d92` | 宿主闸 E2E 用例本地隔离 + 日期相对 | `TestUncHostGateAggregatesFailures` |
 | `3edab08`+`2777ed1`+`c710630` | `Expired` 全链：状态层退役扫描、事件告知、控制台"超期未采" | `TestExpireBeyondRetiresOnlyOlderUnfinishedRows`、`TestFileStateExpireBeyondSurvivesRestart`、`TestSQLiteLedgerAccountsForExpired`、`TestHandleRetiresBeyondWindowDatesAndAnnouncesThem`、`TestExpiredIsNotAttentionButMismatchIs`、`TestStatsRow` |
+| 本轮 | 投影侧 KPI 补数 `Expired`（现网演示抓到 file-state 部署"超期未采"卡片恒 0）+ 待处理/超期关系如实记录 | `TestStatsCountsExpiredFromProjection`、`TestExpiredWithLingeringFailureStaysActionable` |
 | `95f1477` | 整夜重扫成本量化（工作量断言 + 3 条基准） | `TestWindowRescanWorkIsBoundedToTheWindow`、`BenchmarkNightlyWindowRescan{,SQLiteState}`、`BenchmarkWindowRescanAllDatesMissing` |
 | `d92a5f3` | SQLiteState 时钟接缝（Iteration H.1 前置项已提前完成） | `TestSQLiteStateLeaseExpiry`（租约边界两侧各压 1ns，已做变异验证） |
 | 本次 | `endState` 瞬时写失败重试一次（原 Iteration G.3） | `TestCollectorRetriesTransientLedgerWriteFailure` |
@@ -105,6 +106,14 @@ no_data_after_days   = 3
 2. **手动指定日期改为只采该日期**：此前 req.Date 之外仍会规划整个窗口（ planner
    锚在 target 上），一次人工回填会顺带把请求日期之前的 30 天全探一遍——开启
    确认后甚至把它们全部终态化。窗口重扫属于自动路径，手动 = 单日期。
+**待处理与超期的真实关系**（2026-11-20 现网演示纠正了本节旧说法）：`Expired`
+**不**从待处理消失。两个后端都经 `state_failures` 的 EXISTS 分支 / 投影侧的
+`FilesFailed>0` 把"超期 + 仍有失败文件"留在待处理里，并把状态显示为 `Expired`
+——因为它的 ask 恰恰是"必须由人指定日期回填"。KPI 层面才是分开的：
+`Pending` 说"系统还会再试"，`Expired` 说"得人动手"。旧文写"Expired 不进待处理"
+是错的，测试 `TestExpiredWithLingeringFailureStaysActionable` 钉住正确语义
+（变异：去掉 EXISTS 分支 → 红）。
+
 **验收测试**（已全部落地，`app/collector/nodata_test.go` + `app/state/nodata_test.go`）
 - `TestNoDataTerminalOnlyAfterConfirmedAbsence`（N=2：第一轮只计数，第二轮终态化）。
 - `TestUnreachableHostNeverBecomesNoData`（N=1 的最敏感设置下连续三轮不可达，台账仍是 Failed）。

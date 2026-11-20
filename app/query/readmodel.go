@@ -571,8 +571,14 @@ func (m *ReadModel) Stats(ctx context.Context) (OverviewStats, error) {
 			if h.Covers(model.SourceID(v.SourceID)) {
 				continue
 			}
-			if v.Status == StatusFailed || v.Status == StatusPending {
+			// 投影侧的行必须与账本侧同一套口径：Expired 单独成数，不并入
+			// Pending。file-state 部署（以及未被账本覆盖的源）只走这条路，
+			// 少一行就让"超期未采"卡片永远读 0——现网演示实测到过。
+			switch v.Status {
+			case StatusFailed, StatusPending:
 				stats.Pending++
+			case StatusExpired:
+				stats.Expired++
 			}
 			stats.Records += v.Records
 			stats.FilesFailed += v.FilesFailed
@@ -581,8 +587,11 @@ func (m *ReadModel) Stats(ctx context.Context) (OverviewStats, error) {
 	}
 	out := OverviewStats{Sources: sources}
 	for _, v := range views {
-		if v.Status == StatusFailed || v.Status == StatusPending {
+		switch v.Status {
+		case StatusFailed, StatusPending:
 			out.Pending++
+		case StatusExpired:
+			out.Expired++
 		}
 		out.Records += v.Records
 		out.FilesFailed += v.FilesFailed
