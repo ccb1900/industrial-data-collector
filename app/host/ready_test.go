@@ -7,6 +7,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 // hReadyBound 必须认识两种合法稳态，否则"停用后端、UI 经 follows 等待依赖"
@@ -88,5 +89,20 @@ func TestReadyBoundWaitsOutTransientPending(t *testing.T) {
 	}
 	if f.State() != runtime.StateActive {
 		t.Fatalf("after hReadyBound the plain component = %v, want Active (not skipped)", f.State())
+	}
+}
+
+// 并发闸只在成功调和后由有效声明应用；被拒绝的配置不会走到这里（纯展开
+// 由 sourcecomp 测试钉住）。
+func TestApplyParallelismFromEffectiveConfig(t *testing.T) {
+	before := parallelism.Capacity()
+	if before != 0 {
+		t.Skipf("package-global gate already fixed at %d by another test", before)
+	}
+	applyParallelismFromConfig(config.Config{Components: []config.ComponentConfig{
+		{ID: "s1", Type: "csv-source-unit", Config: map[string]any{"max_parallel_sources": 7}},
+	}})
+	if got := parallelism.Capacity(); got != 7 {
+		t.Fatalf("gate capacity = %d, want 7", got)
 	}
 }

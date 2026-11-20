@@ -33,6 +33,7 @@ import (
 	queryplugin "gocordis-csv-collector/components/query"
 	schedulerplugin "gocordis-csv-collector/components/scheduler"
 	sourceunitplugin "gocordis-csv-collector/components/sourceunit"
+	"gocordis-csv-collector/internal/parallelism"
 )
 
 type Host struct {
@@ -374,8 +375,12 @@ func New(log *slog.Logger) (*Host, error) {
 // withdraws them via the Runtime; enabling restores them automatically.
 // Removal decisions (uninstall) are independent: an uninstalled component
 // is absent from the declaration, and the switch must not resurrect it.
+// SetDeclaredEnabled flips one EFFECTIVE declaration's enabled switch and
+// persists it via the console overlay. Config edits made earlier are kept —
+// both operations start from the same effective row, only the target field
+// changes. A reconcile failure rolls the patch back.
 func (h *Host) SetDeclaredEnabled(ctx context.Context, id string, enable bool) error {
-	def, found := h.desiredRow(id)
+	def, found := h.EffectiveComponentConfig(id)
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
@@ -383,40 +388,32 @@ func (h *Host) SetDeclaredEnabled(ctx context.Context, id string, enable bool) e
 		return fmt.Errorf("component %q is console infrastructure and cannot be disabled", id)
 	}
 	if len(h.removePatchesFor(id)) > 0 {
-		// An explicit uninstall outranks a switch: the row is gone.
 		return fmt.Errorf("component %q is uninstalled; install it before enabling", id)
 	}
 	edited := def
 	flag := enable
 	edited.Enabled = &flag
+
 	h.mu.Lock()
-	h.setPatchLocked(patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited})
-	h.mu.Unlock()
-	if err := h.persistOverlay(); err != nil {
-		return err
+	var prev []patch.Patch
+	hadPrev := false
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
+			prev = []patch.Patch{h.patches[i]}
+			hadPrev = true
+			break
+		}
 	}
-	return h.Reconcile(ctx, h.lastDesired)
+	h.mu.Unlock()
+	return h.commitPatch(ctx, patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, prev, hadPrev)
 }
 
 // desiredRow looks a component up in the last desired set first, then in
 // inserted/replaced patch layers (an inserted component is not in base).
+// desiredRow is kept for callers that only need a lookup: the effective
+// declaration is the one authority (see EffectiveComponentConfig).
 func (h *Host) desiredRow(id string) (config.ComponentConfig, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, cc := range h.lastDesired.Components {
-		if cc.ID == id {
-			return cc, true
-		}
-	}
-	var def config.ComponentConfig
-	found := false
-	for _, p := range h.patches {
-		if (p.Op == patch.PatchReplace || p.Op == patch.PatchInsert) && p.ID == id {
-			def = *p.Component
-			found = true
-		}
-	}
-	return def, found
+	return h.EffectiveComponentConfig(id)
 }
 
 func (h *Host) removePatchesFor(id string) []patch.Patch {
@@ -548,6 +545,10 @@ func (h *Host) PostReconcile(ctx context.Context, cfg config.Config) error {
 		h.notifyReconcileFailure(err)
 		return err
 	}
+	// 并发闸是进程级资源：只在成功调和之后从【有效声明】应用。被拒绝的
+	// 配置（展开失败 / validate 失败）根本走不到这里，不会污染全局闸。
+	applyParallelismFromConfig(cfg)
+
 	if h.explorer != nil {
 		// explorer 是只读展示模型：敏感值以哨兵呈现，避免插件页明文
 		// 泄漏 DSN/口令；真实配置仍由宿主/补丁持有。
@@ -666,7 +667,9 @@ func (h *Host) persistOverlay() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(h.patchPath, data, 0o644)
+	// 原子写：进程在写补丁时崩溃不能留下半截 JSON（下次启动会丢掉全部
+	// 持久化声明）。复用 ExportConfigSnapshot 的 writeAtomic。
+	return writeAtomic(h.patchPath, data)
 }
 
 // setPatchLocked replaces the last patch with the same op+id in place, or
@@ -705,6 +708,84 @@ func (h *Host) EffectiveConfig() (config.Config, bool) {
 		return config.Config{}, false
 	}
 	return base, true
+}
+
+// EffectiveComponentConfig is the single authoritative read used by ALL
+// declaration-writing operations (config edit / enable switch / uninstall /
+// install). It starts from the base declaration, applies the console overlay
+// AND read-only operator layers, and returns the unredacted row the runtime
+// actually converges to. A write then changes only its target field —
+// later operations cannot silently resurrect values from the raw TOML.
+func (h *Host) EffectiveComponentConfig(id string) (config.ComponentConfig, bool) {
+	h.mu.Lock()
+	base := h.lastDesired
+	h.mu.Unlock()
+	if len(base.Components) == 0 {
+		return config.ComponentConfig{}, false
+	}
+	if err := h.applyOverlay(&base); err != nil {
+		return config.ComponentConfig{}, false
+	}
+	for _, cc := range base.Components {
+		if cc.ID == id {
+			return cc, true
+		}
+	}
+	return config.ComponentConfig{}, false
+}
+
+// baseSnapshotLocked returns a defensive copy of the desired base. Callers
+// pass it to Reconcile instead of h.lastDesired (which may be replaced
+// concurrently by the config watcher) — one locked read, no data race.
+func (h *Host) baseSnapshotLocked() config.Config {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return config.Config{Components: append([]config.ComponentConfig(nil), h.lastDesired.Components...)}
+}
+
+// commitPatch writes one patch, persists it atomically, and reconciles from
+// a locked base snapshot. On reconcile failure the exact previous patch
+// entries are restored (rollback), so a rejected declaration never leaves a
+// persisted patch that disagrees with the runtime.
+func (h *Host) commitPatch(ctx context.Context, p patch.Patch, prev []patch.Patch, hadPrev bool) error {
+	h.mu.Lock()
+	h.setPatchLocked(p)
+	h.mu.Unlock()
+	if err := h.persistOverlay(); err != nil {
+		h.mu.Lock()
+		h.rollbackPatchLocked(p.ID, prev, hadPrev)
+		h.mu.Unlock()
+		return err
+	}
+	base := h.baseSnapshotLocked()
+	if err := h.Reconcile(ctx, base); err != nil {
+		h.mu.Lock()
+		h.rollbackPatchLocked(p.ID, prev, hadPrev)
+		h.mu.Unlock()
+		_ = h.persistOverlay()
+		return err
+	}
+	return nil
+}
+
+// rollbackPatchLocked restores a previous patch (or removes the new one).
+// Caller holds h.mu.
+func (h *Host) rollbackPatchLocked(id string, prev []patch.Patch, hadPrev bool) {
+	found := false
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].ID == id && h.patches[i].Op == patch.PatchReplace {
+			if hadPrev && len(prev) > 0 {
+				h.patches[i] = prev[0]
+			} else {
+				h.patches = append(h.patches[:i], h.patches[i+1:]...)
+			}
+			found = true
+			break
+		}
+	}
+	if !found && hadPrev && len(prev) > 0 {
+		h.patches = append(h.patches, prev[0])
+	}
 }
 
 // ComponentConfig returns the effective configuration of one desired
@@ -756,63 +837,26 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
 		restoreRedacted(cfg, stored.Config)
 	}
-	h.mu.Lock()
-	var def config.ComponentConfig
-	found := false
-	for _, cc := range h.lastDesired.Components {
-		if cc.ID == id {
-			def = cc
-			found = true
-			break
-		}
-	}
-	if !found {
-		// The edit may target an inserted component, not just base rows.
-		for _, p := range h.patches {
-			if p.Op == patch.PatchInsert && p.ID == id {
-				def = *p.Component
-				found = true
-				break
-			}
-		}
-	}
-	var prev patch.Patch
-	hadPrev := false
-	if found {
-		edited := def
-		edited.ID = id
-		edited.Config = cfg
-		for i := len(h.patches) - 1; i >= 0; i-- {
-			if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
-				prev = h.patches[i]
-				hadPrev = true
-				break
-			}
-		}
-		h.setPatchLocked(patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited})
-	}
-	h.mu.Unlock()
+	def, found := h.EffectiveComponentConfig(id)
 	if !found {
 		return fmt.Errorf("component %q is not part of the desired configuration", id)
 	}
-	if err := h.persistOverlay(); err != nil {
-		return err
-	}
-	if err := h.Reconcile(ctx, h.lastDesired); err != nil {
-		// roll the edit back — the runtime rejected the new configuration.
-		h.mu.Lock()
-		if hadPrev {
-			h.setPatchLocked(prev)
-		} else {
-			for i := len(h.patches) - 1; i >= 0; i-- {
-				if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
-					h.patches = append(h.patches[:i], h.patches[i+1:]...)
-					break
-				}
-			}
+	edited := def
+	edited.ID = id
+	edited.Config = cfg
+
+	h.mu.Lock()
+	var prev []patch.Patch
+	hadPrev := false
+	for i := len(h.patches) - 1; i >= 0; i-- {
+		if h.patches[i].Op == patch.PatchReplace && h.patches[i].ID == id {
+			prev = []patch.Patch{h.patches[i]}
+			hadPrev = true
+			break
 		}
-		h.mu.Unlock()
-		_ = h.persistOverlay()
+	}
+	h.mu.Unlock()
+	if err := h.commitPatch(ctx, patch.Patch{Op: patch.PatchReplace, ID: id, Component: &edited}, prev, hadPrev); err != nil {
 		return fmt.Errorf("apply config for %q: %w", id, err)
 	}
 	return nil
@@ -864,7 +908,7 @@ func (h *Host) UninstallComponent(ctx context.Context, id string) error {
 	if err := h.persistOverlay(); err != nil {
 		return err
 	}
-	return h.Reconcile(ctx, h.lastDesired)
+	return h.Reconcile(ctx, h.baseSnapshotLocked())
 }
 
 // pluginSiblingRows collects the desired rows a plugin's prefix covers.
@@ -909,7 +953,7 @@ func (h *Host) InstallComponent(ctx context.Context, id string) error {
 	if err := h.persistOverlay(); err != nil {
 		return err
 	}
-	return h.Reconcile(ctx, h.lastDesired)
+	return h.Reconcile(ctx, h.baseSnapshotLocked())
 }
 
 // RemovedComponents lists uninstalled component definitions (patch order,
@@ -1143,6 +1187,11 @@ func (h *Host) scheduler() (*schedulerplugin.SchedulerComponent, error) {
 		if o.Type != "scheduler" {
 			continue
 		}
+		// 禁用声明仍在 Owned() 中，但 Fiber==nil——跳过并给出明确错误，
+		// 不再对 nil 解引用 panic（调度器被控制台停用后的常见路径）。
+		if o.Fiber == nil || o.Fiber.Component() == nil {
+			continue
+		}
 		comp, ok := o.Fiber.Component().(*schedulerplugin.SchedulerComponent)
 		if !ok {
 			return nil, fmt.Errorf("scheduler component has unexpected type %T", o.Fiber.Component())
@@ -1153,10 +1202,11 @@ func (h *Host) scheduler() (*schedulerplugin.SchedulerComponent, error) {
 }
 
 func (h *Host) Startup(ctx context.Context) error {
-	for _, o := range h.ctrl.Owned() {
-		if err := o.Fiber.Ready(ctx); err != nil {
-			return fmt.Errorf("component %s not ready: %w", o.ID, err)
-		}
+	// 复用调和收尾的同一就绪门：跳过 disabled（Fiber==nil）与合法依赖
+	// 等待（Pending），并给正常启动的有界等待——持久化禁用插件后重启
+	// 不再 nil 解引用，也不会被 follows 等待的 UI 行拖死。
+	if err := hReadyBound(ctx, h.ctrl.Owned()); err != nil {
+		return err
 	}
 	// 启动回收：单实例锁保证上一个采集进程已不存在，持久化的 Running
 	// 行全是孤儿。不回收就要等满 24h 租约，重启后的补采会跳过这些
@@ -1201,3 +1251,23 @@ func (h *Host) Close(ctx context.Context) error {
 }
 
 func (h *Host) Owned() []config.OwnedComponent { return h.ctrl.Owned() }
+
+// applyParallelismFromConfig reads the process gate size from the effective
+// declaration AFTER a successful reconcile. Keeping this out of parsing and
+// construction makes expansion a pure function: a rejected dry-run config
+// cannot mutate process-wide state. Divergent values across sources are
+// reported by parallelism.Configure (first value wins, restart to change).
+func applyParallelismFromConfig(cfg config.Config) {
+	for _, cc := range cfg.Components {
+		if n, ok := cc.Config["max_parallel_sources"]; ok {
+			switch v := n.(type) {
+			case int:
+				parallelism.Configure(v)
+			case int64:
+				parallelism.Configure(int(v))
+			case float64:
+				parallelism.Configure(int(v))
+			}
+		}
+	}
+}
