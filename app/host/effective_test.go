@@ -139,3 +139,29 @@ func TestOperatorManagedComponentRejectsConsoleWrites(t *testing.T) {
 		t.Fatalf("ComponentConfig must show effective operator value, got %+v/%v", got, err)
 	}
 }
+
+// 校验失败不得污染已提交的声明：无效的 Watch 配置被拒绝后，
+// EffectiveConfig 必须仍是上一次通过校验的有效配置。
+func TestInvalidConfigDoesNotPolluteCommittedBase(t *testing.T) {
+	h := effectiveHost(t)
+	valid := h.baseSnapshotLocked()
+	ctx := context.Background()
+	if err := h.Reconcile(ctx, valid); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	before, ok := h.EffectiveConfig()
+	if !ok || len(before.Components) != 1 {
+		t.Fatalf("initial effective config: %+v/%v", before, ok)
+	}
+	// 非法配置：缺 source_id 的 source-unit（Validate 会拒绝）
+	invalid := config.Config{Components: []config.ComponentConfig{{
+		ID: "bad", Type: "csv-source-unit", Config: map[string]any{"path": ".", "parser": "csv"},
+	}}}
+	if err := h.Reconcile(ctx, invalid); err == nil {
+		t.Fatal("invalid config must be rejected")
+	}
+	after, ok := h.EffectiveConfig()
+	if !ok || len(after.Components) != 1 || after.Components[0].ID != before.Components[0].ID {
+		t.Fatalf("invalid config polluted committed base: %+v/%v", after, ok)
+	}
+}

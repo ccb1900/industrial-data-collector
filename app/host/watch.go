@@ -40,20 +40,26 @@ func (p validatingParser) Parse(ctx context.Context, source configwatch.Source, 
 	cfg := parsed.Config
 	// Snapshot the raw parsed composition first: it is the base the patch
 	// layers apply to, and install/restore re-reconciles from it.
-	// 文件热加载也是一次声明变更：与控制台编辑共享 declarationMu，
-	// 否则 setBaseDesired 会在控制台事务的读→改→持久化之间插入，
-	// 让两个入口以不确定顺序互相覆盖（联合审查 P1-2）。
-	p.host.declarationMu.Lock()
-	defer p.host.declarationMu.Unlock()
-	p.host.setBaseDesired(cfg)
+	// 热加载的声明锁已提升到 Adapter.TxGuard（覆盖 Read→Parse→Reconcile→
+	// Post 全事务，见 NewWatchHost）。这里绝不能再锁 declarationMu——
+	// 那是同一把非重入锁，会死锁（联合审查 Iteration 9）。
+	p.host.stageBaseDesired(cfg)
 	// 期望状态 patch 在每次热加载时先行应用：控制台的卸载/配置编辑决策
 	// 不被文件内容覆盖；补丁与基础文件的形状冲突在此显式失败。
 	if err := p.host.applyOverlay(&cfg); err != nil {
+		p.host.mu.Lock()
+		p.host.candidateBase = nil
+		p.host.mu.Unlock()
 		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
 	}
 	if err := appconfig.Validate(cfg); err != nil {
+		p.host.mu.Lock()
+		p.host.candidateBase = nil
+		p.host.mu.Unlock()
 		return config.Config{}, fmt.Errorf("config source %q: %w", source.ID, err)
 	}
+	// 校验通过才提交候选声明；Parse 返回的错误路径不会污染已提交声明。
+	p.host.commitBaseDesired()
 	return cfg, nil
 }
 
@@ -88,6 +94,13 @@ func NewWatchHost(path string, log *slog.Logger) (*WatchHost, error) {
 		h.ctrl,
 		w,
 		configwatch.WithParser(&validatingParser{host: h, pluginDir: procplugin.PluginsDirForConfig(path)}),
+		// 整个 Parse→Reconcile→Post 事务与控制台写入共用 declarationMu：
+		// 消除"Parse 返回后锁已释放、Controller 尚未提交"的窗口。
+		configwatch.WithTxGuard(func(ctx context.Context, fn func() error) error {
+			h.declarationMu.Lock()
+			defer h.declarationMu.Unlock()
+			return fn()
+		}),
 		configwatch.WithPostReconcile(h.PostReconcile),
 		// 一次 reconcile（含应用层收尾）以 readyTimeout 兜底：组件永远
 		// 不就绪时返回明确错误，而不是把处理循环和调用方一起挂死。

@@ -65,6 +65,11 @@ type Host struct {
 	// uninstall permanent: restore would reconcile a set that no longer
 	// contains the row.)
 	lastDesired config.Config
+	// candidateBase is the parsed-but-not-yet-validated declaration. It is
+	// never visible to EffectiveConfig / declaration writes; only commitBase
+	// (after validation) promotes it to lastDesired. A rejected hot reload
+	// must leave the committed declaration untouched (Iteration 11).
+	candidateBase *config.Config
 	// fleet 是控制台可编辑的声明存储（SQLite）。非空时其四层键整体覆盖
 	// 配置文件的对应键（文件仍是 bundles/显式行的载体）；为空时文件权威。
 	// fleetSeed 保存最近一次解析的原始 TOML 字节：fleet 查询与首次
@@ -84,6 +89,11 @@ type Host struct {
 	// outer lock concurrent HTTP requests (or config-watch reloads) can
 	// interleave and leave disk/memory/runtime disagreeing.
 	declarationMu sync.Mutex
+	// declDesync records a failed rollback persist: in-memory patches were
+	// restored but the on-disk overlay still holds the rejected declaration.
+	// All further declaration writes are refused until RepairOverlay succeeds
+	// (联合审查 Iteration 10).
+	declDesync error
 	// reclaimedRunning records that the startup sweep of orphaned Running
 	// rows already ran; a second Startup must not terminalize live runs.
 	reclaimedRunning bool
@@ -446,13 +456,22 @@ func (h *Host) setBaseDesired(cfg config.Config) {
 }
 
 func (h *Host) Reconcile(ctx context.Context, cfg config.Config) error {
-	h.setBaseDesired(cfg)
+	// 候选声明在校验通过前不提交：非法热加载不能把 lastDesired 改成
+	// 运行时从未接受的配置（Iteration 11）。
+	h.stageBaseDesired(cfg)
 	if err := h.applyOverlay(&cfg); err != nil {
+		h.mu.Lock()
+		h.candidateBase = nil
+		h.mu.Unlock()
 		return fmt.Errorf("apply desired-state patches: %w", err)
 	}
 	if err := appconfig.Validate(cfg); err != nil {
+		h.mu.Lock()
+		h.candidateBase = nil
+		h.mu.Unlock()
 		return fmt.Errorf("application config validation: %w", err)
 	}
+	h.commitBaseDesired()
 	if err := h.ctrl.Reconcile(ctx, cfg); err != nil {
 		h.notifyReconcileFailure(err)
 		return err
@@ -748,6 +767,27 @@ func (h *Host) operatorManaged(id string) bool {
 	return false
 }
 
+// stageBaseDesired stores a CANDIDATE base for validation; it is invisible
+// to all declaration readers until commitBaseDesired is called.
+func (h *Host) stageBaseDesired(cfg config.Config) {
+	h.mu.Lock()
+	copy := cfg
+	h.candidateBase = &copy
+	h.mu.Unlock()
+}
+
+// commitBaseDesired promotes the staged candidate to the committed base.
+// Calling it without a staged candidate is a no-op (defensive: callers that
+// never stage still work via setBaseDesired).
+func (h *Host) commitBaseDesired() {
+	h.mu.Lock()
+	if h.candidateBase != nil {
+		h.lastDesired = *h.candidateBase
+		h.candidateBase = nil
+	}
+	h.mu.Unlock()
+}
+
 // baseSnapshotLocked returns a defensive copy of the desired base. Callers
 // pass it to Reconcile instead of h.lastDesired (which may be replaced
 // concurrently by the config watcher) — one locked read, no data race.
@@ -769,6 +809,11 @@ func (h *Host) declarationTx(ctx context.Context, mutate func() error) error {
 	defer h.declarationMu.Unlock()
 
 	h.mu.Lock()
+	if h.declDesync != nil {
+		err := h.declDesync
+		h.mu.Unlock()
+		return fmt.Errorf("declaration overlay out of sync, refusing writes: %w", err)
+	}
 	prev := append([]patch.Patch(nil), h.patches...)
 	h.mu.Unlock()
 
@@ -785,9 +830,46 @@ func (h *Host) declarationTx(ctx context.Context, mutate func() error) error {
 		h.mu.Lock()
 		h.patches = prev
 		h.mu.Unlock()
-		_ = h.persistOverlay()
+		// 回滚持久化失败不能静默：内存已恢复但磁盘仍是失败的声明，
+		// 重启后会重新应用它。记录 desync、拒绝后续写入、并把两个错误
+		// 一起返回给调用方（Iteration 10）。
+		if perr := h.persistOverlay(); perr != nil {
+			h.mu.Lock()
+			h.declDesync = fmt.Errorf("rollback persistence failed: %w", perr)
+			h.mu.Unlock()
+			return errors.Join(err, fmt.Errorf("declaration rollback failed: %w", perr))
+		}
 		return err
 	}
+	return nil
+}
+
+// OverlayDesync reports a declaration overlay that could not be rolled back
+// on disk. Non-nil means declaration writes are refused until RepairOverlay.
+func (h *Host) OverlayDesync() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.declDesync
+}
+
+// RepairOverlay retries persisting the in-memory (already rolled back)
+// overlay to disk and clears the desync flag on success. It is the explicit
+// recovery entry point after a failed rollback — no silent self-healing.
+func (h *Host) RepairOverlay() error {
+	h.declarationMu.Lock()
+	defer h.declarationMu.Unlock()
+	h.mu.Lock()
+	if h.declDesync == nil {
+		h.mu.Unlock()
+		return nil
+	}
+	h.mu.Unlock()
+	if err := h.persistOverlay(); err != nil {
+		return fmt.Errorf("repair overlay: %w", err)
+	}
+	h.mu.Lock()
+	h.declDesync = nil
+	h.mu.Unlock()
 	return nil
 }
 
@@ -881,13 +963,13 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 	if h.operatorManaged(id) {
 		return fmt.Errorf("component %q is operator-managed (read-only --patch layer); edit the operator patch instead", id)
 	}
-	// A display copy may carry RedactedSentinel for secrets: restore the
-	// stored values BEFORE the edit is recorded, so a round-trip never
-	// persists the sentinel.
-	if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
-		restoreRedacted(cfg, stored.Config)
-	}
 	if err := h.commitPatchFrom(ctx, id, func(def config.ComponentConfig) (patch.Patch, error) {
+		// A display copy may carry RedactedSentinel for secrets: restore the
+		// stored values INSIDE the transaction, so a concurrent edit cannot
+		// swap the secret between restore and patch write (Iteration 10).
+		if stored, ok := h.storedComponentConfig(id); ok && stored.Config != nil {
+			restoreRedacted(cfg, stored.Config)
+		}
 		edited := def
 		edited.ID = id
 		edited.Config = cfg
@@ -903,25 +985,22 @@ func (h *Host) SetComponentConfig(ctx context.Context, id string, cfg map[string
 // reverted by the Runtime during reconciliation; the definition is kept in
 // the patch so Install can restore it.
 func (h *Host) UninstallComponent(ctx context.Context, id string) error {
-	// 事务内读取有效声明：锁外读 h.lastDesired 会与 Watch 的 setBaseDesired
-	// 竞争（联合审查 P1-2 风险 C）。
-	var def config.ComponentConfig
-	found := false
-	if eff, ok := h.EffectiveComponentConfig(id); ok {
-		def, found = eff, true
-	}
-	if !found {
-		return fmt.Errorf("component %q is not part of the desired configuration", id)
-	}
-	if appconfig.ConsoleCritical(def.Type) {
-		return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
-	}
-	// A plugin is one business unit: the rows the discovery layer expands
-	// from its manifest share the "<plugin>:" prefix (client module, pages).
-	siblings := h.pluginSiblingRows(id)
+	// 所有读取都必须在事务锁内：锁外读有效声明会与 Watch 的 setBaseDesired
+	// 或并发编辑交错，把旧版本的 def 写进 Remove Patch（Iteration 10）。
 	return h.declarationTx(ctx, func() error {
+		eff, ok := h.EffectiveComponentConfig(id)
+		if !ok {
+			return fmt.Errorf("component %q is not part of the desired configuration", id)
+		}
+		if appconfig.ConsoleCritical(eff.Type) {
+			return fmt.Errorf("component %q is console infrastructure and cannot be uninstalled", id)
+		}
+		// A plugin is one business unit: rows expanded from one manifest
+		// share the "<plugin>:" prefix (client module, pages).
+		siblings := h.pluginSiblingRows(id)
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		def := eff
 		h.setPatchLocked(patch.Patch{Op: patch.PatchRemove, ID: id, Component: &def})
 		for _, s := range siblings {
 			sib := s
