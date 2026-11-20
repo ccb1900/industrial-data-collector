@@ -147,3 +147,42 @@ func TestSinceMigrationRunsAfterDependencyChecks(t *testing.T) {
 		t.Fatal("since migration dropped history before a later Apply failure")
 	}
 }
+
+// since 迁移语义明确为 best-effort：失败不阻断激活，但状态可观测且能
+// 显式重试；成功重试后 status.done=true、err=nil。
+func TestSinceMigrationStatusAndRetry(t *testing.T) {
+	c, err := NewSourceUnit(unitCfg(map[string]any{
+		"state_type":  "memory-state",
+		"since":       "2026-01-01",
+		"date_policy": "yesterday",
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var date model.CollectionDate
+	if err := date.UnmarshalText([]byte("2025-12-31")); err != nil {
+		t.Fatal(err)
+	}
+	key := model.CollectionKey{SourceID: c.sourceID, Date: date}
+	if ok, err := c.stateSvc.Begin(ctx, key, time.Hour); err != nil || !ok {
+		t.Fatalf("begin: %v/%v", ok, err)
+	}
+	if err := c.stateSvc.End(ctx, key, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 首次迁移成功
+	c.migrateSince(ctx)
+	done, attempts, merr := c.SinceMigrationStatus()
+	if !done || attempts != 1 || merr != nil {
+		t.Fatalf("status after success = %v/%d/%v", done, attempts, merr)
+	}
+	// 重试幂等：同一行已删，不应报错
+	if err := c.RetrySinceMigration(ctx); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	_, attempts, _ = c.SinceMigrationStatus()
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}

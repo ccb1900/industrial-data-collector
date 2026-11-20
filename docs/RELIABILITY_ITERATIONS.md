@@ -37,7 +37,7 @@
 | `2e6ebb3` | 管理面默认 loopback + --allow-remote + 应用/插件 CI | `TestValidateBind`、verify.sh 断言 |
 | `c50a11d` | Owned() nil-Fiber + EffectiveComponentConfig 单一权威与统一回滚 | `TestStartupWithDisabledDeclaration`、`TestEditThenSwitchKeepsEditedConfig`、`TestDisableThenEditKeepsDisabled` |
 | `9b5e7eb` | SourceUnit 构造纯化 + since 迁移入激活 + flat 日期策略 + desktop 30 天 | `TestNewSourceUnitDoesNotTouchState`、`TestDatePolicyDefaultsFollowLayout`、`TestValidateRejectsDatedTodayPolicy` |
-| 本轮 | Host 声明事务串行化 + Operator-managed 保护 + since 迁移后移 + loopback 空地址 + 资源白名单 + CI 构建门 | `TestConcurrentEditsDifferentComponentsKeepBoth`、`TestConcurrentEditAndSwitchKeepsBoth`、`TestOperatorManagedComponentRejectsConsoleWrites`、`TestSinceMigrationRunsAfterDependencyChecks`、`TestValidateBind`、`TestClientModuleRootDoesNotServeSensitiveTextFiles` |
+| 第四轮 | WithTxGuard 全事务串行化 + Uninstall 读/秘密恢复入事务 + desync 可观测 + candidateBase 分离 + 插件错误隔离 + since 状态/重试 | `TestTxGuardCoversReconcileAndPost`、`TestWatchAndConsoleEditsStayConsistent`、`TestRollbackPersistFailureIsObservableAndRepairable`、`TestInvalidConfigDoesNotPolluteCommittedBase`、`TestDiscoverPluginsClientErrorIsolated`、`TestSinceMigrationStatusAndRetry` |
 
 已经存在、**不要重新做**的能力：SQLite 台账与 JSON 一次性导入（`app/state/sqlite.go:35-38`）、原子认领 UPSERT（`app/state/sqlite_state.go:40-60`）、启动孤儿回收 `ReclaimRunning`（`app/host/host.go:856-876`）、UNC 宿主闸（`internal/hostgate`）、文件不存在 vs 不可达 vs 未稳定的三分类（`app/errs/errors.go:76-84`、`app/collector/executor.go:214-252`）、稳定窗口的 all-or-nothing（`app/source/source.go:243-248`）、业务库真主键 + 重放反连接（`app/storage/table.go:521-528`、`app/storage/multirow.go:116-141`）、行列一致性校验与它进"待处理"的通路（`app/query/readmodel.go:661-663`）。
 

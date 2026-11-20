@@ -86,6 +86,13 @@ type SourceUnitComponent struct {
 	verifyAfterCollect bool
 	logger             *slog.Logger
 
+	// since 迁移是 best-effort 维护动作（不阻断激活）：状态显式可观测，
+	// 并可经 RetrySinceMigration 手动重试。失败不隐藏在 warning 里。
+	migrationMu       sync.Mutex
+	migrationDone     bool
+	migrationLastErr  error
+	migrationAttempts int
+
 	emitCtx *runtime.Context
 
 	// mu 保护 active：一次激活的校验执行体持有当次 sink 连接，重新装配
@@ -449,21 +456,58 @@ func (c *SourceUnitComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 // for the next activation, so no failure can turn a partial cleanup into an
 // unrecoverable state.
 func (c *SourceUnitComponent) migrateSince(ctx context.Context) {
+	c.migrationMu.Lock()
+	c.migrationAttempts++
+	c.migrationMu.Unlock()
 	records, err := c.stateSvc.CollectionRecords(ctx, c.sourceID)
 	if err != nil {
-		c.logger.Warn("since migration could not read ledger; will retry on next activation",
-			"source", c.sourceID, "error", err.Error())
+		c.setMigrationError(fmt.Errorf("read ledger: %w", err))
 		return
 	}
 	for _, r := range records {
 		if r.Key.Date.Before(c.since) {
 			if err := c.stateSvc.Drop(ctx, r.Key); err != nil {
-				c.logger.Warn("since migration dropped part of the ledger; remaining rows retried next activation",
-					"source", c.sourceID, "key", r.Key, "error", err.Error())
+				c.setMigrationError(fmt.Errorf("drop %s: %w", r.Key, err))
 				return
 			}
 		}
 	}
+	c.migrationMu.Lock()
+	c.migrationDone = true
+	c.migrationLastErr = nil
+	c.migrationMu.Unlock()
+}
+
+func (c *SourceUnitComponent) setMigrationError(err error) {
+	c.migrationMu.Lock()
+	c.migrationLastErr = err
+	c.migrationMu.Unlock()
+	c.logger.Warn("since migration incomplete; use RetrySinceMigration or re-activate the source",
+		"source", c.sourceID, "error", err.Error())
+}
+
+// SinceMigrationStatus exposes the best-effort migration outcome: done means
+// every pre-since row was removed in the latest attempt; err is the last
+// failure (nil on success). Retry is explicit, not tied to activation timing.
+func (c *SourceUnitComponent) SinceMigrationStatus() (done bool, attempts int, err error) {
+	c.migrationMu.Lock()
+	defer c.migrationMu.Unlock()
+	return c.migrationDone, c.migrationAttempts, c.migrationLastErr
+}
+
+// RetrySinceMigration reruns the idempotent migration on demand. It returns
+// an error when the state store is not active (component disabled) or the
+// migration could not finish; callers can surface it through a console action.
+func (c *SourceUnitComponent) RetrySinceMigration(ctx context.Context) error {
+	if c.stateSvc == nil {
+		return fmt.Errorf("source-unit %q: state not active (component disabled)", c.sourceID)
+	}
+	if c.since.IsZero() {
+		return nil // no migration declared
+	}
+	c.migrateSince(ctx)
+	_, _, err := c.SinceMigrationStatus()
+	return err
 }
 
 func (c *SourceUnitComponent) setActive(r *checkRunner) {
