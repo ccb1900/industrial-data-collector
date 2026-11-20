@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"gocordis-csv-collector/app/model"
-	"gocordis-csv-collector/internal/parallelism"
 )
 
 // 四层声明模型（features/20260919.md）：机台清单（事实）× 格式清单组
@@ -194,14 +193,10 @@ type ScheduleDef struct {
 // expandFleet 展开：机台 × 其组的格式 → 源定义。引用完整性在此强校验
 // （缺格式/缺组/缺 sink/坏 since 任一 → 响亮失败，绝不静默丢采集）。
 func expandFleet(d FleetDefaults, sinks []SinkDef, formats []FormatDef, groups []FormatGroupDef, machines []MachineDef, schedules []ScheduleDef) ([]*ResolvedSource, []extconfig.ComponentConfig, error) {
-	// 进程并发闸的唯一决策点在展开处：fleet [defaults] 已知、任何组件尚未
-	// 构建。source-unit 组件不再各自 Configure（first-call-wins 会让"哪个
-	// 源先构建"决定全进程容量）；cfg 里下发的 max_parallel_sources 键保留，
-	// 仅作有效配置的可见性。闸容量变更需重启——parallelism.Configure 对
-	// 分歧值响亮告警。
-	if d.MaxParallelSources > 0 {
-		parallelism.Configure(d.MaxParallelSources)
-	}
+	// 展开必须是纯函数：MaxParallelSources 只作为每源的声明键下发（配置
+	// 可见性），进程闸在有效配置成功调和后由宿主应用（Host.PostReconcile）。
+	// 被拒绝的声明（dry-run / 校验失败）因此不会改变全局运行状态。
+	_ = d.MaxParallelSources
 	stateType := d.StateType
 	if stateType == "" {
 		stateType = "file-state"

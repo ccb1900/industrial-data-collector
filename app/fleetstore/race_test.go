@@ -50,6 +50,7 @@ func TestTwoStoresRaceLandsOnCASNotBusy(t *testing.T) {
 			wg.Add(1)
 			go func(w int) {
 				defer wg.Done()
+				<-start // 真屏障：两个写者同时起跑，竞争窗口确定
 				s := a
 				if w == 1 {
 					s = b
@@ -61,7 +62,6 @@ func TestTwoStoresRaceLandsOnCASNotBusy(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
-		_ = start
 
 		okA := errs[0] == nil
 		okB := errs[1] == nil

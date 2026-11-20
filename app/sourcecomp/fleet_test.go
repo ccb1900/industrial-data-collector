@@ -304,10 +304,14 @@ func TestExpandFleetConcurrencyAndBackupDefaults(t *testing.T) {
 		out[0].Config["backup_dir"] != "../backup" || out[0].Config["backup_keep_days"] != 30 {
 		t.Fatalf("cfg = %#v", out[0].Config)
 	}
-	// 并发闸决策点在展开处（不在组件构造）：fleet 值直接固定进程闸容量。
-	// 本测试是包内第一个带 max_parallel_sources>0 的展开，gate 尚未固定。
-	if got := parallelism.Capacity(); got != 6 {
-		t.Fatalf("gate capacity after fleet expansion = %d, want 6", got)
+	// 展开必须是纯函数：只把 max_parallel_sources 作为声明键下发，绝不
+	// 触碰进程闸（闸在有效配置成功调和后由宿主应用）。被拒绝的配置因此
+	// 不会改变全局状态（联合审查 P2-10）。
+	if got := out[0].Config["max_parallel_sources"]; got != 6 {
+		t.Fatalf("stamped max_parallel_sources = %v, want 6", got)
+	}
+	if got := parallelism.Capacity(); got != 0 {
+		t.Fatalf("pure expansion must not touch the process gate, got capacity %d", got)
 	}
 	// 校验开关是 bool：只有显式写了才下发，且 false 必须真的能下发。
 	off := false
