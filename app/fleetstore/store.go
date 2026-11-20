@@ -166,6 +166,31 @@ func (s *Store) metaSet(key, v string) error {
 	return nil
 }
 
+// revisionIn/metaSetIn 是事务内版本：CAS 与三次写同一事务。
+func (s *Store) revisionIn(tx *sql.Tx) (int64, error) {
+	var v string
+	switch err := tx.QueryRow(`SELECT v FROM fleet_meta WHERE k = 'revision'`).Scan(&v); err {
+	case nil:
+	case sql.ErrNoRows:
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("fleetstore meta: %w", err)
+	}
+	var n int64
+	if _, err := fmt.Sscan(v, &n); err != nil {
+		return 0, fmt.Errorf("fleetstore meta: revision %q: %w", v, err)
+	}
+	return n, nil
+}
+
+func (s *Store) metaSetIn(tx *sql.Tx, key, v string) error {
+	if _, err := tx.Exec(`INSERT INTO fleet_meta (k, v) VALUES (?, ?)
+		ON CONFLICT (k) DO UPDATE SET v = excluded.v`, key, v); err != nil {
+		return fmt.Errorf("fleetstore meta: %w", err)
+	}
+	return nil
+}
+
 // Revision 返回当前版本号（没有文档时为 0）。版本跨重置单调递增。
 func (s *Store) Revision() (int64, error) {
 	v, ok, err := s.metaGet("revision")
@@ -202,7 +227,16 @@ func (s *Store) Save(doc FleetDoc, expectRevision int64, source string) (int64, 
 	if err != nil {
 		return 0, fmt.Errorf("fleetstore save: %w", err)
 	}
-	cur, err := s.Revision()
+	// CAS + 三次写必须在同一事务里：否则（a）并发调用方可能双双通过 CAS、
+	// 败者的 doc/revision 已落库而历史插入撞主键报错——调用方被告知失败
+	// 但文档其实已写入；（b）中途失败（磁盘满）留下"版本推进了、审计没有"。
+	// MaxOpenConns(1) 串行化连接，BEGIN IMMEDIATE 再挡住跨进程写者。
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("fleetstore save: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	cur, err := s.revisionIn(tx)
 	if err != nil {
 		return 0, err
 	}
@@ -211,17 +245,20 @@ func (s *Store) Save(doc FleetDoc, expectRevision int64, source string) (int64, 
 	}
 	next := cur + 1
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`INSERT INTO fleet_doc (id, doc, updated_at) VALUES (1, ?, ?)
+	if _, err := tx.Exec(`INSERT INTO fleet_doc (id, doc, updated_at) VALUES (1, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET doc = excluded.doc, updated_at = excluded.updated_at`,
 		string(raw), now); err != nil {
 		return 0, fmt.Errorf("fleetstore save: %w", err)
 	}
-	if err := s.metaSet("revision", fmt.Sprint(next)); err != nil {
+	if err := s.metaSetIn(tx, "revision", fmt.Sprint(next)); err != nil {
 		return 0, err
 	}
-	if _, err := s.db.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
+	if _, err := tx.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
 		VALUES (?, ?, ?, ?)`, next, string(raw), source, now); err != nil {
 		return 0, fmt.Errorf("fleetstore history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("fleetstore save: %w", err)
 	}
 	return next, nil
 }
@@ -333,7 +370,12 @@ func (d *FleetDoc) Normalize() {
 // Reset drops the stored document: the TOML file becomes authoritative again.
 // 版本照常推进并记录 tombstone——"回到文件权威"也是一次必须可审计的配置变更。
 func (s *Store) Reset(expectRevision int64) (int64, error) {
-	cur, err := s.Revision()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("fleetstore reset: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	cur, err := s.revisionIn(tx)
 	if err != nil {
 		return 0, err
 	}
@@ -342,15 +384,18 @@ func (s *Store) Reset(expectRevision int64) (int64, error) {
 	}
 	next := cur + 1
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`DELETE FROM fleet_doc WHERE id = 1`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM fleet_doc WHERE id = 1`); err != nil {
 		return 0, fmt.Errorf("fleetstore reset: %w", err)
 	}
-	if err := s.metaSet("revision", fmt.Sprint(next)); err != nil {
+	if err := s.metaSetIn(tx, "revision", fmt.Sprint(next)); err != nil {
 		return 0, err
 	}
-	if _, err := s.db.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
+	if _, err := tx.Exec(`INSERT INTO fleet_history (revision, doc, source, saved_at)
 		VALUES (?, ?, ?, ?)`, next, "{}", SourceReset, now); err != nil {
 		return 0, fmt.Errorf("fleetstore history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("fleetstore reset: %w", err)
 	}
 	return next, nil
 }

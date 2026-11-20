@@ -525,7 +525,26 @@ func TestFleetRevisionCASAndSnapshot(t *testing.T) {
 	if !strings.Contains(string(raw), "__REDACTED__") {
 		t.Error("snapshot must carry the redaction sentinel")
 	}
-	if strings.Contains(string(raw), dir) {
-		t.Error("snapshot must not contain the real dsn path（明文凭证出库 = 泄漏）")
+	// 断言目标 = 助手自己的 state_dir 根（ FleetDBPath 的父目录）：两个
+	// t.TempDir() 是兄弟目录，拿测试的 dir 比对永远 false——断言从未
+	// 有过判别力（审查第四轮）。
+	// 结构化断言：sink 的 dsn 必须是哨兵（redactFleet 的产物）；文本级断言
+	// 精确到完整真实 DSN——defaults.state_dir 本身就合法等于 state_dir 根，
+	// 拿目录根比对会把合法字段误判成泄漏。
+	stateRoot := filepath.Dir(fleetstore.FleetDBPath(cfgPath))
+	var snapDoc fleetstore.FleetDoc
+	if err := json.Unmarshal(raw, &snapDoc); err != nil {
+		t.Fatalf("snapshot unmarshal: %v", err)
+	}
+	for _, rawSink := range snapDoc.Sinks {
+		if m, ok := rawSink.(map[string]any); ok {
+			if dsn := fmt.Sprint(m["dsn"]); dsn != "__REDACTED__" {
+				t.Errorf("sink %v dsn = %q, want the sentinel（明文凭证出库 = 泄漏）", m["name"], dsn)
+			}
+		}
+	}
+	realDSN := filepath.Join(stateRoot, "state", "collect.db")
+	if strings.Contains(string(raw), realDSN) {
+		t.Errorf("snapshot contains the real dsn %q — 明文凭证出库", realDSN)
 	}
 }

@@ -67,6 +67,9 @@ func RegisterParser(kind string, f ParserFactory, schema ConfigSchema) error {
 		return fmt.Errorf("parser registry: kind %q already registered", kind)
 	}
 	parserKinds[kind] = f
+	// 防御性拷贝 Fields：别名（csv/csv-parser）共享同一个传入值，浅拷贝的
+	// slice 底层数组会让一处字段改动泄漏进另一个取值。
+	schema.Fields = append([]ConfigField(nil), schema.Fields...)
 	parserDesc[kind] = schema
 	return nil
 }

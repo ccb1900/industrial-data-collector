@@ -25,7 +25,7 @@ type FleetQueryResult struct {
 
 type fleetMutateFunc func(context.Context, fleetstore.FleetDoc, int64, string) (int64, error)
 type fleetResetFunc func(context.Context, int64) (int64, error)
-type fleetStatusFunc func() fleetstore.ApplyStatus
+type fleetStatusFunc func() (fleetstore.ApplyStatus, int64)
 
 // SetFleetHandlers 注入宿主侧的 fleet 能力（宿主在 reconcile 后调用）。
 // query 返回 FleetQueryResult（有效声明 + 版本 + 应用状态）；mutate 干跑
@@ -80,19 +80,18 @@ func (c *Component) registerFleet(hubRegistry *hub.Registry) (func() error, erro
 		c.fleetMu.Lock()
 		defer c.fleetMu.Unlock()
 		_, _, reset, status := c.fleetHandlers()
+		_, currentRevision := status()
 		if reset == nil {
 			return &hub.Error{Code: "unavailable", Message: "fleet 配置存储未接入本运行时"}
 		}
 		// body 可携带 {"revision": N}（页面从 fleet 查询拿到）；缺省取服务端
-		// 当前值——重置是"放弃全部控制台改动"，竞态面远小于整文档编辑。
+		// 当前版本——lastApply 在进程重启后是零值，不能当缺省（审查第四轮）。
 		var req struct {
 			Revision int64 `json:"revision"`
 		}
 		_ = json.Unmarshal(body, &req)
 		if req.Revision == 0 {
-			// 页面未带版本（旧客户端/直发重置）：取服务端当前值——重置的
-			// 竞态面远小于整文档编辑，CAS 仍保证与并发编辑互斥。
-			req.Revision = status().Revision
+			req.Revision = currentRevision
 		}
 		if _, err := reset(ctx, req.Revision); err != nil {
 			return &hub.Error{Code: "error", Message: err.Error()}

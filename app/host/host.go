@@ -229,8 +229,14 @@ func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc, expectR
 // setLastApply 记录一次配置版本的应用结果（保存成功 ≠ 应用成功）。
 func (h *Host) setLastApply(rev int64, status, errMsg string) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	// 旧版本的结果不得覆盖新版本的记录：两个操作员的调和排队顺序不保证
+	// 与提交顺序一致（框架 FIFO 只保证执行序，goroutine 入队可能倒挂）——
+	// 慢的旧 reconcile 完成时，不能把账面上新版本的 applied/failed 改名。
+	if rev < h.lastApply.Revision {
+		return
+	}
 	h.lastApply = fleetstore.ApplyStatus{Revision: rev, Status: status, Error: errMsg, At: time.Now()}
-	h.mu.Unlock()
 }
 
 // FleetApplyStatus 返回最近一次配置应用的结果；零值 = 尚无控制台变更。
@@ -283,7 +289,10 @@ func (h *Host) refreshSeedFingerprint(data []byte) {
 		h.log.Warn("seed fingerprint read failed", "error", err.Error())
 		return
 	}
-	if ok && old != fp {
+	// 升级现场：账本早于指纹特性创建（无 seed_fp 记录）——文件一旦被手改，
+	// 这一次就必须响，否则最需要提示的场景（老部署升级后）永远静默。
+	warn := !ok || old != fp
+	if warn {
 		h.log.Warn("config file changed but its fleet tables are shadowed by the console-edited declaration",
 			"hint", "手改的 [[machines]]/[[formats]] 等四层表不会生效；在控制台用「恢复 TOML」采纳文件内容，或继续使用控制台编辑")
 	}
@@ -322,9 +331,13 @@ func (h *Host) FleetReset(ctx context.Context, expectRevision int64) (int64, err
 			return
 		}
 		h.setLastApply(rev, "applied", "")
+		if err := h.ExportConfigSnapshot(); err != nil {
+			h.log.Warn("config snapshot export failed after reset", "error", err.Error())
+		}
 	}()
 	return rev, nil
 }
+
 func New(log *slog.Logger) (*Host, error) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -474,7 +487,7 @@ func writeAtomic(path string, data []byte) error {
 			return err
 		}
 	}
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
@@ -854,7 +867,10 @@ func (h *Host) attachStateProjection(ctx context.Context) {
 					return h.FleetMutate(ctx, doc, expect, source)
 				},
 				func(ctx context.Context, expect int64) (int64, error) { return h.FleetReset(ctx, expect) },
-				func() fleetstore.ApplyStatus { return h.FleetApplyStatus() },
+				func() (fleetstore.ApplyStatus, int64) {
+					rev, _ := h.FleetRevision()
+					return h.FleetApplyStatus(), rev
+				},
 			)
 		}
 	}
