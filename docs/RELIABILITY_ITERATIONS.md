@@ -30,6 +30,9 @@
 | `eaba2c7` | line-regex 文本解析真流式（原 G.1，提前） | `TestTextLineRegexStreamsInsteadOfBuffering` |
 | `b9e2e03` | Iteration C 无数据确认（no_data_after_days，默认零回归） | `TestNoDataTerminalOnlyAfterConfirmedAbsence` 等 6 条 |
 | 本次 | Iteration D 文件级退避（只节流内容性失败） | `TestFileRetryThrottledUntilDueThenRecovers`、`TestSQLiteV2LedgerMigratesNextAttemptColumn` 等 |
+| `0c7c914` | 插件业务单元闭环：follows 级联（框架 1864b52→d03fe96）+ 声明开关持久化 + 卸载级联 + ui-page 归框架工厂；就绪门认识 disabled/依赖等待 | `TestPluginUnitSwitchCascadesUI`、`TestBrokenPluginManifestSurfacesAndRecovers`、`TestReadyBoundIgnoresDisabledAndDependencyWaiting`、`TestReadyBoundWaitsOutTransientPending`、`TestDeclaredTypesAreBound` |
+| `b22e79b` | catchup 缺省 30（product default，显式 0 = 声明式 legacy）；并发闸决策点收敛到 fleet 展开 | `TestNewSourceUnitCatchupDefaultsToThirtyDayWindow`、`TestParseFleetDefaultsCatchupDefault`、`TestGateFixedOnce`、fleet 展开 gate 断言 |
+| `a679ff5` | fleetstore `_txlock=immediate`（注释与实现一致） | `TestTwoStoresRaceLandsOnCASNotBusy`（先红：裸 SQLITE_BUSY→绿：确定性 ErrRevisionConflict） |
 
 已经存在、**不要重新做**的能力：SQLite 台账与 JSON 一次性导入（`app/state/sqlite.go:35-38`）、原子认领 UPSERT（`app/state/sqlite_state.go:40-60`）、启动孤儿回收 `ReclaimRunning`（`app/host/host.go:856-876`）、UNC 宿主闸（`internal/hostgate`）、文件不存在 vs 不可达 vs 未稳定的三分类（`app/errs/errors.go:76-84`、`app/collector/executor.go:214-252`）、稳定窗口的 all-or-nothing（`app/source/source.go:243-248`）、业务库真主键 + 重放反连接（`app/storage/table.go:521-528`、`app/storage/multirow.go:116-141`）、行列一致性校验与它进"待处理"的通路（`app/query/readmodel.go:661-663`）。
 

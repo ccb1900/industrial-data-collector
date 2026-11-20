@@ -97,7 +97,7 @@ below are what each row carries (and what a raw `[[components]]` row sets):
   up — enabling this trades that automatic late-file recovery for a quiet
   holiday board; a late file after confirmation comes back only through an
   explicitly named date (manual trigger / console).
-- `catchup_days`: non-negative int (default 0). Bounds how many calendar
+- `catchup_days`: non-negative int (**default 30 — the product fault-tolerance window**; an explicit 0 is the declared escape hatch back to the legacy unlimited walk, and the two are deliberately different). Bounds how many calendar
   days one trigger reaches back; **ignored (forced to 0) for
   `layout = "flat"` sources** — a flat export is same-day data, and a window
   would attribute one export to N business dates; mis-attributed rows are

@@ -9,6 +9,8 @@
 # 负资产（2026-11-20 实测，旧 latest.txt 记的数字在当时的仓库上复现不出来）。
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+# latest.txt 随每次运行整体重写（表头承诺：不手写、不漂移）。
+exec > >(tee docs/verification/latest.txt) 2>&1
 pass=0; fail=0; skip=0
 
 check() { # check <说明> <验证命令...>
@@ -117,7 +119,7 @@ for pkg in watchtrigger storage scheduler metadata query ui-contrib consolebridg
   check "components/$pkg/manifest.toml" test -f "components/$pkg/manifest.toml"
 done
 total=$(python3 -c "import glob; print(sum(open(f).read().count('[[types]]') for f in glob.glob('components/*/manifest.toml')))")
-check "manifest 类型总数 = 20（实际 ${total}）" test "$total" = "20"
+check "manifest 类型总数 = 21（实际 ${total}）" test "$total" = "21"
 check "pluginmeta 聚合存在" test -f internal/pluginmeta/pluginmeta.go
 check "validate 聚合引用"   grep_q 'pluginmeta.Types()' app/config/validate.go
 
@@ -164,7 +166,7 @@ check "ComposeDocument"      grep_q 'func ComposeDocument' "$GC/extensions/confi
 check "patch.ApplyPatches"   grep_q 'func ApplyPatches' "$GC/extensions/patch/patch.go"
 check "渲染器注册表"          grep_q 'export function registerBlockRenderer' "$GC/web/console/src/views/registry.tsx"
 check "投影 seam"            grep_q 'export function ingestObservation' "$GC/web/console/src/lib/projections.ts"
-check "客户端模块加载"        grep_q 'export async function loadClientModules' "$GC/web/console/src/lib/client-modules.ts"
+check "客户端模块加载"        grep_q 'export function reconcileClientModules' "$GC/web/console/src/lib/client-modules.ts"
 fi
 
 echo
