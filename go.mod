@@ -36,4 +36,4 @@ require (
 	modernc.org/memory v1.8.0 // indirect
 )
 
-replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261120130427-318934b32a60
+replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261120132240-16c42cbc6591
