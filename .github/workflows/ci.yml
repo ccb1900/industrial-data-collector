@@ -27,7 +27,17 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test -count=1 ./...
+        run: |
+          set -o pipefail
+          go test -count=1 ./... 2>&1 | tee /tmp/test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" != "0" ]; then
+            # NEW: surface every failure-ish line as a check annotation
+            grep -nE "FAIL|panic|cannot|missing|stream error|exit status" /tmp/test.log | head -40 | while IFS= read -r line; do
+              echo "::error::${line:0:200}"
+            done
+            exit 1
+          fi
       - name: Race (core paths)
         run: go test -race ./app/... ./components/... ./internal/... ./tests/...
 
