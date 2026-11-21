@@ -22,10 +22,15 @@ jobs:
         run: go vet ./...
       - name: Test
         run: |
+          set -o pipefail
           go test -count=1 ./... 2>&1 | tee /tmp/test.log
-          grep -E "^(--- FAIL|FAIL|panic:)" /tmp/test.log > "$GITHUB_STEP_SUMMARY" || true
-          tail -n 60 /tmp/test.log >> "$GITHUB_STEP_SUMMARY" || true
-          exit ${PIPESTATUS[0]}
+          status=${PIPESTATUS[0]}
+          if [ "$status" != "0" ]; then
+            grep -E "(--- FAIL|FAIL|panic:|build failed|missing go.sum|cannot find)" /tmp/test.log | head -40 | while IFS= read -r line; do
+              echo "::error::${line:0:180}"
+            done
+            exit 1
+          fi
       - name: Race (core paths)
         run: go test -race ./app/... ./components/... ./internal/... ./tests/...
 
