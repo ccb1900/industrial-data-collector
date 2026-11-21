@@ -21,7 +21,11 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        run: |
+          go test -count=1 ./... 2>&1 | tee /tmp/test.log
+          grep -E "^(--- FAIL|FAIL|panic:)" /tmp/test.log > "$GITHUB_STEP_SUMMARY" || true
+          tail -n 60 /tmp/test.log >> "$GITHUB_STEP_SUMMARY" || true
+          exit ${PIPESTATUS[0]}
       - name: Race (core paths)
         run: go test -race ./app/... ./components/... ./internal/... ./tests/...
 
