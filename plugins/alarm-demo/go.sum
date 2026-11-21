@@ -1,5 +1,5 @@
-github.com/ccb1900/gocordis v0.0.0-20261121082402-9a2a0a08fcd9 h1:Xz1o5uWNoLdcE65W+bn/rF+avolhOY1/KGSMw6dpWIg=
-github.com/ccb1900/gocordis v0.0.0-20261121082402-9a2a0a08fcd9/go.mod h1:nfogDWgJczMoJjTLeOHL6Eys/KJMyY8oSobTyx+/ybw=
+github.com/ccb1900/gocordis v0.0.0-20261121093215-9b5c80fe9b14 h1:tkeU5DJNvsaPDVr0spBqk39M+V1YEpSXD8kpnC7i8cQ=
+github.com/ccb1900/gocordis v0.0.0-20261121093215-9b5c80fe9b14/go.mod h1:QQyg7Y+h3EevLAD+z4K/AD2T7P3E/LBC6gbCX9eGhyc=
 github.com/tetratelabs/wazero v1.11.0 h1:+gKemEuKCTevU4d7ZTzlsvgd1uaToIDtlQlmNbwqYhA=
 github.com/tetratelabs/wazero v1.11.0/go.mod h1:eV28rsN8Q+xwjogd7f4/Pp4xFxO7uOGbLcD/LzB1wiU=
 golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
