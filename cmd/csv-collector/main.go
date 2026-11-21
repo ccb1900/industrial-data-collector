@@ -128,7 +128,13 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 	if err != nil {
 		return err
 	}
-	defer app.Close(context.Background())
+	var fleetStore *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if fleetStore != nil {
+			_ = fleetStore.Close()
+		}
+	}()
 	if err := loadDesiredPatches(app.Host, configPath, patchPaths); err != nil {
 		return fmt.Errorf("patch files: %w", err)
 	}
@@ -138,7 +144,6 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 	if ferr != nil {
 		return fmt.Errorf("fleet store: %w", ferr)
 	}
-	defer fleetStore.Close()
 	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

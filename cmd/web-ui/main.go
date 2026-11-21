@@ -107,7 +107,13 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 	if err != nil {
 		return err
 	}
-	defer app.Close(context.Background())
+	var fleetStore *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if fleetStore != nil {
+			_ = fleetStore.Close()
+		}
+	}()
 	// Desired-state patches: console overlay file plus read-only operator
 	// layers, re-applied on every reconcile in the documented order.
 	app.SetOverlayPath(configPath + ".removed.json")
@@ -119,11 +125,10 @@ func run(logger *slog.Logger, configPath, addr string, patchPaths []string) erro
 	// fleet 声明存储（SQLite，随配置目录锚定的 state 旁）：控制台编辑的
 	// 四层声明落这里；为空时配置文件权威。resync = 适配器 Sync（重解析
 	// + 重调和），编辑落库后异步触发。
-	fleetStore, err := fleetstore.Open(fleetstore.FleetDBPath(configPath))
+	fleetStore, err = fleetstore.Open(fleetstore.FleetDBPath(configPath))
 	if err != nil {
 		return fmt.Errorf("fleet store: %w", err)
 	}
-	defer fleetStore.Close()
 	app.Host.SetFleetStore(fleetStore, app.Sync)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

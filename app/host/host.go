@@ -101,6 +101,16 @@ type Host struct {
 	// previous one: only rows started before it can be orphaned Running.
 	processStart time.Time
 	mu           sync.Mutex
+
+	// bgMu guards the lifecycle of console-triggered asynchronous reconciles.
+	// Host.Close marks closing before cancelling/waiting so no goroutine can be
+	// added after the WaitGroup wait starts. FleetStore must be closed only
+	// after all background work has returned.
+	bgMu     sync.Mutex
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
+	closing  bool
 }
 
 // SetFleetStore wires the console-editable fleet declaration store. resync
@@ -110,6 +120,38 @@ func (h *Host) SetFleetStore(store *fleetstore.Store, resync func(ctx context.Co
 	h.mu.Lock()
 	h.fleet, h.resync = store, resync
 	h.mu.Unlock()
+}
+
+// startBackgroundReconcile owns the goroutine that applies a console edit.
+// Registration of the goroutine and the closing check are one critical
+// section: Close() flips closing under bgMu before it waits, so no work can
+// be added after shutdown starts. The context is derived from the Host's own
+// lifetime and bounded by a guard timeout.
+func (h *Host) startBackgroundReconcile(rev int64, fn func(context.Context) error) {
+	h.bgMu.Lock()
+	if h.closing {
+		h.bgMu.Unlock()
+		h.setLastApply(rev, "failed", "host is closing")
+		return
+	}
+	h.bgWG.Add(1)
+	parent := h.bgCtx
+	h.bgMu.Unlock()
+
+	go func() {
+		defer h.bgWG.Done()
+		rctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+		defer cancel()
+		if err := fn(rctx); err != nil {
+			h.notifyReconcileFailure(err)
+			h.setLastApply(rev, "failed", err.Error())
+			return
+		}
+		h.setLastApply(rev, "applied", "")
+		if err := h.ExportConfigSnapshot(); err != nil {
+			h.log.Warn("config snapshot export failed", "error", err.Error())
+		}
+	}()
 }
 
 // fleetBase returns the store's declaration overlay, or nil when the file
@@ -228,19 +270,7 @@ func (h *Host) FleetMutate(ctx context.Context, doc fleetstore.FleetDoc, expectR
 	h.resyncMu.Lock()
 	fn := resync
 	h.resyncMu.Unlock()
-	go func() {
-		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := fn(rctx); err != nil {
-			h.notifyReconcileFailure(err)
-			h.setLastApply(rev, "failed", err.Error())
-			return
-		}
-		h.setLastApply(rev, "applied", "")
-		if err := h.ExportConfigSnapshot(); err != nil {
-			h.log.Warn("config snapshot export failed", "error", err.Error())
-		}
-	}()
+	h.startBackgroundReconcile(rev, fn)
 	return rev, nil
 }
 
@@ -340,19 +370,7 @@ func (h *Host) FleetReset(ctx context.Context, expectRevision int64) (int64, err
 	h.resyncMu.Lock()
 	fn := resync
 	h.resyncMu.Unlock()
-	go func() {
-		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := fn(rctx); err != nil {
-			h.notifyReconcileFailure(err)
-			h.setLastApply(rev, "failed", err.Error())
-			return
-		}
-		h.setLastApply(rev, "applied", "")
-		if err := h.ExportConfigSnapshot(); err != nil {
-			h.log.Warn("config snapshot export failed after reset", "error", err.Error())
-		}
-	}()
+	h.startBackgroundReconcile(rev, fn)
 	return rev, nil
 }
 
@@ -369,9 +387,11 @@ func New(log *slog.Logger) (*Host, error) {
 	}
 	ctrl := config.NewController(rt, reg)
 	explorer.SetOwned(ctrl.Owned)
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	h := &Host{
 		rt: rt, reg: reg, ctrl: ctrl, explorer: explorer, log: log,
 		processStart: time.Now(),
+		bgCtx:        bgCtx, bgCancel: bgCancel,
 	}
 	// The explorer's enable/disable switch edits the DECLARATION (an
 	// enabled=false row patch — the row survives, §4.4 Configuration:
@@ -1345,6 +1365,17 @@ func (h *Host) Startup(ctx context.Context) error {
 }
 
 func (h *Host) Close(ctx context.Context) error {
+	// Stop accepting new background reconciles, cancel in-flight ones and wait
+	// for them before closing Controller/Runtime. FleetStore is owned by the
+	// caller and must be closed only after this returns.
+	h.bgMu.Lock()
+	h.closing = true
+	cancel := h.bgCancel
+	h.bgMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	h.bgWG.Wait()
 	if h.ctrl != nil {
 		if err := h.ctrl.CloseContext(ctx); err != nil {
 			_ = h.rt.Close(ctx)

@@ -115,13 +115,18 @@ schedule = "nightly"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Close(context.Background())
+	var store *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
 
-	store, err := fleetstore.Open(filepath.Join(dir, "state", "config.db"))
+	store, err = fleetstore.Open(filepath.Join(dir, "state", "config.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	app.Host.SetFleetStore(store, app.Sync)
 	if err := app.Sync(context.Background()); err != nil {
 		t.Fatal(err)
@@ -242,12 +247,17 @@ func TestFleetStoreSecretRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Close(context.Background())
-	store, err := fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
+	var store *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+	store, err = fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	app.Host.SetFleetStore(store, app.Sync)
 	if err := app.Sync(context.Background()); err != nil {
 		t.Fatal(err)
@@ -401,7 +411,13 @@ since = "2026-09-01"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Close(context.Background())
+	var store *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := app.Sync(ctx); err != nil {
@@ -465,13 +481,18 @@ func TestFleetRevisionCASAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Close(context.Background())
+	var store *fleetstore.Store
+	defer func() {
+		_ = app.Close(context.Background())
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
 	// 控制台编辑落 fleetstore：宿主接线（与 TestFleetStoreConsoleEditReconciles 同）。
-	store, err := fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
+	store, err = fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	app.Host.SetFleetStore(store, app.Sync)
 	ctx := context.Background()
 	if err := app.Sync(ctx); err != nil {
@@ -546,5 +567,80 @@ func TestFleetRevisionCASAndSnapshot(t *testing.T) {
 	realDSN := filepath.Join(stateRoot, "state", "collect.db")
 	if strings.Contains(string(raw), realDSN) {
 		t.Errorf("snapshot contains the real dsn %q — 明文凭证出库", realDSN)
+	}
+}
+
+func TestHostCloseWaitsForBackgroundFleetReconcile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "fleet.toml")
+	writeFleetConfig(t, cfgPath)
+
+	app, err := apphost.NewWatchHost(cfgPath, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := fleetstore.Open(fleetstore.FleetDBPath(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Host owns background work; the caller closes the store only after Host.
+	defer func() {
+		_ = app.Close(context.Background())
+		_ = store.Close()
+	}()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	app.Host.SetFleetStore(store, func(ctx context.Context) error {
+		close(started)
+		<-release // deliberately ignores ctx: Close must still wait for us
+		return nil
+	})
+	ctx := context.Background()
+	if err := app.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := app.Host.FleetSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := app.Host.FleetRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Host.FleetMutate(ctx, snap, rev, fleetstore.SourceConsole); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background reconcile never started")
+	}
+
+	closeEntered := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeEntered)
+		closeDone <- app.Close(ctx)
+	}()
+	<-closeEntered
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Host.Close returned before background reconcile finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Host.Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Host.Close did not return after background reconcile finished")
+	}
+	// Store is still usable until the deferred close: proving Close did not
+	// race a live background job against a closed database.
+	if _, _, err := store.Load(); err != nil {
+		t.Fatalf("store became unusable during Host.Close: %v", err)
 	}
 }
