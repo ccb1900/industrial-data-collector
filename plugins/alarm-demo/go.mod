@@ -4,4 +4,4 @@ go 1.24.0
 
 require dynamic-runtime v0.0.0-20260912032047-8bf4d4ca2755
 
-replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261121023851-8b64123bb479
+replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261121032401-f8c5899e7a50
