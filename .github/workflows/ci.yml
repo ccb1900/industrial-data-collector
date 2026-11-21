@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+env:
+  # 框架依赖永远指向刚推送的提交（bump-cordis.sh）：模块代理对新鲜伪版本有
+  # 传播延迟与偶发 stream error（NEW-02 验证期间的 CI 三连败即此），直连 git
+  # 拉取绕过代理与 sumdb。
+  GOPRIVATE: 'github.com/ccb1900/*'
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -21,16 +27,7 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: |
-          set -o pipefail
-          go test -count=1 ./... 2>&1 | tee /tmp/test.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" != "0" ]; then
-            grep -E "(--- FAIL|FAIL|panic:|build failed|missing go.sum|cannot find)" /tmp/test.log | head -40 | while IFS= read -r line; do
-              echo "::error::${line:0:180}"
-            done
-            exit 1
-          fi
+        run: go test -count=1 ./...
       - name: Race (core paths)
         run: go test -race ./app/... ./components/... ./internal/... ./tests/...
 
