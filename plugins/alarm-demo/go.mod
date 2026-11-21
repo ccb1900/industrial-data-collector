@@ -6,4 +6,4 @@ require dynamic-runtime v0.0.0-20260912032047-8bf4d4ca2755
 
 require github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 
-replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261121152736-728dc02c52d0
+replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0-20261121155753-fc624b5f5130
