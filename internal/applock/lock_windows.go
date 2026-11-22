@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -21,8 +22,13 @@ var (
 	procUnlockFileEx = kernel32.NewProc("UnlockFileEx")
 )
 
-// Acquire 对 dir/.lock 取独占字节锁（非阻塞），语义同 unix 版。
-func Acquire(dir string) (release func(), err error) {
+// AcquireDir 对 dir/.lock 取独占字节锁（非阻塞），语义同 unix 版。
+// dir 应是已解析的绝对 state 目录。release 只解锁并关闭句柄，绝不 unlink。
+func AcquireDir(dir string) (release func(), err error) {
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -35,18 +41,21 @@ func Acquire(dir string) (release func(), err error) {
 	var ov syscall.Overlapped
 	r1, _, callErr := procLockFileEx.Call(uintptr(h), lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&ov)))
 	if r1 == 0 {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("state dir %q is locked by another instance: %v", dir, callErr)
 	}
-	if err := f.Truncate(0); err != nil {
-		return nil, err
-	}
-	fmt.Fprintf(f, "%d\n", os.Getpid())
-	release = func() {
-		_, _ = f.Seek(0, 0)
+	// 锁已持有；任何后续错误都必须先解锁再返回。
+	if err := writeLockPid(f); err != nil {
 		_, _, _ = procUnlockFileEx.Call(uintptr(h), 0, 1, 0, uintptr(unsafe.Pointer(&ov)))
 		_ = f.Close()
-		_ = os.Remove(path)
+		return nil, err
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			_, _, _ = procUnlockFileEx.Call(uintptr(h), 0, 1, 0, uintptr(unsafe.Pointer(&ov)))
+			_ = f.Close()
+		})
 	}
 	return release, nil
 }

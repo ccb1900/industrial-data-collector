@@ -17,7 +17,6 @@ import (
 
 	"gocordis-csv-collector/app/fleetstore"
 	"gocordis-csv-collector/app/host"
-	"gocordis-csv-collector/app/model"
 	"gocordis-csv-collector/app/sourcecomp"
 	"gocordis-csv-collector/internal/applock"
 	"gocordis-csv-collector/internal/parallelism"
@@ -40,7 +39,7 @@ func main() {
 	}
 	if !*dumpConfig {
 		// 单实例守卫：state/ 只允许一个采集/控制台进程。
-		releaseLock, err := applock.Acquire("state")
+		releaseLock, err := applock.AcquireDir(filepath.Dir(fleetstore.FleetDBPath(configAbs)))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "csv-collector:", err)
 			os.Exit(1)
@@ -152,7 +151,10 @@ func runResident(logger *slog.Logger, configPath string, patchPaths []string) er
 		return fmt.Errorf("initial sync: %w", err)
 	}
 	logger.Info("configuration active; running startup recovery")
-	if err := app.Trigger(ctx, model.CollectionRequested{Reason: "startup"}); err != nil && ctx.Err() == nil {
+	// 与 -once / web-ui 同一入口：Startup 先回收上一个进程留下的孤儿 Running
+	// 行，再派发 startup 采集。直接 Trigger 会跳过回收，那些日期要等满 24h
+	// 租约才被补采（界面上则一直挂着 Running）。
+	if err := app.Startup(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("startup recovery: %w", err)
 	}
 	logger.Info("startup recovery complete; watching configuration and daily schedule", "config", configPath)

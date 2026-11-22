@@ -167,6 +167,41 @@ func (e *Executor) endState(ctx context.Context, key model.CollectionKey, status
 	return err
 }
 
+// planKeys 是 Executor 唯一的计划边界：它决定本轮允许探哪些业务日，之后的
+// 采集循环只允许照单执行，绝不能再补日期。
+//
+// CatchupDays>0 时 Recovery.Plan 是窗口规划器，也是唯一权威：它逐日对齐窗口
+// 与台账，空洞与未结算的失败排进来，Succeeded/Skipped 与仍在租约内的 Running
+// 明确排除。旧实现在 Plan 之后无条件补 target，会把规划器已接受的终态重新
+// 打开——源此刻暂时不可达时，一个早已成功（或已确认无数据）的日期就被报成
+// Failed 并发出失败事件。
+//
+// CatchupDays==0 的兼容分支是唯一真正需要 target 种子的形态：它的缺口合成
+// 从"最后一次成功之后"起跳，全新状态下没有锚点，首轮会一个日期都排不出。
+// 这个种子属于规划决策，不属于采集循环；它在本规划步骤内显式给出并限定在
+// 兼容模式下，窗口模式永远不经过它。
+func (e *Executor) planKeys(ctx context.Context, target model.CollectionDate, manual bool) ([]model.CollectionKey, error) {
+	if manual {
+		// 手动指定日期的语义是"就采这个日期"：不规划整个窗口。窗口重扫是
+		// 自动路径（nightly/startup）的职责——把 30 个日期的探测塞进一次
+		// 人工回填，既淹没结果列表，也会顺带终态化请求日之前的无数据日。
+		return []model.CollectionKey{{SourceID: e.Source.ID(), Date: target}}, nil
+	}
+	keys, err := e.Recovery.Plan(ctx, e.Source.ID(), target)
+	if err != nil {
+		return nil, err
+	}
+	if e.Recovery.CatchupDays > 0 {
+		return keys, nil
+	}
+	for _, k := range keys {
+		if k.Date.Equal(target) {
+			return keys, nil
+		}
+	}
+	return append(keys, model.CollectionKey{SourceID: e.Source.ID(), Date: target}), nil
+}
+
 func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([]model.CollectionResult, error) {
 	cfg := e.Config.withDefaults()
 	target, err := cfg.DatePolicy.Resolve()
@@ -203,17 +238,9 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 		}
 	}
 
-	var keys []model.CollectionKey
-	if manual {
-		// 手动指定日期的语义是"就采这个日期"：不再顺带规划整个窗口。窗口
-		// 重扫是自动路径（nightly/startup）的职责——把 30 个日期的探测塞进
-		// 一次人工回填，既淹没结果列表，也会把请求日期之前的无数据日期全部
-		// 探一遍（开启 no_data_after_days 时甚至全部终态化）。
-		keys = append(keys, model.CollectionKey{SourceID: e.Source.ID(), Date: target})
-	} else if planned, perr := e.Recovery.Plan(ctx, e.Source.ID(), target); perr != nil {
-		return nil, perr
-	} else {
-		keys = planned
+	keys, err := e.planKeys(ctx, target, manual)
+	if err != nil {
+		return nil, err
 	}
 	// 生命周期下界：早于 since 的业务日不计划、不物化（显式指定日期的
 	// 手动触发同样遵守——since 是源的存在性事实，不是策略偏好）。
@@ -233,16 +260,6 @@ func (e *Executor) Handle(ctx context.Context, req model.CollectionRequested) ([
 				Status: model.StatusSkipped, Error: "target date is before source since",
 			}}, nil
 		}
-	}
-	hasTarget := false
-	for _, k := range keys {
-		if k.Date.Equal(target) {
-			hasTarget = true
-			break
-		}
-	}
-	if !hasTarget {
-		keys = append(keys, model.CollectionKey{SourceID: e.Source.ID(), Date: target})
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].Date.Before(keys[j].Date) })
 

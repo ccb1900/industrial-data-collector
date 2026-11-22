@@ -286,7 +286,10 @@ func TestNoNewContentNeverCountsAsNoData(t *testing.T) {
 	e.Config.Now = now
 	e.Config.DatePolicy = datepolicy.Policy{Type: datepolicy.PolicyYesterday, Now: now}
 	e.Config.Boundary = datepolicy.Boundary{Now: now, WindowDays: 1, SameDay: false}
-	e.Recovery = recovery.Planner{State: base, CatchupDays: 1, Now: now}
+	// flat 源在生产中被强制为 catchup_days=0（窗口与同日导出语义互斥），
+	// 这里如实使用兼容规划器：它按 (last, target] 合成缺口并由计划步骤补上
+	// target 种子，append 模式才能反复重开同一个成功日期。
+	e.Recovery = recovery.Planner{State: base, CatchupDays: 0, Now: now}
 	base.SetAppendMode() // watch 触发的 flat 源：append 模式重开成功日期
 	e.Config.NoDataConfirmDays = 1
 	ctx := context.Background()
